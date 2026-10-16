@@ -1,0 +1,5 @@
+/target
+
+# agents-kit: ledger write-ahead log + Python bytecode from deployed skills
+__pycache__/
+.agent/*.duckdb.wal
