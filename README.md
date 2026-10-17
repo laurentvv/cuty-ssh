@@ -163,12 +163,6 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 
 ---
 
-## Visual Branding & Badges
-
-![Cuty-SSH UI Badges](assets/cuty_ssh_ui_badges.png)
-
----
-
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
