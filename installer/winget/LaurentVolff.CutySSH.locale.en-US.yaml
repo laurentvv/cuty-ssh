@@ -1,0 +1,23 @@
+# TEMPLATE of the winget default-locale manifest.
+PackageIdentifier: LaurentVolff.CutySSH
+PackageVersion: 0.3.0
+PackageLocale: en-US
+Publisher: Laurent Volff
+PublisherUrl: https://github.com/laurentvv
+PackageName: Cuty-SSH
+PackageUrl: https://github.com/laurentvv/cuty-ssh
+License: MIT
+LicenseUrl: https://github.com/laurentvv/cuty-ssh/blob/main/LICENSE
+ShortDescription: Fast, native Windows SSH2, SFTP, Telnet, Raw TCP & ConPTY connection manager in pure Rust.
+Moniker: cuty-ssh
+Tags:
+  - ssh
+  - sftp
+  - terminal
+  - putty
+  - pageant
+  - sysadmin
+  - bastion
+  - conpty
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

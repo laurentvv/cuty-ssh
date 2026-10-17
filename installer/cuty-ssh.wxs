@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-user installer for Cuty-SSH: no administrator rights required, installs to
+  %LOCALAPPDATA%\Programs\Cuty-SSH, adds a Start menu shortcut and an uninstall entry.
+  Build (from the repository root):
+    wix build installer/cuty-ssh.wxs -arch x64 -d Version=0.3.0 -d CutySshExe=cuty-ssh.exe -o cuty-ssh-v0.3.0-windows-x64.msi
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Cuty-SSH" Manufacturer="Laurent Volff" Version="$(Version)"
+           UpgradeCode="C593AF7D-B895-447B-B82B-7778F298B1B7" Scope="perUser" Compressed="yes"
+           Language="1033" InstallerVersion="500">
+    <SummaryInformation Description="Cuty-SSH - Fast, native Windows SSH2, SFTP &amp; ConPTY connection manager" />
+    <MediaTemplate EmbedCab="yes" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Cuty-SSH is already installed." />
+
+    <Icon Id="CutySshIcon" SourceFile="assets/cuty_ssh_icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="CutySshIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/laurentvv/cuty-ssh" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Cuty-SSH" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="StartMenuDir" Name="Cuty-SSH" />
+    </StandardDirectory>
+
+    <!-- Per-user components use a registry value under HKCU as key path (hence fixed component GUIDs). -->
+    <Component Id="ProgramFiles" Directory="INSTALLFOLDER" Guid="A739C8E9-B76D-47EE-9410-B5911E78AA8C">
+      <File Id="CutySshExe" Source="$(CutySshExe)" Name="cuty-ssh.exe" />
+      <File Id="License" Source="LICENSE" Name="LICENSE.txt" />
+      <RegistryValue Root="HKCU" Key="Software\CutySSH" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+      <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLFOLDER" On="uninstall" />
+      <RemoveFolder Id="RemoveProgramsDirIfEmpty" Directory="ProgramsDir" On="uninstall" />
+    </Component>
+
+    <Component Id="StartMenuShortcut" Directory="StartMenuDir" Guid="FEF88ADE-1632-4E7F-81E9-744B5747B2D7">
+      <Shortcut Id="CutySshShortcut" Name="Cuty-SSH" Description="Modern SSH2, SFTP and ConPTY terminal client"
+                Target="[INSTALLFOLDER]cuty-ssh.exe" WorkingDirectory="INSTALLFOLDER" Icon="CutySshIcon" />
+      <RegistryValue Root="HKCU" Key="Software\CutySSH" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      <RemoveFolder Id="RemoveStartMenuDir" Directory="StartMenuDir" On="uninstall" />
+    </Component>
+
+    <Feature Id="Main" Title="Cuty-SSH" Level="1">
+      <ComponentRef Id="ProgramFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

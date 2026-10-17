@@ -177,16 +177,26 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 
 ## Download & Quick Start
 
-### Option 1 — Portable Standalone Binary (Recommended)
+### Option 1 — Windows Installer (.msi) & WinGet (Recommended)
+- **Direct Download**: Download and run [**`cuty-ssh-v0.3.0-windows-x64.msi`**](https://github.com/laurentvv/cuty-ssh/releases/download/v0.3.0/cuty-ssh-v0.3.0-windows-x64.msi).
+  - Installs cleanly to `%LOCALAPPDATA%\Programs\Cuty-SSH` without administrator/UAC prompts.
+  - Automatically adds a **Cuty-SSH** Start Menu shortcut with application icon.
+  - Clean 1-click uninstall from Windows Settings / Installed apps.
+- **Via Windows Package Manager (`winget`)**:
+  ```powershell
+  winget install LaurentVolff.CutySSH
+  ```
+
+### Option 2 — Portable Standalone Binary
 1. Download **`cuty-ssh.exe`** (or **`cuty-ssh-v0.3.0-windows-x64.zip`**) from the [**GitHub Releases**](https://github.com/laurentvv/cuty-ssh/releases/latest) page.
-2. Place `cuty-ssh.exe` in any folder and run it — no installer or administrator privileges required.
+2. Place `cuty-ssh.exe` in any folder and run it — zero installation required.
 3. Cuty-SSH automatically creates a local **`cuty-ssh-portable/`** directory next to the executable containing:
    - `config.json` (DPAPI-protected session profiles, folders, tags, snippets, UI language & theme)
    - `known_hosts.json` (TOFU SHA-256 server host key fingerprints)
    - `keys/` (auto-generated or imported `.ppk` / OpenSSH keys, including your Primary SSH Key)
    - `Sessions/` (individual portable session files)
 
-### Option 2 — Build from Source
+### Option 3 — Build from Source
 Requires the **Rust 2024 toolchain** (`rustup` stable on Windows 10/11 x64):
 
 ```powershell
