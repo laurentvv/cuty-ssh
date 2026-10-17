@@ -1,5 +1,5 @@
 # TEMPLATE of the winget default-locale manifest.
-PackageIdentifier: LaurentVolff.CutySSH
+PackageIdentifier: LaurentVolff.Cuty-SSH
 PackageVersion: 0.3.0
 PackageLocale: en-US
 Publisher: Laurent Volff

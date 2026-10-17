@@ -1,6 +1,6 @@
 # TEMPLATE of the winget version manifest. `wingetcreate` produces the real files from a published release
 # URL (see docs/RELEASING.md); these are kept as a reference of what is submitted.
-PackageIdentifier: LaurentVolff.CutySSH
+PackageIdentifier: LaurentVolff.Cuty-SSH
 PackageVersion: 0.3.0
 DefaultLocale: en-US
 ManifestType: version

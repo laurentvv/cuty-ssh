@@ -184,7 +184,7 @@ Connect to isolated private or DMZ servers transparently through an intermediate
   - Clean 1-click uninstall from Windows Settings / Installed apps.
 - **Via Windows Package Manager (`winget`)**:
   ```powershell
-  winget install LaurentVolff.CutySSH
+  winget install LaurentVolff.Cuty-SSH
   ```
 
 ### Option 2 — Portable Standalone Binary
