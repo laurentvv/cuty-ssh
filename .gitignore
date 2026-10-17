@@ -9,8 +9,10 @@ cuty-ssh-crash.log
 assets/*.jpg
 assets/screenshot_cockpi
 
-# agents-kit: ledger write-ahead log + Python bytecode from deployed skills
+# Agent internal tooling and ledger (kept local, ignored on public git)
+.agent/
+.agents/
 __pycache__/
-.agent/*.duckdb.wal
+
 
 

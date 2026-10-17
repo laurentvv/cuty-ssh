@@ -1,5 +1,5 @@
-# agents-kit artifacts: byte-frozen skill installs (LF) and the DuckDB ledger (binary)
-.agents/** text eol=lf linguist-vendored
-.agent/** linguist-vendored
+# Git line endings and linguist attributes
+* text=auto
 installer/** linguist-vendored
+
 
