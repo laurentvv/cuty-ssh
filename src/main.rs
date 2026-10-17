@@ -9,7 +9,54 @@ pub mod ui;
 
 use ui::CutySshApp;
 
+/// Re-attach stdout/stderr to the console of the parent process (needed with the GUI subsystem).
+#[cfg(windows)]
+fn attach_parent_console() {
+    use std::os::windows::io::IntoRawHandle;
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+        SetStdHandle,
+    };
+    unsafe {
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            return;
+        }
+        for (std_handle, name) in [
+            (STD_OUTPUT_HANDLE, "CONOUT$"),
+            (STD_ERROR_HANDLE, "CONOUT$"),
+        ] {
+            let cur = GetStdHandle(std_handle);
+            if (cur.is_null() || cur as isize == -1)
+                && let Ok(f) = std::fs::OpenOptions::new().write(true).open(name)
+            {
+                SetStdHandle(std_handle, f.into_raw_handle() as _);
+            }
+        }
+    }
+}
+
 fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "-V" || a == "--version") {
+        #[cfg(windows)]
+        attach_parent_console();
+        println!("cuty-ssh {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        #[cfg(windows)]
+        attach_parent_console();
+        println!(
+            "Cuty-SSH {} — Fast, native Windows SSH2, SFTP, Telnet, Raw TCP & ConPTY connection manager\n",
+            env!("CARGO_PKG_VERSION")
+        );
+        println!("Usage: cuty-ssh.exe [OPTIONS]\n");
+        println!("Options:");
+        println!("  -V, --version   Print version information");
+        println!("  -h, --help      Print help information");
+        return Ok(());
+    }
+
     let _ = tracing_subscriber::fmt::try_init();
 
     let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
