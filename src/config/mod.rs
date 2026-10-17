@@ -1,9 +1,12 @@
+//! Session profile definitions, portable JSON storage, and Windows Registry importer.
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+/// Supported connection protocols in Cuty-SSH.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProtocolType {
     Ssh,
@@ -13,59 +16,56 @@ pub enum ProtocolType {
 }
 
 impl ProtocolType {
-    pub fn label(&self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
-            ProtocolType::Ssh => "SSH2",
-            ProtocolType::Telnet => "Telnet",
-            ProtocolType::RawTcp => "Raw TCP",
-            ProtocolType::LocalShell => "Shell Local (ConPTY)",
+            Self::Ssh => "SSH2",
+            Self::Telnet => "Telnet",
+            Self::RawTcp => "Raw TCP",
+            Self::LocalShell => "Shell Local (ConPTY)",
         }
     }
 
-    pub fn badge(&self) -> &'static str {
+    pub fn badge(self) -> &'static str {
         match self {
-            ProtocolType::Ssh => "🔐 SSH",
-            ProtocolType::Telnet => "🖧 Telnet",
-            ProtocolType::RawTcp => "🔌 Raw",
-            ProtocolType::LocalShell => "💻 Local",
+            Self::Ssh => "🔐 SSH",
+            Self::Telnet => "🖧 Telnet",
+            Self::RawTcp => "🔌 Raw",
+            Self::LocalShell => "💻 Local",
         }
     }
 
-    pub fn default_port(&self) -> u16 {
+    pub fn default_port(self) -> u16 {
         match self {
-            ProtocolType::Ssh => 22,
-            ProtocolType::Telnet => 23,
-            ProtocolType::RawTcp => 80,
-            ProtocolType::LocalShell => 0,
+            Self::Ssh => 22,
+            Self::Telnet => 23,
+            Self::RawTcp => 80,
+            Self::LocalShell => 0,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// SSH authentication method configured for a session profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SshAuthMethod {
-    /// Mot de passe (interactif ou automatique KiTTY)
+    /// Interactive or automatic password authentication.
+    #[default]
     Password,
-    /// Fichier clé privée PuTTY (.ppk v2/v3), OpenSSH, PEM ou PKCS#8
+    /// Private key file authentication supporting PuTTY `.ppk` (v2/v3), OpenSSH, PEM, and PKCS#8.
     PrivateKeyFile {
         key_path: String,
         passphrase: String,
         cert_path: String,
     },
-    /// Agent SSH Windows : Pageant (PuTTY) ou OpenSSH Agent
+    /// SSH agent authentication via Pageant (`pageant.exe`) or Windows OpenSSH Agent.
     Agent {
         use_pageant: bool,
         use_openssh_agent: bool,
     },
-    /// Authentification Keyboard-Interactive (PAM / 2FA)
+    /// Keyboard-Interactive authentication (PAM / 2FA).
     KeyboardInteractive,
 }
 
-impl Default for SshAuthMethod {
-    fn default() -> Self {
-        Self::Password
-    }
-}
-
+/// Expect/send automation rule executed during session logon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExpectRule {
     pub enabled: bool,
@@ -74,12 +74,14 @@ pub struct ExpectRule {
     pub delay_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Direction of an SSH port-forwarding rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PortForwardType {
     Local,
     Remote,
 }
 
+/// SSH tunnel / port-forwarding rule (`-L` or `-R`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortForwardRule {
     pub enabled: bool,
@@ -90,6 +92,7 @@ pub struct PortForwardRule {
     pub target_port: u16,
 }
 
+/// Complete configuration for a saved connection profile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionProfile {
     pub id: Uuid,
@@ -106,7 +109,7 @@ pub struct SessionProfile {
     pub agent_forwarding: bool,
     pub local_shell_cmd: String,
 
-    // Fonctionnalités d'automatisation KiTTY
+    // Automation settings
     pub auto_login: bool,
     pub auto_password: bool,
     pub startup_command: String,
@@ -117,7 +120,7 @@ pub struct SessionProfile {
     pub compression: bool,
     pub port_forwards: Vec<PortForwardRule>,
 
-    // Apparence & ergonomie par session
+    // Terminal appearance and ergonomics
     pub theme_name: String,
     pub font_size: f32,
     pub scrollback_lines: usize,
@@ -126,6 +129,49 @@ pub struct SessionProfile {
     pub read_only: bool,
     pub log_to_file: bool,
     pub notes: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Optional UUID of another saved SSH session profile used as a Bastion / Jump Host (`-J`).
+    #[serde(default)]
+    pub jump_host_id: Option<Uuid>,
+    /// Optional inline `user@bastion:port` ProxyJump specification (e.g. imported from `~/.ssh/config`).
+    #[serde(default)]
+    pub proxy_jump: String,
+    /// When true, automatically installs the user's Primary SSH Public Key (`ssh-copy-id`) right after connecting with a password and switches the profile to key authentication.
+    #[serde(default)]
+    pub deploy_primary_key_on_connect: bool,
+}
+
+/// Trusted SSH server host key entry for TOFU (Trust On First Use) verification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KnownHostEntry {
+    pub host_port: String,
+    pub algorithm: String,
+    pub fingerprint_sha256: String,
+    pub public_key_base64: String,
+    pub first_seen: String,
+    pub last_seen: String,
+}
+
+/// Outcome of verifying a server's SSH host key against the local `known_hosts.json` store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostKeyCheckResult {
+    /// Host key was already known and matches the stored fingerprint.
+    TrustedMatch {
+        fingerprint: String,
+        algorithm: String,
+    },
+    /// First time connecting to this host: key was automatically recorded (TOFU).
+    NewlyTrusted {
+        fingerprint: String,
+        algorithm: String,
+    },
+    /// Host key changed! Potential MITM attack or server reinstallation.
+    Mismatch {
+        expected_fingerprint: String,
+        actual_fingerprint: String,
+        algorithm: String,
+    },
 }
 
 impl Default for SessionProfile {
@@ -153,7 +199,7 @@ impl Default for SessionProfile {
             anti_idle_string: String::new(),
             compression: true,
             port_forwards: Vec::new(),
-            theme_name: "KiTTY Dark".to_string(),
+            theme_name: "Cuty Dark".to_string(),
             font_size: 14.5,
             scrollback_lines: 10_000,
             transparency: 255,
@@ -161,10 +207,15 @@ impl Default for SessionProfile {
             read_only: false,
             log_to_file: false,
             notes: String::new(),
+            tags: Vec::new(),
+            jump_host_id: None,
+            proxy_jump: String::new(),
+            deploy_primary_key_on_connect: false,
         }
     }
 }
 
+/// Pre-defined command shortcut displayed in the quick command bar.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PredefinedCommand {
     pub id: Uuid,
@@ -175,18 +226,59 @@ pub struct PredefinedCommand {
     pub description: String,
 }
 
+/// User interface display language (French or English).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum UiLanguage {
+    #[default]
+    French,
+    English,
+}
+
+impl UiLanguage {
+    pub fn is_en(self) -> bool {
+        matches!(self, UiLanguage::English)
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            UiLanguage::French => "FR",
+            UiLanguage::English => "EN",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UiLanguage::French => "Français (FR)",
+            UiLanguage::English => "English (EN)",
+        }
+    }
+
+    pub fn toggle(self) -> Self {
+        match self {
+            UiLanguage::French => UiLanguage::English,
+            UiLanguage::English => UiLanguage::French,
+        }
+    }
+}
+
+/// Top-level portable application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub portable_mode: bool,
     pub pageant_path: String,
     pub winscp_path: String,
     pub default_key_dir: String,
+    /// Path to the user's Primary SSH Private Key (`.ppk` or OpenSSH) used for 1-click `ssh-copy-id` key deployment.
+    #[serde(default)]
+    pub primary_key_path: String,
     pub copy_on_select: bool,
     pub right_click_paste: bool,
     pub detect_hyperlinks: bool,
     pub global_transparency: u8,
     pub global_always_on_top: bool,
     pub show_command_bar: bool,
+    #[serde(default)]
+    pub language: UiLanguage,
     pub sessions: Vec<SessionProfile>,
     pub predefined_commands: Vec<PredefinedCommand>,
 }
@@ -198,12 +290,14 @@ impl Default for AppConfig {
             pageant_path: r"C:\Program Files\PuTTY\pageant.exe".to_string(),
             winscp_path: r"C:\Program Files (x86)\WinSCP\WinSCP.exe".to_string(),
             default_key_dir: default_ssh_dir(),
+            primary_key_path: String::new(),
             copy_on_select: true,
             right_click_paste: true,
             detect_hyperlinks: true,
             global_transparency: 255,
             global_always_on_top: false,
             show_command_bar: true,
+            language: UiLanguage::French,
             sessions: default_starter_sessions(),
             predefined_commands: default_predefined_commands(),
         }
@@ -231,7 +325,8 @@ fn default_starter_sessions() -> Vec<SessionProfile> {
             port: 0,
             username: std::env::var("USERNAME").unwrap_or_else(|_| "user".to_string()),
             local_shell_cmd: "powershell.exe".to_string(),
-            theme_name: "KiTTY Dark".to_string(),
+            theme_name: "Cuty Dark".to_string(),
+            tags: vec!["local".to_string(), "shell".to_string()],
             ..Default::default()
         },
         SessionProfile {
@@ -244,6 +339,7 @@ fn default_starter_sessions() -> Vec<SessionProfile> {
             username: std::env::var("USERNAME").unwrap_or_else(|_| "user".to_string()),
             local_shell_cmd: "cmd.exe".to_string(),
             theme_name: "Classic PuTTY".to_string(),
+            tags: vec!["local".to_string(), "cmd".to_string()],
             ..Default::default()
         },
         SessionProfile {
@@ -256,6 +352,7 @@ fn default_starter_sessions() -> Vec<SessionProfile> {
             username: "root".to_string(),
             local_shell_cmd: "wsl.exe".to_string(),
             theme_name: "Dracula".to_string(),
+            tags: vec!["local".to_string(), "wsl".to_string(), "linux".to_string()],
             ..Default::default()
         },
         SessionProfile {
@@ -272,7 +369,8 @@ fn default_starter_sessions() -> Vec<SessionProfile> {
                 cert_path: String::new(),
             },
             startup_command: "uname -a && uptime".to_string(),
-            theme_name: "KiTTY Dark".to_string(),
+            theme_name: "Cuty Dark".to_string(),
+            tags: vec!["prod".to_string(), "linux".to_string()],
             ..Default::default()
         },
         SessionProfile {
@@ -343,17 +441,23 @@ fn default_predefined_commands() -> Vec<PredefinedCommand> {
 }
 
 impl AppConfig {
-    /// Emplacement portable du fichier de configuration (à côté de l'exécutable ou dans le dossier courant)
+    /// Resolves the portable configuration file path next to the executable or working directory.
     pub fn portable_config_path() -> PathBuf {
         let local_path = PathBuf::from("cuty-ssh-portable").join("config.json");
-        if local_path.parent().map(|p| p.exists()).unwrap_or(false) {
+        if local_path.exists() {
             return local_path;
         }
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let candidate = dir.join("cuty-ssh-portable").join("config.json");
-                if candidate.exists() {
-                    return candidate;
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(dir) = exe.parent()
+        {
+            let candidate = dir.join("cuty-ssh-portable").join("config.json");
+            if candidate.exists() {
+                return candidate;
+            }
+            if let Some(parent) = dir.parent().and_then(|p| p.parent()) {
+                let candidate2 = parent.join("cuty-ssh-portable").join("config.json");
+                if candidate2.exists() {
+                    return candidate2;
                 }
             }
         }
@@ -362,16 +466,50 @@ impl AppConfig {
 
     pub fn load_or_default() -> Self {
         let path = Self::portable_config_path();
-        if path.exists() {
-            if let Ok(data) = fs::read_to_string(&path) {
-                if let Ok(cfg) = serde_json::from_str::<AppConfig>(&data) {
-                    return cfg;
-                }
-            }
-        }
-        let cfg = Self::default();
+        let mut cfg = if path.exists()
+            && let Ok(data) = fs::read_to_string(&path)
+            && let Ok(loaded) = serde_json::from_str::<Self>(&data)
+        {
+            loaded
+        } else {
+            Self::default()
+        };
+        cfg.sanitize_and_sync();
         let _ = cfg.save();
         cfg
+    }
+
+    /// Normalizes `user@host` fields, decrypts DPAPI-protected credentials into memory,
+    /// cleans up legacy folder names, and syncs Saved Sessions from the Windows Registry.
+    pub fn sanitize_and_sync(&mut self) {
+        for s in &mut self.sessions {
+            if s.host.contains('@') {
+                let (user, clean_host) = split_user_and_host(&s.host, &s.username);
+                s.username = user;
+                s.host = clean_host;
+            }
+            if !s.password.is_empty() {
+                s.password = dpapi_decrypt(&s.password);
+            }
+            if let SshAuthMethod::PrivateKeyFile { passphrase, .. } = &mut s.ssh_auth
+                && !passphrase.is_empty()
+            {
+                *passphrase = dpapi_decrypt(passphrase);
+            }
+            if s.folder == "Import PuTTY/Import PuTTY"
+                || s.folder == "Import PuTTY"
+                || s.folder.contains("KiTTY")
+            {
+                s.folder = "Saved Sessions (Pageant / PuTTY)".to_string();
+            }
+            if s.theme_name == "KiTTY Dark" {
+                s.theme_name = "Cuty Dark".to_string();
+            }
+        }
+        #[cfg(windows)]
+        {
+            let _ = self.import_from_windows_registry();
+        }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
@@ -379,37 +517,52 @@ impl AppConfig {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(self)?;
+
+        // Encrypt saved passwords and private key passphrases with Windows DPAPI before writing to disk.
+        let mut disk_copy = self.clone();
+        for s in &mut disk_copy.sessions {
+            if !s.password.is_empty() {
+                s.password = dpapi_encrypt(&s.password);
+            }
+            if let SshAuthMethod::PrivateKeyFile { passphrase, .. } = &mut s.ssh_auth
+                && !passphrase.is_empty()
+            {
+                *passphrase = dpapi_encrypt(passphrase);
+            }
+        }
+
+        let json = serde_json::to_string_pretty(&disk_copy)?;
         fs::write(&path, json)?;
 
-        // Sauvegarde également au format compatible KiTTY portable (Sessions/) si mode portable actif
-        if self.portable_mode {
-            if let Some(parent) = path.parent() {
-                let sessions_dir = parent.join("Sessions");
-                let _ = fs::create_dir_all(&sessions_dir);
-                for s in &self.sessions {
-                    let safe_name = url_encode_session_name(&s.name);
-                    let session_file = sessions_dir.join(safe_name);
-                    let _ = fs::write(session_file, export_session_to_kitty_ini(s));
-                }
+        // Also export individual INI session files in `Sessions/` when portable mode is enabled.
+        if self.portable_mode
+            && let Some(parent) = path.parent()
+        {
+            let sessions_dir = parent.join("Sessions");
+            let _ = fs::create_dir_all(&sessions_dir);
+            for s in &self.sessions {
+                let safe_name = url_encode_session_name(&s.name);
+                let session_file = sessions_dir.join(safe_name);
+                let _ = fs::write(session_file, export_session_to_ini(s));
             }
         }
         Ok(())
     }
 
-    /// Importe automatiquement les sessions depuis le Registre Windows de PuTTY et KiTTY
+    /// Imports saved sessions from Windows Registry keys created by PuTTY.
     #[cfg(windows)]
     pub fn import_from_windows_registry(&mut self) -> anyhow::Result<usize> {
         use winreg::RegKey;
-        use winreg::enums::*;
+        use winreg::enums::HKEY_CURRENT_USER;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let mut imported_count = 0;
+        let mut modified = false;
 
-        let reg_paths = [
-            (r"Software\9bis.com\KiTTY\Sessions", "Import KiTTY"),
-            (r"Software\SimonTatham\PuTTY\Sessions", "Import PuTTY"),
-        ];
+        let reg_paths = [(
+            r"Software\SimonTatham\PuTTY\Sessions",
+            "Saved Sessions (Pageant / PuTTY)",
+        )];
 
         for (base_path, default_folder) in reg_paths {
             if let Ok(sessions_key) = hkcu.open_subkey(base_path) {
@@ -419,10 +572,16 @@ impl AppConfig {
                     }
                     if let Ok(subkey) = sessions_key.open_subkey(&subkey_name) {
                         let decoded_name = url_decode_session_name(&subkey_name);
-                        let host: String = subkey.get_value("HostName").unwrap_or_default();
-                        if host.trim().is_empty() {
+                        let raw_host: String = subkey.get_value("HostName").unwrap_or_default();
+                        if raw_host.trim().is_empty() {
                             continue;
                         }
+                        let raw_username: String = subkey.get_value("UserName").unwrap_or_default();
+                        let (username, host) = split_user_and_host(&raw_host, &raw_username);
+                        if host.is_empty() {
+                            continue;
+                        }
+
                         let protocol_str: String = subkey
                             .get_value("Protocol")
                             .unwrap_or_else(|_| "ssh".to_string());
@@ -433,45 +592,82 @@ impl AppConfig {
                         };
                         let port: u32 = subkey
                             .get_value("PortNumber")
-                            .unwrap_or_else(|_| protocol.default_port() as u32);
-                        let username: String = subkey.get_value("UserName").unwrap_or_default();
-                        let ppk_file: String = subkey.get_value("PublicKeyFile").unwrap_or_default();
+                            .unwrap_or_else(|_| u32::from(protocol.default_port()));
+                        let ppk_file: String =
+                            subkey.get_value("PublicKeyFile").unwrap_or_default();
                         let remote_cmd: String =
                             subkey.get_value("RemoteCommand").unwrap_or_default();
                         let subfolder: String = subkey
-                            .get_value("KiTTYSubFolder")
-                            .or_else(|_| subkey.get_value("Folder"))
-                            .unwrap_or_else(|_| default_folder.to_string());
-                        let folder = if subfolder.trim().is_empty() || subfolder == "Default" {
+                            .get_value("Folder")
+                            .or_else(|_| subkey.get_value("SubFolder"))
+                            .unwrap_or_default();
+                        let clean_sub = subfolder.trim().replace('\\', "/");
+                        let folder = if clean_sub.is_empty()
+                            || clean_sub.eq_ignore_ascii_case("Default")
+                            || clean_sub == default_folder
+                        {
                             default_folder.to_string()
                         } else {
-                            format!("{}/{}", default_folder, subfolder.replace('\\', "/"))
+                            format!("{}/{}", default_folder, clean_sub)
                         };
+
+                        let agent_fwd: u32 = subkey.get_value("AgentFwd").unwrap_or(0);
+                        let try_agent: u32 = subkey.get_value("TryAgent").unwrap_or(1);
 
                         let ssh_auth = if !ppk_file.trim().is_empty() {
                             SshAuthMethod::PrivateKeyFile {
-                                key_path: ppk_file,
+                                key_path: ppk_file.clone(),
                                 passphrase: String::new(),
                                 cert_path: String::new(),
                             }
-                        } else {
-                            let agent_fwd: u32 = subkey.get_value("AgentFwd").unwrap_or(0);
-                            let try_agent: u32 = subkey.get_value("TryAgent").unwrap_or(1);
-                            if agent_fwd > 0 && username.is_empty() && try_agent > 0 {
-                                SshAuthMethod::Agent {
-                                    use_pageant: true,
-                                    use_openssh_agent: true,
-                                }
-                            } else {
-                                SshAuthMethod::Password
+                        } else if try_agent > 0 {
+                            SshAuthMethod::Agent {
+                                use_pageant: true,
+                                use_openssh_agent: true,
                             }
+                        } else {
+                            SshAuthMethod::Password
                         };
 
-                        let already_exists = self
-                            .sessions
-                            .iter()
-                            .any(|s| s.name == decoded_name && s.host == host);
-                        if !already_exists {
+                        if let Some(existing) =
+                            self.sessions.iter_mut().find(|s| s.name == decoded_name)
+                        {
+                            if existing.host != host {
+                                existing.host = host;
+                                modified = true;
+                            }
+                            if existing.username.trim().is_empty() && !username.is_empty() {
+                                existing.username = username;
+                                modified = true;
+                            }
+                            if existing.folder == "Import PuTTY/Import PuTTY"
+                                || existing.folder == "Import PuTTY"
+                                || existing.folder.contains("KiTTY")
+                            {
+                                existing.folder = folder;
+                                modified = true;
+                            }
+                            if !ppk_file.trim().is_empty() {
+                                let needs_key_restore = match &existing.ssh_auth {
+                                    SshAuthMethod::PrivateKeyFile { key_path, .. } => {
+                                        key_path.trim().is_empty()
+                                    }
+                                    _ => true,
+                                };
+                                if needs_key_restore {
+                                    existing.ssh_auth = SshAuthMethod::PrivateKeyFile {
+                                        key_path: ppk_file,
+                                        passphrase: String::new(),
+                                        cert_path: String::new(),
+                                    };
+                                    modified = true;
+                                }
+                            }
+                            if try_agent > 0 && !existing.try_pageant {
+                                existing.try_pageant = true;
+                                modified = true;
+                            }
+                        } else {
                             self.sessions.push(SessionProfile {
                                 id: Uuid::new_v4(),
                                 name: decoded_name,
@@ -484,42 +680,44 @@ impl AppConfig {
                                 },
                                 protocol,
                                 host,
-                                port: port as u16,
+                                port: u16::try_from(port).unwrap_or(22),
                                 username,
                                 ssh_auth,
+                                try_pageant: try_agent > 0,
+                                agent_forwarding: agent_fwd > 0,
                                 startup_command: remote_cmd,
                                 ..Default::default()
                             });
                             imported_count += 1;
+                            modified = true;
                         }
                     }
                 }
             }
         }
 
-        if imported_count > 0 {
+        if modified {
             let _ = self.save();
         }
         Ok(imported_count)
     }
 
-    /// Importe un fichier de session portable KiTTY (format `Key\Value\` dans `Sessions/`) ou un dossier
-    pub fn import_kitty_portable_file(&mut self, path: &Path) -> anyhow::Result<usize> {
+    /// Imports an INI session file (`Key\Value\` lines) or directory.
+    pub fn import_ini_portable_file(&mut self, path: &Path) -> anyhow::Result<usize> {
         if path.is_dir() {
             let mut count = 0;
             for entry in fs::read_dir(path)?.flatten() {
                 let p = entry.path();
-                if p.is_file() {
-                    if let Ok(c) = self.import_kitty_portable_file(&p) {
-                        count += c;
-                    }
+                if p.is_file()
+                    && let Ok(c) = self.import_ini_portable_file(&p)
+                {
+                    count += c;
                 }
             }
             return Ok(count);
         }
 
         let content = fs::read_to_string(path)?;
-        // Peut être un JSON Cuty-SSH ou un fichier INI/Session KiTTY
         if let Ok(profile) = serde_json::from_str::<SessionProfile>(&content) {
             self.sessions.push(profile);
             let _ = self.save();
@@ -540,15 +738,15 @@ impl AppConfig {
             }
         }
 
-        let host = kv.get("HostName").cloned().unwrap_or_default();
-        if host.is_empty() {
-            anyhow::bail!("Aucun HostName trouvé dans le fichier {:?}", path);
+        let raw_host = kv.get("HostName").cloned().unwrap_or_default();
+        if raw_host.is_empty() {
+            anyhow::bail!("No HostName entry found in file {:?}", path);
         }
 
         let raw_name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Session KiTTY".to_string());
+            .unwrap_or_else(|| "Session Importée".to_string());
         let name = url_decode_session_name(&raw_name);
         let protocol_str = kv
             .get("Protocol")
@@ -563,14 +761,21 @@ impl AppConfig {
             .get("PortNumber")
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or_else(|| protocol.default_port());
-        let username = kv.get("UserName").cloned().unwrap_or_default();
+        let raw_username = kv.get("UserName").cloned().unwrap_or_default();
+        let (username, host) = split_user_and_host(&raw_host, &raw_username);
         let ppk_file = kv.get("PublicKeyFile").cloned().unwrap_or_default();
         let startup_command = kv.get("RemoteCommand").cloned().unwrap_or_default();
         let folder = kv
-            .get("KiTTYSubFolder")
+            .get("Folder")
+            .or_else(|| kv.get("SubFolder"))
+            .or_else(|| {
+                kv.iter()
+                    .find(|(k, _)| k.ends_with("SubFolder"))
+                    .map(|(_, v)| v)
+            })
             .cloned()
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "Import KiTTY Portable".to_string());
+            .unwrap_or_else(|| "Import Sessions".to_string());
 
         let ssh_auth = if !ppk_file.is_empty() {
             SshAuthMethod::PrivateKeyFile {
@@ -597,15 +802,257 @@ impl AppConfig {
         let _ = self.save();
         Ok(1)
     }
+
+    /// Returns a sorted list of unique non-empty folder names from existing sessions.
+    pub fn all_folders(&self) -> Vec<String> {
+        let mut set = std::collections::BTreeSet::new();
+        for s in &self.sessions {
+            let f = s.folder.trim();
+            if !f.is_empty() {
+                set.insert(f.to_string());
+            } else {
+                set.insert("Général".to_string());
+            }
+        }
+        set.into_iter().collect()
+    }
+
+    /// Duplicates a session by UUID, appending " (Copie)" to its name and assigning a new UUID.
+    pub fn duplicate_session(&mut self, id: Uuid) -> Option<SessionProfile> {
+        if let Some(pos) = self.sessions.iter().position(|s| s.id == id) {
+            let mut clone = self.sessions[pos].clone();
+            clone.id = Uuid::new_v4();
+            clone.name = format!("{} (Copie)", clone.name);
+            self.sessions.insert(pos + 1, clone.clone());
+            let _ = self.save();
+            Some(clone)
+        } else {
+            None
+        }
+    }
+
+    /// Deletes a session by UUID and saves config.
+    pub fn delete_session(&mut self, id: Uuid) -> bool {
+        let before = self.sessions.len();
+        self.sessions.retain(|s| s.id != id);
+        let removed = self.sessions.len() < before;
+        if removed {
+            let _ = self.save();
+        }
+        removed
+    }
+
+    /// Bulk deletes sessions matching any of the given UUIDs.
+    pub fn delete_sessions(&mut self, ids: &[Uuid]) -> usize {
+        let before = self.sessions.len();
+        self.sessions.retain(|s| !ids.contains(&s.id));
+        let count = before - self.sessions.len();
+        if count > 0 {
+            let _ = self.save();
+        }
+        count
+    }
+
+    /// Moves selected sessions to a target folder.
+    pub fn move_sessions_to_folder(&mut self, ids: &[Uuid], target_folder: &str) -> usize {
+        let target = if target_folder.trim().is_empty() {
+            "Général".to_string()
+        } else {
+            target_folder.trim().to_string()
+        };
+        let mut count = 0;
+        for s in &mut self.sessions {
+            if ids.contains(&s.id) {
+                s.folder = target.clone();
+                count += 1;
+            }
+        }
+        if count > 0 {
+            let _ = self.save();
+        }
+        count
+    }
+
+    /// Returns a sorted list of unique tags across all sessions.
+    pub fn all_tags(&self) -> Vec<String> {
+        let mut set = std::collections::BTreeSet::new();
+        for s in &self.sessions {
+            for tag in &s.tags {
+                let trimmed = tag.trim();
+                if !trimmed.is_empty() {
+                    set.insert(trimmed.to_string());
+                }
+            }
+        }
+        set.into_iter().collect()
+    }
+
+    /// Adds a tag to multiple sessions.
+    pub fn add_tag_to_sessions(&mut self, ids: &[Uuid], tag: &str) -> usize {
+        let tag_clean = tag.trim();
+        if tag_clean.is_empty() {
+            return 0;
+        }
+        let mut count = 0;
+        for s in &mut self.sessions {
+            if ids.contains(&s.id) && !s.tags.iter().any(|t| t.eq_ignore_ascii_case(tag_clean)) {
+                s.tags.push(tag_clean.to_string());
+                count += 1;
+            }
+        }
+        if count > 0 {
+            let _ = self.save();
+        }
+        count
+    }
+
+    /// Removes a tag from multiple sessions.
+    pub fn remove_tag_from_sessions(&mut self, ids: &[Uuid], tag: &str) -> usize {
+        let tag_clean = tag.trim();
+        if tag_clean.is_empty() {
+            return 0;
+        }
+        let mut count = 0;
+        for s in &mut self.sessions {
+            if ids.contains(&s.id) {
+                let before = s.tags.len();
+                s.tags.retain(|t| !t.eq_ignore_ascii_case(tag_clean));
+                if s.tags.len() < before {
+                    count += 1;
+                }
+            }
+        }
+        if count > 0 {
+            let _ = self.save();
+        }
+        count
+    }
+
+    /// Exports selected sessions (or all if filter_ids is None) to a formatted JSON string.
+    pub fn export_sessions_json(
+        &self,
+        filter_ids: Option<&[Uuid]>,
+    ) -> Result<String, serde_json::Error> {
+        let export_list: Vec<&SessionProfile> = match filter_ids {
+            Some(ids) => self
+                .sessions
+                .iter()
+                .filter(|s| ids.contains(&s.id))
+                .collect(),
+            None => self.sessions.iter().collect(),
+        };
+        serde_json::to_string_pretty(&export_list)
+    }
+
+    /// Imports sessions from a JSON string (either `Vec<SessionProfile>` or full `AppConfig`).
+    /// Generates new UUIDs for collisions and adds new sessions.
+    pub fn import_sessions_json(&mut self, json_str: &str) -> Result<usize, String> {
+        let imported_sessions: Vec<SessionProfile> =
+            if let Ok(list) = serde_json::from_str::<Vec<SessionProfile>>(json_str) {
+                list
+            } else if let Ok(cfg) = serde_json::from_str::<AppConfig>(json_str) {
+                cfg.sessions
+            } else {
+                return Err(
+                "Format JSON non reconnu (attendu : liste de sessions ou configuration Cuty-SSH)"
+                    .to_string(),
+            );
+            };
+
+        if imported_sessions.is_empty() {
+            return Ok(0);
+        }
+
+        let mut count = 0;
+        let mut existing_ids: std::collections::HashSet<Uuid> =
+            self.sessions.iter().map(|s| s.id).collect();
+
+        for mut s in imported_sessions {
+            if s.name.trim().is_empty() {
+                continue;
+            }
+            if existing_ids.contains(&s.id) {
+                s.id = Uuid::new_v4();
+            }
+            existing_ids.insert(s.id);
+            self.sessions.push(s);
+            count += 1;
+        }
+
+        if count > 0 {
+            let _ = self.save();
+        }
+        Ok(count)
+    }
+
+    /// Imports SSH sessions from `~/.ssh/config` (or a custom OpenSSH config path).
+    pub fn import_from_openssh_config(
+        &mut self,
+        custom_path: Option<&Path>,
+    ) -> anyhow::Result<usize> {
+        let path = custom_path
+            .map(PathBuf::from)
+            .unwrap_or_else(default_openssh_config_path);
+        if !path.exists() {
+            anyhow::bail!("OpenSSH config file not found at {:?}", path);
+        }
+        let content = fs::read_to_string(&path)?;
+        let parsed = parse_openssh_config_content(&content);
+        if parsed.is_empty() {
+            return Ok(0);
+        }
+
+        let mut added = 0;
+        for profile in parsed {
+            let already_exists = self.sessions.iter().any(|s| {
+                s.name == profile.name && s.host == profile.host && s.port == profile.port
+            });
+            if !already_exists {
+                self.sessions.push(profile);
+                added += 1;
+            }
+        }
+        if added > 0 {
+            let _ = self.save();
+        }
+        Ok(added)
+    }
+
+    /// Resolves the path to `known_hosts.json` next to `config.json`.
+    pub fn known_hosts_path() -> PathBuf {
+        let cfg_path = Self::portable_config_path();
+        if let Some(parent) = cfg_path.parent() {
+            parent.join("known_hosts.json")
+        } else {
+            PathBuf::from("known_hosts.json")
+        }
+    }
+}
+
+/// Splits PuTTY `user@host` syntax in `HostName` into `(username, host)`.
+/// If `existing_user` is non-empty, it takes precedence over the prefix in `raw_host`.
+pub fn split_user_and_host(raw_host: &str, existing_user: &str) -> (String, String) {
+    let trimmed_host = raw_host.trim();
+    let trimmed_user = existing_user.trim();
+    if let Some((prefix_user, host_part)) = trimmed_host.rsplit_once('@') {
+        let final_user = if trimmed_user.is_empty() {
+            prefix_user.trim().to_string()
+        } else {
+            trimmed_user.to_string()
+        };
+        (final_user, host_part.trim().to_string())
+    } else {
+        (trimmed_user.to_string(), trimmed_host.to_string())
+    }
 }
 
 pub fn url_encode_session_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for b in name.bytes() {
         if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' {
-            out.push(b as char);
+            out.push(char::from(b));
         } else {
-            out.push_str(&format!("%{:02X}", b));
+            out.push_str(&format!("%{b:02X}"));
         }
     }
     out
@@ -616,14 +1063,14 @@ pub fn url_decode_session_name(encoded: &str) -> String {
     let raw = encoded.as_bytes();
     let mut i = 0;
     while i < raw.len() {
-        if raw[i] == b'%' && i + 2 < raw.len() {
-            if let Ok(hex_str) = std::str::from_utf8(&raw[i + 1..i + 3]) {
-                if let Ok(val) = u8::from_str_radix(hex_str, 16) {
-                    bytes.push(val);
-                    i += 3;
-                    continue;
-                }
-            }
+        if raw[i] == b'%'
+            && i + 2 < raw.len()
+            && let Ok(hex_str) = std::str::from_utf8(&raw[i + 1..i + 3])
+            && let Ok(val) = u8::from_str_radix(hex_str, 16)
+        {
+            bytes.push(val);
+            i += 3;
+            continue;
         }
         bytes.push(raw[i]);
         i += 1;
@@ -631,7 +1078,7 @@ pub fn url_decode_session_name(encoded: &str) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-pub fn export_session_to_kitty_ini(s: &SessionProfile) -> String {
+pub fn export_session_to_ini(s: &SessionProfile) -> String {
     let proto = match s.protocol {
         ProtocolType::Ssh => "ssh",
         ProtocolType::Telnet => "telnet",
@@ -643,7 +1090,7 @@ pub fn export_session_to_kitty_ini(s: &SessionProfile) -> String {
         _ => "",
     };
     format!(
-        "HostName\\{}\\\nPortNumber\\{}\\\nProtocol\\{}\\\nUserName\\{}\\\nPublicKeyFile\\{}\\\nRemoteCommand\\{}\\\nKiTTYSubFolder\\{}\\\nPingIntervalSecs\\{}\\\nCompression\\{}\\\n",
+        "HostName\\{}\\\nPortNumber\\{}\\\nProtocol\\{}\\\nUserName\\{}\\\nPublicKeyFile\\{}\\\nRemoteCommand\\{}\\\nFolder\\{}\\\nPingIntervalSecs\\{}\\\nCompression\\{}\\\n",
         s.host,
         s.port,
         proto,
@@ -652,6 +1099,509 @@ pub fn export_session_to_kitty_ini(s: &SessionProfile) -> String {
         s.startup_command,
         s.folder,
         s.keepalive_secs,
-        if s.compression { 1 } else { 0 }
+        u8::from(s.compression)
     )
+}
+
+/// Returns the default path to the user's `~/.ssh/config` file.
+pub fn default_openssh_config_path() -> PathBuf {
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        PathBuf::from(profile).join(".ssh").join("config")
+    } else {
+        PathBuf::from(".ssh").join("config")
+    }
+}
+
+fn expand_tilde_path(raw: &str) -> String {
+    let trimmed = raw.trim().trim_matches('"');
+    if let Some(rest) = trimmed
+        .strip_prefix("~/")
+        .or_else(|| trimmed.strip_prefix("~\\"))
+        && let Ok(profile) = std::env::var("USERPROFILE")
+    {
+        return PathBuf::from(profile)
+            .join(rest)
+            .to_string_lossy()
+            .to_string();
+    }
+    trimmed.to_string()
+}
+
+/// Parses standard OpenSSH `~/.ssh/config` text into `SessionProfile` items.
+pub fn parse_openssh_config_content(content: &str) -> Vec<SessionProfile> {
+    let mut profiles = Vec::new();
+    let mut current_aliases: Vec<String> = Vec::new();
+    let mut hostname = String::new();
+    let mut user = String::new();
+    let mut port: u16 = 22;
+    let mut identity_file = String::new();
+    let mut proxy_jump = String::new();
+    let mut forward_agent = false;
+    let mut compression = true;
+    let mut keepalive: u32 = 30;
+    let mut port_forwards: Vec<PortForwardRule> = Vec::new();
+
+    let flush_current = |aliases: &[String],
+                         hostname: &str,
+                         user: &str,
+                         port: u16,
+                         identity_file: &str,
+                         proxy_jump: &str,
+                         forward_agent: bool,
+                         compression: bool,
+                         keepalive: u32,
+                         port_forwards: &[PortForwardRule],
+                         out: &mut Vec<SessionProfile>| {
+        for alias in aliases {
+            if alias.is_empty() || alias.contains('*') || alias.contains('?') {
+                continue;
+            }
+            let effective_host = if hostname.is_empty() {
+                alias.clone()
+            } else {
+                hostname.to_string()
+            };
+            let effective_user = if user.is_empty() {
+                std::env::var("USERNAME").unwrap_or_else(|_| "root".to_string())
+            } else {
+                user.to_string()
+            };
+            let ssh_auth = if !identity_file.is_empty() {
+                SshAuthMethod::PrivateKeyFile {
+                    key_path: expand_tilde_path(identity_file),
+                    passphrase: String::new(),
+                    cert_path: String::new(),
+                }
+            } else {
+                SshAuthMethod::Agent {
+                    use_pageant: true,
+                    use_openssh_agent: true,
+                }
+            };
+            let mut tags = vec!["ssh-config".to_string()];
+            if !proxy_jump.is_empty() {
+                tags.push("bastion".to_string());
+            }
+            out.push(SessionProfile {
+                id: Uuid::new_v4(),
+                name: alias.clone(),
+                folder: "OpenSSH Config".to_string(),
+                icon_badge: "🔐".to_string(),
+                protocol: ProtocolType::Ssh,
+                host: effective_host,
+                port,
+                username: effective_user,
+                ssh_auth,
+                try_pageant: true,
+                agent_forwarding: forward_agent,
+                compression,
+                keepalive_secs: keepalive,
+                port_forwards: port_forwards.to_vec(),
+                proxy_jump: proxy_jump.to_string(),
+                tags,
+                ..Default::default()
+            });
+        }
+    };
+
+    for raw_line in content.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, val)) = line.split_once([' ', '\t', '=']) else {
+            continue;
+        };
+        let key_lower = key.trim().to_ascii_lowercase();
+        let val = val.trim().trim_start_matches('=').trim();
+
+        match key_lower.as_str() {
+            "host" => {
+                flush_current(
+                    &current_aliases,
+                    &hostname,
+                    &user,
+                    port,
+                    &identity_file,
+                    &proxy_jump,
+                    forward_agent,
+                    compression,
+                    keepalive,
+                    &port_forwards,
+                    &mut profiles,
+                );
+                current_aliases = val
+                    .split_whitespace()
+                    .map(|s| s.trim().to_string())
+                    .collect();
+                hostname.clear();
+                user.clear();
+                port = 22;
+                identity_file.clear();
+                proxy_jump.clear();
+                forward_agent = false;
+                compression = true;
+                keepalive = 30;
+                port_forwards.clear();
+            }
+            "hostname" => hostname = val.to_string(),
+            "user" => user = val.to_string(),
+            "port" => {
+                if let Ok(p) = val.parse::<u16>() {
+                    port = p;
+                }
+            }
+            "identityfile" => {
+                if identity_file.is_empty() {
+                    identity_file = val.to_string();
+                }
+            }
+            "proxyjump" => proxy_jump = val.to_string(),
+            "forwardagent" => forward_agent = val.eq_ignore_ascii_case("yes"),
+            "compression" => compression = val.eq_ignore_ascii_case("yes"),
+            "serveraliveinterval" => {
+                if let Ok(s) = val.parse::<u32>() {
+                    keepalive = s;
+                }
+            }
+            "localforward" => {
+                if let Some(rule) = parse_ssh_config_forward(val, PortForwardType::Local) {
+                    port_forwards.push(rule);
+                }
+            }
+            "remoteforward" => {
+                if let Some(rule) = parse_ssh_config_forward(val, PortForwardType::Remote) {
+                    port_forwards.push(rule);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    flush_current(
+        &current_aliases,
+        &hostname,
+        &user,
+        port,
+        &identity_file,
+        &proxy_jump,
+        forward_agent,
+        compression,
+        keepalive,
+        &port_forwards,
+        &mut profiles,
+    );
+
+    profiles
+}
+
+fn parse_ssh_config_forward(val: &str, forward_type: PortForwardType) -> Option<PortForwardRule> {
+    let parts: Vec<&str> = val.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let (bind_address, bind_port_str) = if let Some((addr, p)) = parts[0].rsplit_once(':') {
+        (addr.to_string(), p)
+    } else {
+        ("127.0.0.1".to_string(), parts[0])
+    };
+    let bind_port = bind_port_str.parse::<u16>().ok()?;
+    let (target_host, target_port_str) = parts[1].rsplit_once(':')?;
+    let target_port = target_port_str.parse::<u16>().ok()?;
+    Some(PortForwardRule {
+        enabled: true,
+        forward_type,
+        bind_address,
+        bind_port,
+        target_host: target_host.to_string(),
+        target_port,
+    })
+}
+
+/// Loads all stored SSH host keys from `known_hosts.json`.
+pub fn load_known_hosts() -> Vec<KnownHostEntry> {
+    let path = AppConfig::known_hosts_path();
+    if path.exists()
+        && let Ok(data) = fs::read_to_string(&path)
+        && let Ok(entries) = serde_json::from_str::<Vec<KnownHostEntry>>(&data)
+    {
+        return entries;
+    }
+    Vec::new()
+}
+
+/// Persists the SSH `known_hosts` list to `known_hosts.json`.
+pub fn save_known_hosts(entries: &[KnownHostEntry]) -> anyhow::Result<()> {
+    let path = AppConfig::known_hosts_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(entries)?;
+    fs::write(path, json)?;
+    Ok(())
+}
+
+/// Verifies a server's SSH host key against a slice of `KnownHostEntry` items (in-memory TOFU logic).
+pub fn verify_or_record_known_host_in_list(
+    entries: &mut Vec<KnownHostEntry>,
+    host: &str,
+    port: u16,
+    algorithm: &str,
+    fingerprint_sha256: &str,
+    public_key_base64: &str,
+) -> HostKeyCheckResult {
+    let host_port = if port == 22 {
+        host.trim().to_lowercase()
+    } else {
+        format!("[{}]:{}", host.trim().to_lowercase(), port)
+    };
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    if let Some(existing) = entries.iter_mut().find(|e| e.host_port == host_port) {
+        if existing.fingerprint_sha256 == fingerprint_sha256 {
+            existing.last_seen = now;
+            HostKeyCheckResult::TrustedMatch {
+                fingerprint: fingerprint_sha256.to_string(),
+                algorithm: algorithm.to_string(),
+            }
+        } else {
+            HostKeyCheckResult::Mismatch {
+                expected_fingerprint: existing.fingerprint_sha256.clone(),
+                actual_fingerprint: fingerprint_sha256.to_string(),
+                algorithm: algorithm.to_string(),
+            }
+        }
+    } else {
+        entries.push(KnownHostEntry {
+            host_port,
+            algorithm: algorithm.to_string(),
+            fingerprint_sha256: fingerprint_sha256.to_string(),
+            public_key_base64: public_key_base64.to_string(),
+            first_seen: now.clone(),
+            last_seen: now,
+        });
+        HostKeyCheckResult::NewlyTrusted {
+            fingerprint: fingerprint_sha256.to_string(),
+            algorithm: algorithm.to_string(),
+        }
+    }
+}
+
+/// Verifies a server's SSH host key against `known_hosts.json` on disk (TOFU).
+pub fn verify_or_record_known_host(
+    host: &str,
+    port: u16,
+    algorithm: &str,
+    fingerprint_sha256: &str,
+    public_key_base64: &str,
+) -> HostKeyCheckResult {
+    let mut entries = load_known_hosts();
+    let result = verify_or_record_known_host_in_list(
+        &mut entries,
+        host,
+        port,
+        algorithm,
+        fingerprint_sha256,
+        public_key_base64,
+    );
+    if !matches!(result, HostKeyCheckResult::Mismatch { .. }) {
+        let _ = save_known_hosts(&entries);
+    }
+    result
+}
+
+/// Removes a host entry from `known_hosts.json` (e.g., to accept a newly reinstalled server's key).
+pub fn remove_known_host(host_port: &str) -> bool {
+    let mut entries = load_known_hosts();
+    let before = entries.len();
+    entries.retain(|e| e.host_port != host_port);
+    let removed = entries.len() < before;
+    if removed {
+        let _ = save_known_hosts(&entries);
+    }
+    removed
+}
+
+/// Encrypts a sensitive credential string using Windows DPAPI (`CryptProtectData`), returning `"dpapi:<base64>"`.
+pub fn dpapi_encrypt(plaintext: &str) -> String {
+    if plaintext.is_empty() || plaintext.starts_with("dpapi:") {
+        return plaintext.to_string();
+    }
+    #[cfg(windows)]
+    {
+        use base64::Engine as _;
+        use std::ptr;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Cryptography::{
+            CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
+        };
+
+        let bytes = plaintext.as_bytes();
+        let in_blob = CRYPT_INTEGER_BLOB {
+            cbData: bytes.len() as u32,
+            pbData: bytes.as_ptr() as *mut u8,
+        };
+        let mut out_blob = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: ptr::null_mut(),
+        };
+
+        // SAFETY: `in_blob` points to valid UTF-8 bytes for the duration of the call, and `out_blob.pbData`
+        // allocated by Windows is copied and freed immediately with `LocalFree`.
+        unsafe {
+            let ok = CryptProtectData(
+                &in_blob,
+                ptr::null(),
+                ptr::null(),
+                ptr::null_mut(),
+                ptr::null(),
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out_blob,
+            );
+            if ok != 0 && !out_blob.pbData.is_null() {
+                let slice = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize);
+                let encoded = base64::engine::general_purpose::STANDARD.encode(slice);
+                LocalFree(out_blob.pbData as *mut _);
+                return format!("dpapi:{encoded}");
+            }
+        }
+    }
+    plaintext.to_string()
+}
+
+/// Decrypts a `"dpapi:<base64>"` credential string using Windows DPAPI (`CryptUnprotectData`).
+/// Plaintext strings without the `"dpapi:"` prefix are returned unchanged for backward compatibility.
+pub fn dpapi_decrypt(stored: &str) -> String {
+    let Some(b64) = stored.strip_prefix("dpapi:") else {
+        return stored.to_string();
+    };
+    #[cfg(windows)]
+    {
+        use base64::Engine as _;
+        use std::ptr;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Cryptography::{
+            CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
+        };
+        use zeroize::Zeroize;
+
+        if let Ok(mut cipher_bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
+            let in_blob = CRYPT_INTEGER_BLOB {
+                cbData: cipher_bytes.len() as u32,
+                pbData: cipher_bytes.as_mut_ptr(),
+            };
+            let mut out_blob = CRYPT_INTEGER_BLOB {
+                cbData: 0,
+                pbData: ptr::null_mut(),
+            };
+
+            // SAFETY: `in_blob` points to valid decoded bytes, and `out_blob.pbData` is freed via `LocalFree`.
+            unsafe {
+                let ok = CryptUnprotectData(
+                    &in_blob,
+                    ptr::null_mut(),
+                    ptr::null(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                    CRYPTPROTECT_UI_FORBIDDEN,
+                    &mut out_blob,
+                );
+                cipher_bytes.zeroize();
+                if ok != 0 && !out_blob.pbData.is_null() {
+                    let slice =
+                        std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize);
+                    let plain = String::from_utf8_lossy(slice).to_string();
+                    LocalFree(out_blob.pbData as *mut _);
+                    return plain;
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dpapi_encrypt_decrypt_roundtrip() {
+        let secret = "S3cr3t_P@ssw0rd!2026";
+        let encrypted = dpapi_encrypt(secret);
+        assert!(encrypted.starts_with("dpapi:"));
+        assert_ne!(encrypted, secret);
+
+        let decrypted = dpapi_decrypt(&encrypted);
+        assert_eq!(decrypted, secret);
+
+        // Plaintext fallback for legacy unencrypted strings
+        assert_eq!(dpapi_decrypt("legacy_plain"), "legacy_plain");
+    }
+
+    #[test]
+    fn test_parse_openssh_config() {
+        let sample = r#"
+# Global wildcard should be ignored
+Host *
+    ServerAliveInterval 60
+
+Host bastion-prod
+    HostName 203.0.113.10
+    User jumpuser
+    Port 2222
+    IdentityFile ~/.ssh/id_ed25519
+
+Host app-internal db-internal
+    HostName 10.10.0.50
+    User ubuntu
+    ProxyJump bastion-prod
+    LocalForward 127.0.0.1:5432 10.10.0.60:5432
+"#;
+        let profiles = parse_openssh_config_content(sample);
+        assert_eq!(profiles.len(), 3);
+        assert_eq!(profiles[0].name, "bastion-prod");
+        assert_eq!(profiles[0].host, "203.0.113.10");
+        assert_eq!(profiles[0].username, "jumpuser");
+        assert_eq!(profiles[0].port, 2222);
+
+        assert_eq!(profiles[1].name, "app-internal");
+        assert_eq!(profiles[1].proxy_jump, "bastion-prod");
+        assert_eq!(profiles[1].port_forwards.len(), 1);
+        assert_eq!(profiles[1].port_forwards[0].bind_port, 5432);
+    }
+
+    #[test]
+    fn test_known_hosts_tofu_verification() {
+        let mut store = Vec::new();
+        let r1 = verify_or_record_known_host_in_list(
+            &mut store,
+            "192.168.1.50",
+            22,
+            "ssh-ed25519",
+            "SHA256:abc123xyz",
+            "AAAAC3NzaC1lZDI1NTE5AAAA",
+        );
+        assert!(matches!(r1, HostKeyCheckResult::NewlyTrusted { .. }));
+        assert_eq!(store.len(), 1);
+
+        let r2 = verify_or_record_known_host_in_list(
+            &mut store,
+            "192.168.1.50",
+            22,
+            "ssh-ed25519",
+            "SHA256:abc123xyz",
+            "AAAAC3NzaC1lZDI1NTE5AAAA",
+        );
+        assert!(matches!(r2, HostKeyCheckResult::TrustedMatch { .. }));
+
+        let r3 = verify_or_record_known_host_in_list(
+            &mut store,
+            "192.168.1.50",
+            22,
+            "ssh-ed25519",
+            "SHA256:DIFFERENT_MITM_KEY",
+            "AAAAC3NzaC1lZDI1NTE5BBBB",
+        );
+        assert!(matches!(r3, HostKeyCheckResult::Mismatch { .. }));
+    }
 }

@@ -1,7 +1,14 @@
 [package]
 name = "cuty-ssh"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
+description = "Fast, native Windows SSH2, SFTP, Telnet, Raw TCP & ConPTY connection manager built in pure Rust (egui)."
+license = "MIT"
+repository = "https://github.com/laurentvv/cuty-ssh"
+homepage = "https://github.com/laurentvv/cuty-ssh"
+readme = "README.md"
+keywords = ["ssh", "sftp", "terminal", "egui", "sysadmin"]
+categories = ["command-line-utilities", "gui", "network-programming"]
 
 [dependencies]
 aes = "0.9.3"
@@ -13,8 +20,10 @@ cbc = "0.2.1"
 chrono = "0.4.45"
 eframe = "0.37.0"
 egui = "0.37.0"
+egui_extras = { version = "0.37.0", features = ["all_loaders"] }
 hex = "0.4.3"
 hmac = "0.13.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
 open = "5.4.4"
 portable-pty = "0.9.0"
 rfd = "0.17.2"
@@ -29,6 +38,13 @@ tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 uuid = { version = "1.28.0", features = ["v4", "serde"] }
 vte = "0.15.0"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Security_Cryptography", "Win32_System_Memory"] }
 winreg = "0.56.0"
+zeroize = "1.9"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
 

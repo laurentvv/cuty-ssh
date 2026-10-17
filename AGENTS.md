@@ -76,13 +76,13 @@ The dependency (`duckdb>=1.1.0`) is declared inside the script (PEP 723): uv bui
 
 ### Mission / scope
 
-**cuty-ssh** — Windows-first desktop connection manager in Rust (egui/eframe GUI): multi-protocol sessions (SSH2 via russh + russh-sftp, Telnet, Raw TCP, local ConPTY shell via portable-pty/vte), JSON session store (serde, UUID-keyed), private-key inspection for PuTTY `.ppk` v2/v3 (including passphrase-encrypted), OpenSSH, PEM and PKCS#8 formats. Desktop client only — no SSH server, no daemon.
+**cuty-ssh** — Windows-first desktop connection manager in Rust (egui/eframe GUI): multi-protocol sessions (SSH2 via russh + russh-sftp or native Windows OpenSSH via ConPTY with `-J` Bastion/ProxyJump & Port Forwarding `-L`/`-R`/`-D`, Telnet, Raw TCP, Serial COM via `serialport`, local ConPTY shell via portable-pty/vte), JSON session store (`sessions.json`, atomic `.tmp` swap) + PuTTY Registry import, Windows Credential Manager (`CredWriteW`/`CredReadW`) secret vault with `Zeroizing<String>`, SSH `known_hosts` inspector, private-key manager for PuTTY `.ppk` v2/v3, OpenSSH, PEM and PKCS#8 formats, built-in Illustrated User Guide (`src/ui/help_modal.rs`) with HTML export, and full bilingual `FR/EN` localization (`UiLanguage`). Desktop client only — no SSH server, no daemon.
 
 ### Declared locations (deviations from the common block)
 
 - Ledger: `.agent/state.duckdb` via the agent-state skill — default path and CLI; standard statuses, standard log types.
-- Machine / shell: Windows + Git Bash (default); the target is Windows-only (`windows-sys`, `winreg`).
-- Language: standard §1 rule (repository content in English, chat replies to the user in French). Note: French doc-comments in `src/ssh/` predate the fleet onboarding — translate on touch.
+- Machine / shell: Windows + Git Bash / PowerShell; the target is Windows-only (`windows-sys`, `winreg`).
+- Language: standard §1 rule (repository content in English, chat replies to the user in French).
 
 ### Key commands
 ```bash
@@ -93,15 +93,19 @@ cargo fmt --check
 cargo clippy --all-targets
 cargo test
 # build / run
-cargo build
+cargo build --release
 cargo run
 ```
 
 ### Business invariants (never break)
-*(to be defined with the first feature suite — expected: key material and passphrase handling rules)*
+- **Zero plaintext secrets on disk**: Passwords and private key passphrases must never be serialized to `sessions.json` (`#[serde(skip)]`) or written to the Windows Registry; store them exclusively in Windows Credential Manager (`src/config/wincred.rs`) and wrap in-memory secrets in `zeroize::Zeroizing<String>`.
+- **Zero external binary dependency**: Never invoke `kitty.exe` or `putty.exe`; use native Windows `ssh.exe` inside the embedded ConPTY (`pty_bridge.rs`) or pure-Rust `russh` (`ssh/mod.rs`).
+- **Atomic configuration saves**: Always write configuration files to `.json.tmp` and atomically rename over `.json`.
 
 ### Pitfalls & lessons (dated format)
-- *(none yet)*
+- [2026-10-17] GUI verification — the agent's shell runs on an isolated desktop: `EnumWindows`/`MainWindowHandle` see no window at all (not even the IDE), so "no window found" proves nothing. Verify visually by running a probe script on the interactive desktop (`schtasks /Create ... /IT` + `/Run`, then delete the task) that dumps the app's windows and saves a screenshot. Exit code `0xc000013a` in the user's terminal = Ctrl+C / console closed, not a crash.
+- [2026-10-17] `schtasks /Create /TR` limit — Windows Task Scheduler truncates `/TR` command strings exceeding 261 characters. Keep interactive GUI capture scripts self-contained with zero CLI arguments to avoid path truncation.
 
 ### References
-- *(none yet)*
+- Built-in Illustrated User Guide: `src/ui/help_modal.rs` (`📖 Help / Aide` button in top toolbar)
+- English README & Demo GIF: `README.md`, `assets/screenshot_cockpit.png`, `assets/cuty_ssh_demo.gif`

@@ -1,5 +1,16 @@
 /target
+/cuty-ssh-portable/
+/Sessions/
+*.exe
+*.pdb
+config.json
+known_hosts.json
+cuty-ssh-crash.log
+assets/*.jpg
+assets/screenshot_cockpi
 
 # agents-kit: ledger write-ahead log + Python bytecode from deployed skills
 __pycache__/
 .agent/*.duckdb.wal
+
+

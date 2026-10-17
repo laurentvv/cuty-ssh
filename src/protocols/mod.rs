@@ -1,9 +1,12 @@
-use crate::config::{PortForwardType, ProtocolType, SessionProfile, SshAuthMethod};
-use crate::ssh::ppk::{inspect_key_file, load_private_key_any};
+use crate::config::{
+    HostKeyCheckResult, PortForwardType, ProtocolType, SessionProfile, SshAuthMethod,
+    split_user_and_host, verify_or_record_known_host,
+};
+use crate::ssh::ppk::{build_ssh_copy_id_script, inspect_key_file, load_private_key_any};
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use russh::keys::ssh_key::{HashAlg, PublicKey};
-use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
+use russh::keys::{PrivateKeyWithHashAlg, PublicKeyBase64, PublicKeyOrCertificate};
 use russh::{ChannelMsg, Disconnect, client};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
@@ -14,7 +17,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::oneshot;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct SftpFileEntry {
@@ -27,17 +30,72 @@ pub struct SftpFileEntry {
     pub mtime: u32,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RemoteServerMetrics {
+    pub hostname: String,
+    pub kernel: String,
+    pub uptime: String,
+    pub load_avg: String,
+    pub cpu_load_1m: f32,
+    pub mem_used_mb: u64,
+    pub mem_total_mb: u64,
+    pub disk_used_pct: f32,
+    pub disk_summary: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct HostProbeResult {
+    pub session_id: Option<Uuid>,
+    pub label: String,
+    pub host: String,
+    pub port: u16,
+    pub reachable: bool,
+    pub latency_ms: u64,
+    pub banner: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CidrCalculation {
+    pub input_ip: String,
+    pub prefix: u8,
+    pub netmask: String,
+    pub wildcard: String,
+    pub network_address: String,
+    pub broadcast_address: String,
+    pub first_usable: String,
+    pub last_usable: String,
+    pub usable_hosts: u64,
+}
+
 #[derive(Debug)]
 pub enum BackendCommand {
     SendInput(Vec<u8>),
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
     ProvideSecret(String),
     RunLocalScript(PathBuf),
+    DeployPublicKey {
+        openssh_public_key: String,
+        private_key_path: String,
+        key_comment: String,
+    },
+    RefreshTelemetry,
     SftpListDir(String),
-    SftpUpload { local_path: PathBuf, remote_path: String },
-    SftpDownload { remote_path: String, local_path: PathBuf },
+    SftpUpload {
+        local_path: PathBuf,
+        remote_path: String,
+    },
+    SftpDownload {
+        remote_path: String,
+        local_path: PathBuf,
+    },
     SftpMkdir(String),
-    SftpDelete { remote_path: String, is_dir: bool },
+    SftpDelete {
+        remote_path: String,
+        is_dir: bool,
+    },
     Disconnect,
 }
 
@@ -56,9 +114,22 @@ pub enum BackendEvent {
         prompt: String,
         is_passphrase: bool,
     },
+    PublicKeyDeployed {
+        private_key_path: String,
+        key_comment: String,
+        already_present: bool,
+    },
+    TelemetryUpdated(RemoteServerMetrics),
     SftpDirListed {
         current_path: String,
         entries: Vec<SftpFileEntry>,
+    },
+    SftpProgress {
+        filename: String,
+        transferred: u64,
+        total: u64,
+        is_upload: bool,
+        done: bool,
     },
     SftpStatus(String),
     Disconnected(String),
@@ -73,6 +144,7 @@ impl SessionHandle {
     pub fn spawn(
         rt: &tokio::runtime::Handle,
         profile: SessionProfile,
+        jump_profile: Option<SessionProfile>,
         initial_cols: u16,
         initial_rows: u16,
     ) -> Self {
@@ -82,14 +154,18 @@ impl SessionHandle {
         match profile.protocol {
             ProtocolType::Ssh => {
                 rt.spawn(async move {
-                    if let Err(e) =
-                        run_ssh_session(profile, initial_cols, initial_rows, cmd_rx, evt_tx.clone())
-                            .await
+                    if let Err(e) = run_ssh_session(
+                        profile,
+                        jump_profile,
+                        initial_cols,
+                        initial_rows,
+                        cmd_rx,
+                        evt_tx.clone(),
+                    )
+                    .await
                     {
-                        let _ = evt_tx.send(BackendEvent::ErrorMessage(format!(
-                            "Erreur SSH : {:#}",
-                            e
-                        )));
+                        let _ = evt_tx
+                            .send(BackendEvent::ErrorMessage(format!("Erreur SSH : {:#}", e)));
                         let _ = evt_tx.send(BackendEvent::Disconnected(format!("Échec : {}", e)));
                     }
                 });
@@ -140,7 +216,10 @@ impl SessionHandle {
 }
 
 struct SshClientHandler {
+    host: String,
+    port: u16,
     server_fingerprint: Arc<Mutex<Option<String>>>,
+    evt_tx: UnboundedSender<BackendEvent>,
 }
 
 impl client::Handler for SshClientHandler {
@@ -150,18 +229,57 @@ impl client::Handler for SshClientHandler {
         &mut self,
         server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        let fp = match server_public_key {
-            PublicKeyOrCertificate::PublicKey(pk) => {
-                format!("{} ({})", pk.fingerprint(HashAlg::Sha256), pk.algorithm())
-            }
-            PublicKeyOrCertificate::Certificate(cert) => {
-                format!("Certificat SSH ({})", cert.algorithm())
-            }
+        let (alg, fp_raw, b64) = match server_public_key {
+            PublicKeyOrCertificate::PublicKey { key: pk, .. } => (
+                pk.algorithm().to_string(),
+                pk.fingerprint(HashAlg::Sha256).to_string(),
+                pk.public_key_base64(),
+            ),
+            PublicKeyOrCertificate::Certificate(cert) => (
+                cert.algorithm().to_string(),
+                format!("CERT:{}", cert.algorithm()),
+                String::new(),
+            ),
         };
-        if let Ok(mut guard) = self.server_fingerprint.lock() {
-            *guard = Some(fp);
+
+        let check_res = verify_or_record_known_host(&self.host, self.port, &alg, &fp_raw, &b64);
+        match check_res {
+            HostKeyCheckResult::TrustedMatch {
+                fingerprint,
+                algorithm,
+            } => {
+                let label = format!("🛡 TOFU Vérifié: {} ({})", fingerprint, algorithm);
+                if let Ok(mut guard) = self.server_fingerprint.lock() {
+                    *guard = Some(label);
+                }
+                Ok(true)
+            }
+            HostKeyCheckResult::NewlyTrusted {
+                fingerprint,
+                algorithm,
+            } => {
+                let label = format!("🆕 TOFU Enregistré: {} ({})", fingerprint, algorithm);
+                if let Ok(mut guard) = self.server_fingerprint.lock() {
+                    *guard = Some(label);
+                }
+                let _ = self.evt_tx.send(BackendEvent::StatusMessage(format!(
+                    "🆕 Nouvelle clé d'hôte enregistrée dans known_hosts (TOFU) : {} ({})",
+                    fingerprint, algorithm
+                )));
+                Ok(true)
+            }
+            HostKeyCheckResult::Mismatch {
+                expected_fingerprint,
+                actual_fingerprint,
+                algorithm,
+            } => {
+                let _ = self.evt_tx.send(BackendEvent::ErrorMessage(format!(
+                    "🚨 ALERTE SÉCURITÉ MITM — La clé SSH de {}:{} ({}) a changé ! Attendu : {} | Reçu : {}. Révoquez l'ancienne clé dans '🛡 Known Hosts' si le serveur a été réinstallé.",
+                    self.host, self.port, algorithm, expected_fingerprint, actual_fingerprint
+                )));
+                Ok(false)
+            }
         }
-        Ok(true)
     }
 }
 
@@ -187,38 +305,66 @@ async fn wait_for_secret_input(
     anyhow::bail!("Canal fermé en attente de saisie")
 }
 
+fn rsa_hash_candidates(preferred: Option<HashAlg>) -> Vec<Option<HashAlg>> {
+    let mut list = Vec::with_capacity(4);
+    for candidate in [
+        preferred,
+        Some(HashAlg::Sha512),
+        Some(HashAlg::Sha256),
+        None,
+    ] {
+        if !list.contains(&candidate) {
+            list.push(candidate);
+        }
+    }
+    list
+}
+
 #[cfg(windows)]
 async fn try_authenticate_with_pageant(
     session: &mut client::Handle<SshClientHandler>,
     username: &str,
     evt_tx: &UnboundedSender<BackendEvent>,
 ) -> Option<String> {
-    if let Ok(mut agent) = russh::keys::agent::client::AgentClient::connect_pageant().await {
-        if let Ok(identities) = agent.request_identities().await {
-            if !identities.is_empty() {
-                let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
-                    "Pageant détecté ({} clé(s) chargée(s)) — tentative d'authentification...",
-                    identities.len()
-                )));
-                let rsa_hash = session.best_supported_rsa_hash().await.ok().flatten().flatten();
-                for id in identities {
-                    let pubkey: PublicKey = id.public_key().into_owned();
-                    let alg_is_rsa = pubkey.algorithm().is_rsa();
-                    let hash_alg = if alg_is_rsa { rsa_hash } else { None };
-                    let comment = id.comment().to_string();
-                    let fp = pubkey.fingerprint(HashAlg::Sha256).to_string();
-                    if let Ok(res) = session
-                        .authenticate_publickey_with(username, pubkey, hash_alg, &mut agent)
-                        .await
-                    {
-                        if res.success() {
-                            return Some(format!(
-                                "Pageant (PuTTY Agent) — clé {} [{}]",
-                                if comment.is_empty() { "sans nom" } else { &comment },
-                                fp
-                            ));
-                        }
-                    }
+    if let Ok(mut agent) = russh::keys::agent::client::AgentClient::connect_pageant().await
+        && let Ok(identities) = agent.request_identities().await
+        && !identities.is_empty()
+    {
+        let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
+            "Pageant détecté ({} clé(s) chargée(s)) — tentative d'authentification...",
+            identities.len()
+        )));
+        let rsa_hash = session
+            .best_supported_rsa_hash()
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+        for id in identities {
+            let pubkey: PublicKey = id.public_key().into_owned();
+            let alg_is_rsa = pubkey.algorithm().is_rsa();
+            let candidates = if alg_is_rsa {
+                rsa_hash_candidates(rsa_hash)
+            } else {
+                vec![None]
+            };
+            let comment = id.comment().to_string();
+            let fp = pubkey.fingerprint(HashAlg::Sha256).to_string();
+            for hash_alg in candidates {
+                if let Ok(res) = session
+                    .authenticate_publickey_with(username, pubkey.clone(), hash_alg, &mut agent)
+                    .await
+                    && res.success()
+                {
+                    return Some(format!(
+                        "Pageant (PuTTY Agent) — clé {} [{}]",
+                        if comment.is_empty() {
+                            "sans nom"
+                        } else {
+                            &comment
+                        },
+                        fp
+                    ));
                 }
             }
         }
@@ -232,31 +378,38 @@ async fn try_authenticate_with_openssh_agent(
     username: &str,
     evt_tx: &UnboundedSender<BackendEvent>,
 ) -> Option<String> {
-    if let Ok(mut agent) = russh::keys::agent::client::AgentClient::connect_named_pipe(
-        r"\\.\pipe\openssh-ssh-agent",
-    )
-    .await
+    if let Ok(mut agent) =
+        russh::keys::agent::client::AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent")
+            .await
+        && let Ok(identities) = agent.request_identities().await
+        && !identities.is_empty()
     {
-        if let Ok(identities) = agent.request_identities().await {
-            if !identities.is_empty() {
-                let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
-                    "Agent OpenSSH Windows détecté ({} clé(s))...",
-                    identities.len()
-                )));
-                let rsa_hash = session.best_supported_rsa_hash().await.ok().flatten().flatten();
-                for id in identities {
-                    let pubkey: PublicKey = id.public_key().into_owned();
-                    let alg_is_rsa = pubkey.algorithm().is_rsa();
-                    let hash_alg = if alg_is_rsa { rsa_hash } else { None };
-                    let fp = pubkey.fingerprint(HashAlg::Sha256).to_string();
-                    if let Ok(res) = session
-                        .authenticate_publickey_with(username, pubkey, hash_alg, &mut agent)
-                        .await
-                    {
-                        if res.success() {
-                            return Some(format!("Agent OpenSSH Windows [{}]", fp));
-                        }
-                    }
+        let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
+            "Agent OpenSSH Windows détecté ({} clé(s))...",
+            identities.len()
+        )));
+        let rsa_hash = session
+            .best_supported_rsa_hash()
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+        for id in identities {
+            let pubkey: PublicKey = id.public_key().into_owned();
+            let alg_is_rsa = pubkey.algorithm().is_rsa();
+            let candidates = if alg_is_rsa {
+                rsa_hash_candidates(rsa_hash)
+            } else {
+                vec![None]
+            };
+            let fp = pubkey.fingerprint(HashAlg::Sha256).to_string();
+            for hash_alg in candidates {
+                if let Ok(res) = session
+                    .authenticate_publickey_with(username, pubkey.clone(), hash_alg, &mut agent)
+                    .await
+                    && res.success()
+                {
+                    return Some(format!("Agent OpenSSH Windows [{}]", fp));
                 }
             }
         }
@@ -264,52 +417,51 @@ async fn try_authenticate_with_openssh_agent(
     None
 }
 
-async fn run_ssh_session(
-    profile: SessionProfile,
-    initial_cols: u16,
-    initial_rows: u16,
-    mut cmd_rx: UnboundedReceiver<BackendCommand>,
-    evt_tx: UnboundedSender<BackendEvent>,
-) -> Result<()> {
-    let addr = format!("{}:{}", profile.host.trim(), profile.port);
-    let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
-        "Connexion SSH2 vers {}...",
-        addr
-    )));
-
-    let mut ssh_config = client::Config {
-        inactivity_timeout: if profile.keepalive_secs > 0 {
-            Some(Duration::from_secs((profile.keepalive_secs as u64 * 3).max(60)))
-        } else {
-            None
-        },
-        keepalive_interval: if profile.keepalive_secs > 0 {
-            Some(Duration::from_secs(profile.keepalive_secs as u64))
-        } else {
-            None
+fn parse_inline_proxy_jump(spec: &str) -> Option<SessionProfile> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (user_part, host_port_part) = split_user_and_host(
+        trimmed,
+        &std::env::var("USERNAME").unwrap_or_else(|_| "root".to_string()),
+    );
+    let (host, port) = if let Some((h, p_str)) = host_port_part.rsplit_once(':')
+        && let Ok(p) = p_str.parse::<u16>()
+    {
+        (h.to_string(), p)
+    } else {
+        (host_port_part, 22)
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some(SessionProfile {
+        name: format!("Bastion ({host})"),
+        host,
+        port,
+        username: user_part,
+        protocol: ProtocolType::Ssh,
+        try_pageant: true,
+        ssh_auth: SshAuthMethod::Agent {
+            use_pageant: true,
+            use_openssh_agent: true,
         },
         ..Default::default()
-    };
-    let _ = &mut ssh_config;
+    })
+}
 
-    let server_fp = Arc::new(Mutex::new(None));
-    let handler = SshClientHandler {
-        server_fingerprint: Arc::clone(&server_fp),
-    };
-
-    let mut session = tokio::time::timeout(
-        Duration::from_secs(15),
-        client::connect(Arc::new(ssh_config), (&profile.host[..], profile.port), handler),
-    )
-    .await
-    .context("Délai d'attente dépassé lors de la connexion TCP/SSH")?
-    .context("Échec de l'établissement de la session SSH")?;
-
+async fn authenticate_ssh_handle(
+    session: &mut client::Handle<SshClientHandler>,
+    profile: &SessionProfile,
+    cmd_rx: &mut UnboundedReceiver<BackendCommand>,
+    evt_tx: &UnboundedSender<BackendEvent>,
+) -> Result<(String, String)> {
     let mut username = profile.username.trim().to_string();
     if username.is_empty() {
         username = wait_for_secret_input(
-            &mut cmd_rx,
-            &evt_tx,
+            cmd_rx,
+            evt_tx,
             "Identifiant SSH",
             &format!("Nom d'utilisateur pour {} :", profile.host),
             false,
@@ -319,7 +471,7 @@ async fn run_ssh_session(
 
     let mut authenticated_via: Option<String> = None;
 
-    // 1. Si Pageant est activé (try_pageant ou SshAuthMethod::Agent), tenter Pageant automatiquement comme PuTTY/KiTTY !
+    // 1. Try Pageant and/or Windows OpenSSH Agent automatically when enabled
     #[cfg(windows)]
     {
         let should_try_pageant = profile.try_pageant
@@ -331,23 +483,24 @@ async fn run_ssh_session(
                 }
             );
         if should_try_pageant {
-            authenticated_via =
-                try_authenticate_with_pageant(&mut session, &username, &evt_tx).await;
+            authenticated_via = try_authenticate_with_pageant(session, &username, evt_tx).await;
         }
 
-        if authenticated_via.is_none() {
-            if let SshAuthMethod::Agent {
-                use_openssh_agent: true,
-                ..
-            } = profile.ssh_auth
-            {
-                authenticated_via =
-                    try_authenticate_with_openssh_agent(&mut session, &username, &evt_tx).await;
-            }
+        let should_try_openssh_agent = profile.try_pageant
+            || matches!(
+                profile.ssh_auth,
+                SshAuthMethod::Agent {
+                    use_openssh_agent: true,
+                    ..
+                }
+            );
+        if authenticated_via.is_none() && should_try_openssh_agent {
+            authenticated_via =
+                try_authenticate_with_openssh_agent(session, &username, evt_tx).await;
         }
     }
 
-    // 2. Authentification selon la méthode configurée si Pageant n'a pas encore authentifié
+    // 2. Authenticate with the configured method if Agent/Pageant has not authenticated yet
     if authenticated_via.is_none() {
         match &profile.ssh_auth {
             SshAuthMethod::PrivateKeyFile {
@@ -366,8 +519,8 @@ async fn run_ssh_session(
                     let mut pass = passphrase.clone();
                     if inspection.is_encrypted && pass.is_empty() {
                         pass = wait_for_secret_input(
-                            &mut cmd_rx,
-                            &evt_tx,
+                            cmd_rx,
+                            evt_tx,
                             "Passphrase de clé PuTTY (.ppk) / SSH",
                             &format!(
                                 "Entrez la passphrase pour déverrouiller la clé\n{} ({}) :",
@@ -383,8 +536,8 @@ async fn run_ssh_session(
                         Ok(k) => k,
                         Err(_) => {
                             let retry_pass = wait_for_secret_input(
-                                &mut cmd_rx,
-                                &evt_tx,
+                                cmd_rx,
+                                evt_tx,
                                 "Passphrase requise ou erronée (.ppk / SSH)",
                                 &format!("Passphrase pour {} :", path.display()),
                                 true,
@@ -400,27 +553,36 @@ async fn run_ssh_session(
                         .ok()
                         .flatten()
                         .flatten();
-                    let hash_alg = if priv_key.algorithm().is_rsa() {
-                        rsa_hash
-                    } else {
-                        None
-                    };
+                    let priv_key_arc = Arc::new(priv_key);
 
-                    let auth_res = if !cert_path.trim().is_empty() {
+                    let mut key_accepted = false;
+                    if !cert_path.trim().is_empty() {
                         let cert = russh::keys::load_openssh_certificate(cert_path.trim())?;
-                        session
-                            .authenticate_openssh_cert(&username, Arc::new(priv_key), cert)
-                            .await?
+                        let res = session
+                            .authenticate_openssh_cert(&username, Arc::clone(&priv_key_arc), cert)
+                            .await?;
+                        key_accepted = res.success();
                     } else {
-                        session
-                            .authenticate_publickey(
-                                &username,
-                                PrivateKeyWithHashAlg::new(Arc::new(priv_key), hash_alg),
-                            )
-                            .await?
-                    };
+                        let candidates = if priv_key_arc.algorithm().is_rsa() {
+                            rsa_hash_candidates(rsa_hash)
+                        } else {
+                            vec![None]
+                        };
+                        for hash_alg in candidates {
+                            let res = session
+                                .authenticate_publickey(
+                                    &username,
+                                    PrivateKeyWithHashAlg::new(Arc::clone(&priv_key_arc), hash_alg),
+                                )
+                                .await?;
+                            if res.success() {
+                                key_accepted = true;
+                                break;
+                            }
+                        }
+                    }
 
-                    if auth_res.success() {
+                    if key_accepted {
                         authenticated_via = Some(format!(
                             "{} [{}]",
                             inspection.format_name, inspection.fingerprint_sha256
@@ -432,9 +594,7 @@ async fn run_ssh_session(
                     }
                 }
             }
-            SshAuthMethod::Agent { .. } => {
-                // Déjà testé ci-dessus, repli sur mot de passe si échec
-            }
+            SshAuthMethod::Agent { .. } => {}
             SshAuthMethod::KeyboardInteractive => {
                 if let Ok(resp) = session
                     .authenticate_keyboard_interactive_start(&username, None)
@@ -462,8 +622,8 @@ async fn run_ssh_session(
                                         profile.password.clone()
                                     } else {
                                         wait_for_secret_input(
-                                            &mut cmd_rx,
-                                            &evt_tx,
+                                            cmd_rx,
+                                            evt_tx,
                                             if name.is_empty() {
                                                 "Authentification Interactive"
                                             } else {
@@ -488,13 +648,13 @@ async fn run_ssh_session(
         }
     }
 
-    // 3. Authentification par mot de passe (automatique KiTTY ou saisie interactive)
+    // 3. Password authentication (automatic password or interactive prompt)
     if authenticated_via.is_none() {
         let mut pwd = profile.password.clone();
         if pwd.is_empty() {
             pwd = wait_for_secret_input(
-                &mut cmd_rx,
-                &evt_tx,
+                cmd_rx,
+                evt_tx,
                 "Mot de passe SSH",
                 &format!("Mot de passe pour {}@{} :", username, profile.host),
                 true,
@@ -504,15 +664,14 @@ async fn run_ssh_session(
         let res = session.authenticate_password(&username, &pwd).await?;
         if res.success() {
             authenticated_via = Some(if !profile.password.is_empty() {
-                "Mot de passe automatique (KiTTY)".to_string()
+                "Mot de passe automatique".to_string()
             } else {
                 "Mot de passe SSH".to_string()
             });
         } else {
-            // Deuxième essai interactif
             let retry_pwd = wait_for_secret_input(
-                &mut cmd_rx,
-                &evt_tx,
+                cmd_rx,
+                evt_tx,
                 "Échec d'authentification — Réessayer",
                 &format!("Mot de passe pour {}@{} :", username, profile.host),
                 true,
@@ -522,15 +681,137 @@ async fn run_ssh_session(
             if res2.success() {
                 authenticated_via = Some("Mot de passe SSH".to_string());
             } else {
-                anyhow::bail!("Authentification SSH refusée pour {}@{}", username, profile.host);
+                anyhow::bail!(
+                    "Authentification SSH refusée pour {}@{}",
+                    username,
+                    profile.host
+                );
             }
         }
     }
 
     let auth_used = authenticated_via.unwrap_or_else(|| "SSH2".to_string());
+    Ok((username, auth_used))
+}
+
+async fn run_ssh_session(
+    mut profile: SessionProfile,
+    jump_profile: Option<SessionProfile>,
+    initial_cols: u16,
+    initial_rows: u16,
+    mut cmd_rx: UnboundedReceiver<BackendCommand>,
+    evt_tx: UnboundedSender<BackendEvent>,
+) -> Result<()> {
+    let (parsed_user, clean_host) = split_user_and_host(&profile.host, &profile.username);
+    profile.username = parsed_user;
+    profile.host = clean_host;
+
+    let ssh_config = Arc::new(client::Config {
+        inactivity_timeout: if profile.keepalive_secs > 0 {
+            Some(Duration::from_secs(
+                (profile.keepalive_secs as u64 * 3).max(60),
+            ))
+        } else {
+            None
+        },
+        keepalive_interval: if profile.keepalive_secs > 0 {
+            Some(Duration::from_secs(profile.keepalive_secs as u64))
+        } else {
+            None
+        },
+        ..Default::default()
+    });
+
+    let effective_jump = jump_profile.or_else(|| parse_inline_proxy_jump(&profile.proxy_jump));
+    let mut _bastion_guard: Option<client::Handle<SshClientHandler>> = None;
+
+    let server_fp = Arc::new(Mutex::new(None));
+    let handler = SshClientHandler {
+        host: profile.host.trim().to_string(),
+        port: profile.port,
+        server_fingerprint: Arc::clone(&server_fp),
+        evt_tx: evt_tx.clone(),
+    };
+
+    let mut session = if let Some(mut bastion) = effective_jump {
+        let (b_user, b_host) = split_user_and_host(&bastion.host, &bastion.username);
+        bastion.username = b_user;
+        bastion.host = b_host;
+        let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
+            "🔀 Connexion au Bastion ProxyJump {}:{} ({})...",
+            bastion.host, bastion.port, bastion.name
+        )));
+        let bastion_fp = Arc::new(Mutex::new(None));
+        let bastion_handler = SshClientHandler {
+            host: bastion.host.trim().to_string(),
+            port: bastion.port,
+            server_fingerprint: bastion_fp,
+            evt_tx: evt_tx.clone(),
+        };
+        let mut bastion_session = tokio::time::timeout(
+            Duration::from_secs(15),
+            client::connect(
+                Arc::clone(&ssh_config),
+                (&bastion.host[..], bastion.port),
+                bastion_handler,
+            ),
+        )
+        .await
+        .context("Délai dépassé lors de la connexion au Bastion ProxyJump")?
+        .context("Échec de connexion SSH au Bastion ProxyJump")?;
+
+        let _ = authenticate_ssh_handle(&mut bastion_session, &bastion, &mut cmd_rx, &evt_tx)
+            .await
+            .with_context(|| format!("Échec d'authentification sur le Bastion {}", bastion.host))?;
+
+        let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
+            "🔀 Tunnel Bastion établi -> ouverture canal direct-tcpip vers {}:{}...",
+            profile.host, profile.port
+        )));
+        let jump_ch = bastion_session
+            .channel_open_direct_tcpip(profile.host.trim(), profile.port as u32, "127.0.0.1", 0)
+            .await
+            .with_context(|| {
+                format!(
+                    "Le Bastion {} n'a pas pu joindre la cible {}:{}",
+                    bastion.host, profile.host, profile.port
+                )
+            })?;
+
+        let target_sess = tokio::time::timeout(
+            Duration::from_secs(15),
+            client::connect_stream(Arc::clone(&ssh_config), jump_ch.into_stream(), handler),
+        )
+        .await
+        .context("Délai dépassé lors du handshake SSH à travers le Bastion")?
+        .context("Échec de la session SSH à travers le Bastion")?;
+
+        _bastion_guard = Some(bastion_session);
+        target_sess
+    } else {
+        let addr = format!("{}:{}", profile.host.trim(), profile.port);
+        let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
+            "Connexion SSH2 vers {}...",
+            addr
+        )));
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            client::connect(
+                Arc::clone(&ssh_config),
+                (&profile.host[..], profile.port),
+                handler,
+            ),
+        )
+        .await
+        .context("Délai d'attente dépassé lors de la connexion TCP/SSH")?
+        .context("Échec de l'établissement de la session SSH")?
+    };
+
+    let (username, auth_used) =
+        authenticate_ssh_handle(&mut session, &profile, &mut cmd_rx, &evt_tx).await?;
     let fp = server_fp.lock().ok().and_then(|g| g.clone());
 
-    // Démarrage des règles de redirection de ports (Port Forwarding -L / -R)
+    // Start port forwarding rules (-L / -R)
     let session = Arc::new(session);
     for rule in &profile.port_forwards {
         if !rule.enabled {
@@ -596,7 +877,7 @@ async fn run_ssh_session(
         }
     }
 
-    // Ouverture du canal PTY + Shell principal
+    // Open main PTY + Shell channel
     let mut channel = session.channel_open_session().await?;
     if profile.agent_forwarding {
         let _ = channel.agent_forward(false).await;
@@ -620,7 +901,7 @@ async fn run_ssh_session(
         auth_used,
     });
 
-    // Ouverture en tâche de fond d'une session SFTP dédiée pour l'explorateur intégré
+    // Open dedicated background SFTP session for the integrated explorer
     let sftp_session: Arc<tokio::sync::Mutex<Option<SftpSession>>> =
         Arc::new(tokio::sync::Mutex::new(None));
     {
@@ -628,33 +909,43 @@ async fn run_ssh_session(
         let sftp_holder = Arc::clone(&sftp_session);
         let evt_sftp = evt_tx.clone();
         tokio::spawn(async move {
-            if let Ok(sftp_ch) = sess_sftp.channel_open_session().await {
-                if sftp_ch.request_subsystem(true, "sftp").await.is_ok() {
-                    if let Ok(sftp) = SftpSession::new(sftp_ch.into_stream()).await {
-                        let start_dir = sftp
-                            .canonicalize(".")
-                            .await
-                            .unwrap_or_else(|_| "/".to_string());
-                        if let Ok(entries) = list_sftp_directory(&sftp, &start_dir).await {
-                            let _ = evt_sftp.send(BackendEvent::SftpDirListed {
-                                current_path: start_dir,
-                                entries,
-                            });
-                        }
-                        *sftp_holder.lock().await = Some(sftp);
-                    }
+            if let Ok(sftp_ch) = sess_sftp.channel_open_session().await
+                && sftp_ch.request_subsystem(true, "sftp").await.is_ok()
+                && let Ok(sftp) = SftpSession::new(sftp_ch.into_stream()).await
+            {
+                let start_dir = sftp
+                    .canonicalize(".")
+                    .await
+                    .unwrap_or_else(|_| "/".to_string());
+                if let Ok(entries) = list_sftp_directory(&sftp, &start_dir).await {
+                    let _ = evt_sftp.send(BackendEvent::SftpDirListed {
+                        current_path: start_dir,
+                        entries,
+                    });
                 }
+                *sftp_holder.lock().await = Some(sftp);
             }
         });
     }
 
-    // Exécution automatique de la commande de démarrage KiTTY (si définie)
+    // Collect initial remote Linux server telemetry in background
+    {
+        let sess_telem = Arc::clone(&session);
+        let evt_telem = evt_tx.clone();
+        tokio::spawn(async move {
+            if let Some(metrics) = fetch_remote_telemetry(&sess_telem).await {
+                let _ = evt_telem.send(BackendEvent::TelemetryUpdated(metrics));
+            }
+        });
+    }
+
+    // Automatic execution of startup command (if configured)
     if !profile.startup_command.trim().is_empty() {
         let cmd_line = format!("{}\n", profile.startup_command.trim());
         let _ = channel.data(cmd_line.as_bytes()).await;
     }
 
-    // Exécution automatique d'un script local sur la session distante (si défini au démarrage)
+    // Automatic execution of local script on remote session (if configured at startup)
     if !profile.local_script_path.trim().is_empty() {
         let script_path = PathBuf::from(profile.local_script_path.trim());
         if let Ok(script_content) = std::fs::read_to_string(&script_path) {
@@ -686,7 +977,7 @@ async fn run_ssh_session(
                         let bytes = data.to_vec();
                         let _ = evt_tx.send(BackendEvent::Output(bytes.clone()));
 
-                        // Analyse des règles d'automatisation Expect/Logon KiTTY
+                        // Evaluate Expect/Logon automation rules
                         if expect_rules.iter().any(|r| r.enabled) {
                             recent_text_window.push_str(&String::from_utf8_lossy(&bytes));
                             if recent_text_window.len() > 2048 {
@@ -695,7 +986,7 @@ async fn run_ssh_session(
                             }
                             for rule in &mut expect_rules {
                                 if rule.enabled && !rule.trigger_prompt.is_empty() && recent_text_window.contains(&rule.trigger_prompt) {
-                                    rule.enabled = false; // Une seule exécution par connexion
+                                    rule.enabled = false; // Execute once per connection
                                     let resp = format!("{}\n", rule.send_response);
                                     if rule.delay_ms > 0 {
                                         tokio::time::sleep(Duration::from_millis(rule.delay_ms)).await;
@@ -733,6 +1024,15 @@ async fn run_ssh_session(
                     Some(BackendCommand::Resize { cols, rows }) => {
                         let _ = channel.window_change(cols as u32, rows as u32, 0, 0).await;
                     }
+                    Some(BackendCommand::RefreshTelemetry) => {
+                        let sess_telem = Arc::clone(&session);
+                        let evt_telem = evt_tx.clone();
+                        tokio::spawn(async move {
+                            if let Some(metrics) = fetch_remote_telemetry(&sess_telem).await {
+                                let _ = evt_telem.send(BackendEvent::TelemetryUpdated(metrics));
+                            }
+                        });
+                    }
                     Some(BackendCommand::RunLocalScript(path)) => {
                         match std::fs::read_to_string(&path) {
                             Ok(content) => {
@@ -754,11 +1054,67 @@ async fn run_ssh_session(
                             }
                         }
                     }
+                    Some(BackendCommand::DeployPublicKey {
+                        openssh_public_key,
+                        private_key_path,
+                        key_comment,
+                    }) => {
+                        match build_ssh_copy_id_script(&openssh_public_key) {
+                            Ok(script) => {
+                                let mut exec_done = false;
+                                if let Ok(mut exec_ch) = session.channel_open_session().await
+                                    && exec_ch.exec(true, script.as_str()).await.is_ok()
+                                {
+                                    let mut out = Vec::new();
+                                    let _ = tokio::time::timeout(Duration::from_secs(6), async {
+                                        while let Some(msg) = exec_ch.wait().await {
+                                            match msg {
+                                                ChannelMsg::Data { data } => {
+                                                    out.extend_from_slice(&data);
+                                                }
+                                                ChannelMsg::Eof | ChannelMsg::Close => break,
+                                                _ => {}
+                                            }
+                                        }
+                                    })
+                                    .await;
+                                    let out_str = String::from_utf8_lossy(&out);
+                                    if out_str.contains("CUTY_SSH_KEY_INSTALLED_OK")
+                                        || out_str.contains("CUTY_SSH_KEY_ALREADY_PRESENT")
+                                    {
+                                        exec_done = true;
+                                        let already_present =
+                                            out_str.contains("CUTY_SSH_KEY_ALREADY_PRESENT");
+                                        let _ = evt_tx.send(BackendEvent::PublicKeyDeployed {
+                                            private_key_path: private_key_path.clone(),
+                                            key_comment: key_comment.clone(),
+                                            already_present,
+                                        });
+                                    }
+                                }
+                                if !exec_done {
+                                    let line = format!("{script}\n");
+                                    channel.data(line.as_bytes()).await?;
+                                    let _ = evt_tx.send(BackendEvent::PublicKeyDeployed {
+                                        private_key_path,
+                                        key_comment,
+                                        already_present: false,
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(BackendEvent::ErrorMessage(format!(
+                                    "Erreur ssh-copy-id : {}",
+                                    e
+                                )));
+                            }
+                        }
+                    }
                     Some(BackendCommand::SftpListDir(dir)) => {
-                        let sftp_Ref = Arc::clone(&sftp_session);
+                        let sftp_ref = Arc::clone(&sftp_session);
                         let evt_c = evt_tx.clone();
                         tokio::spawn(async move {
-                            let guard = sftp_Ref.lock().await;
+                            let guard = sftp_ref.lock().await;
                             if let Some(sftp) = guard.as_ref() {
                                 let resolved = sftp.canonicalize(&dir).await.unwrap_or(dir);
                                 match list_sftp_directory(sftp, &resolved).await {
@@ -783,17 +1139,26 @@ async fn run_ssh_session(
                         });
                     }
                     Some(BackendCommand::SftpUpload { local_path, remote_path }) => {
-                        let sftp_Ref = Arc::clone(&sftp_session);
+                        let sftp_ref = Arc::clone(&sftp_session);
                         let evt_c = evt_tx.clone();
                         tokio::spawn(async move {
-                            let guard = sftp_Ref.lock().await;
+                            let guard = sftp_ref.lock().await;
                             if let Some(sftp) = guard.as_ref() {
-                                match upload_sftp_file(sftp, &local_path, &remote_path).await {
+                                match upload_sftp_file(sftp, &local_path, &remote_path, &evt_c).await {
                                     Ok(bytes_len) => {
                                         let _ = evt_c.send(BackendEvent::SftpStatus(format!(
                                             "Upload réussi : {} ({} octets)",
                                             remote_path, bytes_len
                                         )));
+                                        if let Some((parent_dir, _)) = remote_path.rsplit_once('/') {
+                                            let dir = if parent_dir.is_empty() { "/" } else { parent_dir };
+                                            if let Ok(entries) = list_sftp_directory(sftp, dir).await {
+                                                let _ = evt_c.send(BackendEvent::SftpDirListed {
+                                                    current_path: dir.to_string(),
+                                                    entries,
+                                                });
+                                            }
+                                        }
                                     }
                                     Err(e) => {
                                         let _ = evt_c.send(BackendEvent::SftpStatus(format!(
@@ -806,12 +1171,12 @@ async fn run_ssh_session(
                         });
                     }
                     Some(BackendCommand::SftpDownload { remote_path, local_path }) => {
-                        let sftp_Ref = Arc::clone(&sftp_session);
+                        let sftp_ref = Arc::clone(&sftp_session);
                         let evt_c = evt_tx.clone();
                         tokio::spawn(async move {
-                            let guard = sftp_Ref.lock().await;
+                            let guard = sftp_ref.lock().await;
                             if let Some(sftp) = guard.as_ref() {
-                                match download_sftp_file(sftp, &remote_path, &local_path).await {
+                                match download_sftp_file(sftp, &remote_path, &local_path, &evt_c).await {
                                     Ok(bytes_len) => {
                                         let _ = evt_c.send(BackendEvent::SftpStatus(format!(
                                             "Téléchargé vers {} ({} octets)",
@@ -830,10 +1195,10 @@ async fn run_ssh_session(
                         });
                     }
                     Some(BackendCommand::SftpMkdir(remote_dir)) => {
-                        let sftp_Ref = Arc::clone(&sftp_session);
+                        let sftp_ref = Arc::clone(&sftp_session);
                         let evt_c = evt_tx.clone();
                         tokio::spawn(async move {
-                            let guard = sftp_Ref.lock().await;
+                            let guard = sftp_ref.lock().await;
                             if let Some(sftp) = guard.as_ref() {
                                 match sftp.create_dir(&remote_dir).await {
                                     Ok(_) => {
@@ -853,10 +1218,10 @@ async fn run_ssh_session(
                         });
                     }
                     Some(BackendCommand::SftpDelete { remote_path, is_dir }) => {
-                        let sftp_Ref = Arc::clone(&sftp_session);
+                        let sftp_ref = Arc::clone(&sftp_session);
                         let evt_c = evt_tx.clone();
                         tokio::spawn(async move {
-                            let guard = sftp_Ref.lock().await;
+                            let guard = sftp_ref.lock().await;
                             if let Some(sftp) = guard.as_ref() {
                                 let res = if is_dir {
                                     sftp.remove_dir(&remote_path).await
@@ -928,41 +1293,127 @@ async fn upload_sftp_file(
     sftp: &SftpSession,
     local_path: &Path,
     remote_path: &str,
-) -> Result<usize> {
-    let data = tokio::fs::read(local_path).await?;
+    evt_tx: &UnboundedSender<BackendEvent>,
+) -> Result<u64> {
+    let filename = local_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| remote_path.to_string());
+    let meta = tokio::fs::metadata(local_path).await?;
+    let total = meta.len();
+    let mut local_file = tokio::fs::File::open(local_path).await?;
     let mut remote_file = sftp
         .open_with_flags(
             remote_path,
             OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
         )
         .await?;
-    remote_file.write_all(&data).await?;
+
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut transferred: u64 = 0;
+    let _ = evt_tx.send(BackendEvent::SftpProgress {
+        filename: filename.clone(),
+        transferred: 0,
+        total,
+        is_upload: true,
+        done: false,
+    });
+
+    loop {
+        let n = local_file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        remote_file.write_all(&buf[..n]).await?;
+        transferred += n as u64;
+        let _ = evt_tx.send(BackendEvent::SftpProgress {
+            filename: filename.clone(),
+            transferred,
+            total,
+            is_upload: true,
+            done: false,
+        });
+    }
     remote_file.flush().await?;
     remote_file.shutdown().await?;
-    Ok(data.len())
+    let _ = evt_tx.send(BackendEvent::SftpProgress {
+        filename,
+        transferred,
+        total,
+        is_upload: true,
+        done: true,
+    });
+    Ok(transferred)
 }
 
 async fn download_sftp_file(
     sftp: &SftpSession,
     remote_path: &str,
     local_path: &Path,
-) -> Result<usize> {
+    evt_tx: &UnboundedSender<BackendEvent>,
+) -> Result<u64> {
+    let filename = local_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| remote_path.to_string());
+    let total = sftp
+        .metadata(remote_path)
+        .await
+        .ok()
+        .and_then(|m| m.size)
+        .unwrap_or(0);
     let mut remote_file = sftp.open(remote_path).await?;
-    let mut buf = Vec::new();
-    remote_file.read_to_end(&mut buf).await?;
-    tokio::fs::write(local_path, &buf).await?;
-    Ok(buf.len())
+    let mut local_file = tokio::fs::File::create(local_path).await?;
+
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut transferred: u64 = 0;
+    let _ = evt_tx.send(BackendEvent::SftpProgress {
+        filename: filename.clone(),
+        transferred: 0,
+        total,
+        is_upload: false,
+        done: false,
+    });
+
+    loop {
+        let n = remote_file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        local_file.write_all(&buf[..n]).await?;
+        transferred += n as u64;
+        let _ = evt_tx.send(BackendEvent::SftpProgress {
+            filename: filename.clone(),
+            transferred,
+            total: total.max(transferred),
+            is_upload: false,
+            done: false,
+        });
+    }
+    local_file.flush().await?;
+    let _ = evt_tx.send(BackendEvent::SftpProgress {
+        filename,
+        transferred,
+        total: total.max(transferred),
+        is_upload: false,
+        done: true,
+    });
+    Ok(transferred)
 }
 
-/// Connexion Telnet (RFC 854 IAC, NAWS, TTYPE, SGA + Auto-login KiTTY) et Raw TCP
+/// Telnet connection (RFC 854 IAC, NAWS, TTYPE, SGA + Auto-login) and Raw TCP
 async fn run_tcp_or_telnet_session(
-    profile: SessionProfile,
+    mut profile: SessionProfile,
     is_telnet: bool,
     initial_cols: u16,
     initial_rows: u16,
     mut cmd_rx: UnboundedReceiver<BackendCommand>,
     evt_tx: UnboundedSender<BackendEvent>,
 ) -> Result<()> {
+    let (parsed_user, clean_host) = split_user_and_host(&profile.host, &profile.username);
+    profile.username = parsed_user;
+    profile.host = clean_host;
+
     let addr = format!("{}:{}", profile.host.trim(), profile.port);
     let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
         "Connexion {} vers {}...",
@@ -1016,7 +1467,7 @@ async fn run_tcp_or_telnet_session(
                         if !display_bytes.is_empty() {
                             let _ = evt_tx.send(BackendEvent::Output(display_bytes.clone()));
 
-                            // Automatisation de connexion Telnet KiTTY (auto-login & auto-password)
+                            // Telnet connection automation (auto-login & auto-password)
                             recent_text.push_str(&String::from_utf8_lossy(&display_bytes));
                             if recent_text.len() > 1024 {
                                 let drain = recent_text.len() - 512;
@@ -1173,7 +1624,7 @@ async fn process_telnet_iac(
     Ok(clean)
 }
 
-/// Shell Local Windows via ConPTY (`portable-pty`) : PowerShell, CMD, WSL, Cygwin
+/// Windows Local Shell via ConPTY (`portable-pty`): PowerShell, CMD, WSL, Cygwin
 fn run_local_pty_session(
     profile: SessionProfile,
     initial_cols: u16,
@@ -1236,9 +1687,8 @@ fn run_local_pty_session(
                     }
                 }
                 Err(_) => {
-                    let _ = evt_reader.send(BackendEvent::Disconnected(
-                        "Shell local fermé".to_string(),
-                    ));
+                    let _ = evt_reader
+                        .send(BackendEvent::Disconnected("Shell local fermé".to_string()));
                     break;
                 }
             }
@@ -1275,4 +1725,227 @@ fn run_local_pty_session(
     }
 
     Ok(())
+}
+
+/// Collects non-intrusive system metrics (hostname, kernel, uptime, loadavg, RAM, root disk)
+/// over a short-lived SSH exec channel without disturbing the interactive terminal.
+async fn fetch_remote_telemetry(
+    session: &client::Handle<SshClientHandler>,
+) -> Option<RemoteServerMetrics> {
+    let mut ch = session.channel_open_session().await.ok()?;
+    let script = concat!(
+        "hostname 2>/dev/null || echo unknown; ",
+        "uname -sr 2>/dev/null || echo Linux; ",
+        "uptime -p 2>/dev/null || uptime 2>/dev/null || echo -; ",
+        "cat /proc/loadavg 2>/dev/null || echo 0.00; ",
+        "free -m 2>/dev/null | awk '/^Mem:/ {print $3, $2}'; ",
+        "df -P -h / 2>/dev/null | awk 'NR==2 {print $5, $3 \"/\" $2}'"
+    );
+    ch.exec(true, script).await.ok()?;
+
+    let mut out = Vec::new();
+    let collect_res = tokio::time::timeout(Duration::from_secs(4), async {
+        while let Some(msg) = ch.wait().await {
+            match msg {
+                ChannelMsg::Data { data } => out.extend_from_slice(&data),
+                ChannelMsg::Eof | ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+    if collect_res.is_err() && out.is_empty() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&out);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let hostname = lines.first().copied().unwrap_or("remote").to_string();
+    let kernel = lines.get(1).copied().unwrap_or("Linux").to_string();
+    let uptime = lines.get(2).copied().unwrap_or("-").to_string();
+    let load_raw = lines.get(3).copied().unwrap_or("0.00");
+    let load_parts: Vec<&str> = load_raw.split_whitespace().collect();
+    let cpu_load_1m = load_parts
+        .first()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let load_avg = if load_parts.len() >= 3 {
+        format!("{} {} {}", load_parts[0], load_parts[1], load_parts[2])
+    } else {
+        load_raw.to_string()
+    };
+
+    let (mem_used_mb, mem_total_mb) = lines
+        .get(4)
+        .map(|l| {
+            let mut it = l.split_whitespace();
+            let used = it.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let total = it.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            (used, total)
+        })
+        .unwrap_or((0, 0));
+
+    let (disk_used_pct, disk_summary) = lines
+        .get(5)
+        .map(|l| {
+            let mut it = l.split_whitespace();
+            let pct_str = it.next().unwrap_or("0%").trim_end_matches('%');
+            let pct = pct_str.parse::<f32>().unwrap_or(0.0);
+            let summary = it.next().unwrap_or("").to_string();
+            (pct, summary)
+        })
+        .unwrap_or((0.0, String::new()));
+
+    Some(RemoteServerMetrics {
+        hostname,
+        kernel,
+        uptime,
+        load_avg,
+        cpu_load_1m,
+        mem_used_mb,
+        mem_total_mb,
+        disk_used_pct,
+        disk_summary,
+    })
+}
+
+/// Probes a TCP host/port, measures connection latency in milliseconds, and grabs
+/// the server's initial SSH/Telnet protocol banner if sent within 450 ms.
+pub async fn probe_tcp_and_banner(
+    session_id: Option<Uuid>,
+    label: String,
+    raw_host: String,
+    port: u16,
+) -> HostProbeResult {
+    let (_, clean_host) = split_user_and_host(&raw_host, "");
+    let host = if clean_host.is_empty() {
+        raw_host.trim().to_string()
+    } else {
+        clean_host
+    };
+    let start = std::time::Instant::now();
+    let connect_res = tokio::time::timeout(
+        Duration::from_millis(2500),
+        TcpStream::connect((host.as_str(), port)),
+    )
+    .await;
+
+    match connect_res {
+        Ok(Ok(mut stream)) => {
+            let latency_ms = start.elapsed().as_millis() as u64;
+            let mut buf = [0u8; 256];
+            let banner =
+                match tokio::time::timeout(Duration::from_millis(450), stream.read(&mut buf)).await
+                {
+                    Ok(Ok(n)) if n > 0 => {
+                        let s = String::from_utf8_lossy(&buf[..n]);
+                        s.lines()
+                            .next()
+                            .unwrap_or("")
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(96)
+                            .collect::<String>()
+                            .trim()
+                            .to_string()
+                    }
+                    _ => "Port TCP ouvert (pas de bannière immédiate)".to_string(),
+                };
+            HostProbeResult {
+                session_id,
+                label,
+                host,
+                port,
+                reachable: true,
+                latency_ms,
+                banner,
+            }
+        }
+        Ok(Err(e)) => HostProbeResult {
+            session_id,
+            label,
+            host,
+            port,
+            reachable: false,
+            latency_ms: start.elapsed().as_millis() as u64,
+            banner: format!("Connexion refusée / injoignable ({})", e),
+        },
+        Err(_) => HostProbeResult {
+            session_id,
+            label,
+            host,
+            port,
+            reachable: false,
+            latency_ms: 2500,
+            banner: "Délai d'attente dépassé (Timeout > 2500 ms)".to_string(),
+        },
+    }
+}
+
+/// Calculates IPv4 subnet parameters from a CIDR string (`192.168.1.102/24` or `10.0.0.1`).
+pub fn calculate_ipv4_cidr(input: &str) -> Result<CidrCalculation> {
+    let trimmed = input.trim();
+    let (ip_part, prefix_part) = if let Some((ip, p)) = trimmed.split_once('/') {
+        (ip.trim(), p.trim())
+    } else {
+        (trimmed, "24")
+    };
+
+    let octets: Vec<u8> = ip_part
+        .split('.')
+        .map(|o| o.parse::<u8>())
+        .collect::<std::result::Result<Vec<u8>, _>>()
+        .context("Adresse IPv4 invalide (attendu: A.B.C.D)")?;
+    if octets.len() != 4 {
+        anyhow::bail!("Adresse IPv4 invalide : 4 octets requis");
+    }
+
+    let prefix: u8 = prefix_part.parse::<u8>().context("Préfixe CIDR invalide")?;
+    if prefix > 32 {
+        anyhow::bail!("Le préfixe CIDR doit être compris entre 0 et 32");
+    }
+
+    let ip_u32 = u32::from_be_bytes([octets[0], octets[1], octets[2], octets[3]]);
+    let mask_u32 = if prefix == 0 {
+        0
+    } else {
+        !0u32 << (32 - prefix)
+    };
+    let wildcard_u32 = !mask_u32;
+    let net_u32 = ip_u32 & mask_u32;
+    let bcast_u32 = net_u32 | wildcard_u32;
+
+    let (first_u32, last_u32, usable_hosts) = if prefix == 32 {
+        (net_u32, net_u32, 1)
+    } else if prefix == 31 {
+        (net_u32, bcast_u32, 2)
+    } else {
+        let total = 1u64 << (32 - prefix);
+        (net_u32 + 1, bcast_u32 - 1, total.saturating_sub(2))
+    };
+
+    let fmt_ip = |v: u32| {
+        let b = v.to_be_bytes();
+        format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3])
+    };
+
+    Ok(CidrCalculation {
+        input_ip: fmt_ip(ip_u32),
+        prefix,
+        netmask: fmt_ip(mask_u32),
+        wildcard: fmt_ip(wildcard_u32),
+        network_address: fmt_ip(net_u32),
+        broadcast_address: fmt_ip(bcast_u32),
+        first_usable: fmt_ip(first_u32),
+        last_usable: fmt_ip(last_u32),
+        usable_hosts,
+    })
 }
