@@ -20,10 +20,11 @@ pub enum HelpTopic {
     SftpExplorer,
     SplitAndShortcuts,
     NetworkTools,
+    FleetAndEdge,
 }
 
 impl HelpTopic {
-    pub fn all() -> [HelpTopic; 8] {
+    pub fn all() -> [HelpTopic; 9] {
         [
             HelpTopic::Overview,
             HelpTopic::Bastion,
@@ -33,6 +34,7 @@ impl HelpTopic {
             HelpTopic::SftpExplorer,
             HelpTopic::SplitAndShortcuts,
             HelpTopic::NetworkTools,
+            HelpTopic::FleetAndEdge,
         ]
     }
 
@@ -74,6 +76,11 @@ impl HelpTopic {
             HelpTopic::NetworkTools => {
                 tr(lang, "8. 🛠 Diagnostic & CIDR", "8. 🛠 Network Tools & CIDR")
             }
+            HelpTopic::FleetAndEdge => tr(
+                lang,
+                "9. 🌐 Fleet, ShellHub & Audit",
+                "9. 🌐 Fleet, ShellHub & Audit",
+            ),
         }
     }
 }
@@ -212,6 +219,7 @@ impl CutySshApp {
                             HelpTopic::SftpExplorer => self.render_help_sftp(ui, lang),
                             HelpTopic::SplitAndShortcuts => self.render_help_split(ui, lang),
                             HelpTopic::NetworkTools => self.render_help_network(ui, lang),
+                            HelpTopic::FleetAndEdge => self.render_help_fleet_and_edge(ui, lang),
                         }
                     });
 
@@ -271,18 +279,18 @@ impl CutySshApp {
             &[
                 tr(
                     lang,
-                    "① Barre d'outils supérieure : Accès direct à 🗂 Sessions, ➕ Session, ⚡ Shell PowerShell, 🔍 Palette (Ctrl+K), 📁 Gestionnaire, 🔑 Clés .ppk, 🛡 Hosts (TOFU), 🛠 Diagnostic, 📥 Sync (PuTTY + ~/.ssh/config), ⚡ Snippets, 📖 Aide et 🌐 Langue (FR/EN).",
-                    "① Top Toolbar: Direct access to 🗂 Sessions, ➕ Session, ⚡ Local Shell, 🔍 Palette (Ctrl+K), 📁 Session Manager, 🔑 .ppk Keys, 🛡 Hosts (TOFU), 🛠 Diagnostics, 📥 Sync (PuTTY + ~/.ssh/config), ⚡ Snippets, 📖 Help, and 🌐 Language (FR/EN).",
+                    "① Barre d'outils supérieure : Accès direct à 🗂 Sessions, ➕ Session, ⚡ Shell PowerShell, 🔍 Palette (Ctrl+K), 📁 Gestionnaire, 🔑 Clés .ppk, 🛡 Hosts (TOFU), 🛠 Diagnostic, 📜 Audit, ▶ Replay, 📥 Sync (PuTTY + ~/.ssh/config), ⚡ Snippets, 📖 Aide et 🌐 Langue (FR/EN).",
+                    "① Top Toolbar: Direct access to 🗂 Sessions, ➕ Session, ⚡ Local Shell, 🔍 Palette (Ctrl+K), 📁 Session Manager, 🔑 .ppk Keys, 🛡 Hosts (TOFU), 🛠 Diagnostics, 📜 Audit, ▶ Replay, 📥 Sync (PuTTY + ~/.ssh/config), ⚡ Snippets, 📖 Help, and 🌐 Language (FR/EN).",
                 ),
                 tr(
                     lang,
-                    "② Barre latérale gauche : Arborescence par dossiers, filtre instantané, Connexion Rapide à la volée, et bouton large « 🚀 Connecter » sous chaque session.",
-                    "② Left Sidebar: Folder tree, instant filter box, ad-hoc Quick Connect, and a full-width '🚀 Connect' button under each session.",
+                    "② Barre latérale gauche : Arborescence par dossiers, filtre instantané, pastilles d'état santé (🟢/🔴/⏳), Connexion Rapide à la volée, et bouton large « 🚀 Connecter » sous chaque session.",
+                    "② Left Sidebar: Folder tree, instant filter box, live health dots (🟢/🔴/⏳), ad-hoc Quick Connect, and a full-width '🚀 Connect' button under each session.",
                 ),
                 tr(
                     lang,
-                    "③ Cockpit central & Cartes de sessions : Chaque carte affiche le protocole (SSH2, TELNET, CONPTY), la latence ping en ms, la clé .ppk associée, les badges #tag, le badge 🏰 Bastion, et les boutons 🚀 Connecter / 🔑 → Pageant / ⚙ Modifier.",
-                    "③ Central Cockpit & Session Cards: Each card displays the protocol badge (SSH2, TELNET, CONPTY), live ping latency in ms, attached .ppk key, #tag pills, 🏰 Bastion badge, and 🚀 Connect / 🔑 → Pageant / ⚙ Edit buttons.",
+                    "③ Cockpit central & Cartes de sessions : Chaque carte affiche le protocole (SSH2, TELNET, CONPTY), la pastille d'état réseau, la clé .ppk associée, les badges #tag, le badge 🏰 Bastion, et les boutons 🚀 Connecter / 🔑 → Pageant / ⚙ Modifier.",
+                    "③ Central Cockpit & Session Cards: Each card displays the protocol badge (SSH2, TELNET, CONPTY), live health status dot, attached .ppk key, #tag pills, 🏰 Bastion badge, and 🚀 Connect / 🔑 → Pageant / ⚙ Edit buttons.",
                 ),
             ],
         );
@@ -577,8 +585,8 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
-                    "• Raccourcis essentiels : Ctrl+K (Palette rapide), Sélection souris = Copier automatiquement, Clic droit = Coller (style PuTTY), Ctrl+Clic sur une URL = Ouvrir dans le navigateur.",
-                    "• Essential Shortcuts: Ctrl+K (Command Palette), Mouse selection = Auto-copy, Right-click = Paste (PuTTY style), Ctrl+Click on URL = Open in browser.",
+                    "• Raccourcis essentiels : Double-clic = Sélectionner mot/token/URL, Triple-clic = Sélectionner la ligne entière, Ctrl+K (Palette rapide), Glisser souris = Sélectionner (et copier automatiquement), Clic droit = Coller (style PuTTY), Ctrl+Clic sur une URL = Ouvrir dans le navigateur.",
+                    "• Essential Shortcuts: Double-click = Select word/token/URL, Triple-click = Select entire line, Ctrl+K (Command Palette), Mouse drag = Select (and auto-copy), Right-click = Paste (PuTTY style), Ctrl+Click on URL = Open in browser.",
                 ),
             ],
         );
@@ -614,6 +622,92 @@ impl CutySshApp {
                     lang,
                     "• Générateur de commandes CLI : Génère et copie en 1 clic les commandes équivalentes pour OpenSSH (ssh -i ... -J ...), PuTTY, SFTP et SCP.",
                     "• CLI Command Generator: Generates and copies in 1 click equivalent command lines for OpenSSH (ssh -i ... -J ...), PuTTY, SFTP, and SCP.",
+                ),
+            ],
+        );
+    }
+
+    fn render_help_fleet_and_edge(&self, ui: &mut egui::Ui, lang: UiLanguage) {
+        ui.heading(tr(
+            lang,
+            "🌐 9. Gestion de Parc, Passerelles Zero-Trust, REC & Audit",
+            "🌐 9. Fleet Management, Zero-Trust Gateways, REC & Audit Trail",
+        ));
+        ui.add_space(6.0);
+
+        Self::help_card(
+            ui,
+            tr(
+                lang,
+                "Sondes de santé du parc & Déploiement de clés en lot",
+                "Fleet Health Probing & Bulk Key Deployment",
+            ),
+            &[
+                tr(
+                    lang,
+                    "• Sondes de santé en arrière-plan : Cuty-SSH vérifie automatiquement la disponibilité TCP de tous vos serveurs toutes les 45 secondes. Des pastilles colorées (🟢 En ligne, 🔴 Injoignable, ⏳ Timeout) s'affichent sur le Cockpit et dans la barre latérale.",
+                    "• Background Health Probing: Cuty-SSH automatically checks TCP availability for all configured servers every 45 seconds. Color-coded status dots (🟢 Online, 🔴 Unreachable, ⏳ Timeout) are displayed on the Cockpit and sidebar.",
+                ),
+                tr(
+                    lang,
+                    "• Rafraîchissement manuel : Cliquez sur « 📡 Ping » dans la barre d'outils du Cockpit pour tester immédiatement l'état de l'ensemble de votre flotte.",
+                    "• Manual Refresh: Click '📡 Ping' in the Cockpit toolbar to immediately probe the status of your entire fleet.",
+                ),
+                tr(
+                    lang,
+                    "• Déploiement en lot (ssh-copy-id) : Dans « 📁 Gestionnaire », sélectionnez plusieurs sessions et cliquez sur « 🔑 Déployer Clé Principale » pour installer votre clé publique sur tout le parc et basculer automatiquement les sessions sélectionnées en authentification par clé.",
+                    "• Bulk Key Deployment (ssh-copy-id): In '📁 Manager', select multiple sessions and click '🔑 Deploy Primary Key' to install your public key across your fleet and automatically switch selected sessions to key auth.",
+                ),
+            ],
+        );
+
+        ui.add_space(8.0);
+
+        Self::help_card(
+            ui,
+            tr(
+                lang,
+                "Passerelles Zero-Trust / Edge (ShellHub & Tailscale)",
+                "Zero-Trust & Edge Gateways (ShellHub & Tailscale)",
+            ),
+            &[
+                tr(
+                    lang,
+                    "• Préréglages Edge intégrés : Dans l'éditeur de session (⚙), choisissez ShellHub ou Tailscale pour configurer instantanément l'accès aux serveurs derrière NAT ou pare-feu sans ouverture de port.",
+                    "• Built-in Edge Presets: In the Session Editor (⚙), choose ShellHub or Tailscale to instantly configure access to servers behind NAT or firewalls without port forwarding.",
+                ),
+                tr(
+                    lang,
+                    "• Intégration ShellHub : Renseignez l'identifiant unique (Device UUID ou nom d'hôte enregistré) et le serveur ShellHub (Cloud ou instance auto-hébergée). Le nom d'hôte de connexion est généré automatiquement selon le protocole SSH ShellHub.",
+                    "• ShellHub Integration: Enter the unique Device UUID or registered device name along with the ShellHub server (Cloud or self-hosted). The connection hostname is formatted automatically per the ShellHub SSH protocol.",
+                ),
+            ],
+        );
+
+        ui.add_space(8.0);
+
+        Self::help_card(
+            ui,
+            tr(
+                lang,
+                "Enregistrement (.cast), Lecteur Replay & Journal d'Audit",
+                "Session Recording (.cast), Replay Player & Audit Trail",
+            ),
+            &[
+                tr(
+                    lang,
+                    "• Enregistrement de session (🔴 REC) : Cliquez sur le bouton REC dans la barre d'onglets pour démarrer l'enregistrement de la session active au format standard Asciinema v2 (.cast). Compatible avec asciinema play et les outils CLI.",
+                    "• Session Recording (🔴 REC): Click the REC button in the tabs bar to record the active session in standard Asciinema v2 (.cast) format. Fully compatible with asciinema play and CLI tools.",
+                ),
+                tr(
+                    lang,
+                    "• Lecteur Replay interactif (▶ Replay) : Rejouez vos sessions avec barre de défilement temporelle, sélecteur de vitesse (0.5x, 1x, 2x, 4x) et recherche de fichier d'enregistrement.",
+                    "• Interactive Replay Player (▶ Replay): Replay recorded sessions with a timeline scrubber, speed multiplier (0.5x, 1x, 2x, 4x), and recording file selector.",
+                ),
+                tr(
+                    lang,
+                    "• Journal d'Audit (📜 Audit) : Journalise localement tous les événements de connexion, déconnexion, durées de session, erreurs et déploiements de clés. Recherche en direct, filtres par type d'événement et exports en 1 clic en CSV ou JSON. Zéro secret ou mot de passe stocké.",
+                    "• Audit Trail (📜 Audit): Logs all connect, disconnect, session duration, error, and key deployment events locally. Live search, event type filters, and 1-click CSV/JSON export. Zero secrets or passwords stored.",
                 ),
             ],
         );
@@ -791,6 +885,21 @@ impl CutySshApp {
         <li>{c6_b2}</li>
       </ul>
     </div>
+    <div class="card">
+      <h2>7. 🛠 {c7_title}</h2>
+      <ul>
+        <li>{c7_b1}</li>
+        <li>{c7_b2}</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>8. 🌐 {c8_title}</h2>
+      <ul>
+        <li>{c8_b1}</li>
+        <li>{c8_b2}</li>
+        <li>{c8_b3}</li>
+      </ul>
+    </div>
   </div>
 </main>
 </body>
@@ -868,8 +977,43 @@ impl CutySshApp {
             ),
             c6_b2 = tr(
                 lang,
-                "<strong>◫ Split V / ⊟ Split H</strong> : affichez deux terminaux côte-à-côte ou haut/bas dès que 2 onglets sont ouverts.",
-                "<strong>◫ Split V / ⊟ Split H</strong>: view two terminals side-by-side or top-to-bottom whenever 2 or more tabs are open."
+                "<strong>◫ Split V / ⊟ Split H &amp; 📡 Broadcast</strong> : affichez deux terminaux en écran scindé et diffusez vos frappes simultanément sur toute la flotte.",
+                "<strong>◫ Split V / ⊟ Split H &amp; 📡 Broadcast</strong>: view two terminals split-screen and broadcast keystrokes simultaneously across your fleet."
+            ),
+            c7_title = tr(
+                lang,
+                "Diagnostic Réseau &amp; CIDR",
+                "Network Diagnostics &amp; CIDR"
+            ),
+            c7_b1 = tr(
+                lang,
+                "Mesure de latence TCP en millisecondes et récupération de la bannière SSH distante.",
+                "Millisecond-accurate TCP roundtrip latency measurement and remote SSH banner grabber."
+            ),
+            c7_b2 = tr(
+                lang,
+                "Calculateur IPv4 CIDR (masque, broadcast, plage IP) et générateur de commandes OpenSSH / PuTTY en 1 clic.",
+                "IPv4 CIDR subnet calculator (netmask, broadcast, IP range) and 1-click OpenSSH / PuTTY CLI generator."
+            ),
+            c8_title = tr(
+                lang,
+                "Fleet, ShellHub, REC &amp; Audit",
+                "Fleet, ShellHub, REC &amp; Audit"
+            ),
+            c8_b1 = tr(
+                lang,
+                "Sondes de santé du parc automatiques toutes les 45s avec pastilles colorées et rafraîchissement manuel <code>📡 Ping</code>.",
+                "Automatic fleet health probes every 45s with color-coded status dots and manual <code>📡 Ping</code> trigger."
+            ),
+            c8_b2 = tr(
+                lang,
+                "Préréglages Passerelles Zero-Trust (ShellHub &amp; Tailscale) et déploiement en lot de clé principale (<code>ssh-copy-id</code>).",
+                "Zero-Trust Edge Gateway presets (ShellHub &amp; Tailscale) and bulk primary key deployment (<code>ssh-copy-id</code>)."
+            ),
+            c8_b3 = tr(
+                lang,
+                "Enregistrement de session <code>🔴 REC</code> (.cast), lecteur Replay interactif et journal d'audit local sans secret.",
+                "Session recording <code>🔴 REC</code> (.cast), interactive Replay player, and secret-free local audit trail."
             ),
         );
 

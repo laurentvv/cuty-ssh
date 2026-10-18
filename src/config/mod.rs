@@ -140,6 +140,36 @@ pub struct SessionProfile {
     /// When true, automatically installs the user's Primary SSH Public Key (`ssh-copy-id`) right after connecting with a password and switches the profile to key authentication.
     #[serde(default)]
     pub deploy_primary_key_on_connect: bool,
+    /// Edge or Zero-Trust Gateway architecture preset (ShellHub, Tailscale SSH).
+    #[serde(default)]
+    pub edge_preset: EdgeGatewayPreset,
+    /// ShellHub target device name or unique ID.
+    #[serde(default)]
+    pub shellhub_device_id: String,
+    /// ShellHub gateway host address (defaults to `ssh.shellhub.io`).
+    #[serde(default)]
+    pub shellhub_server: String,
+}
+
+/// Supported Edge or Zero-Trust Gateway architecture presets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum EdgeGatewayPreset {
+    #[default]
+    None,
+    /// ShellHub Edge Gateway (`user@device-id@ssh.shellhub.io`).
+    ShellHub,
+    /// Tailscale SSH Zero-Trust mesh connection (`.ts.net`).
+    Tailscale,
+}
+
+impl EdgeGatewayPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "Standard SSH",
+            Self::ShellHub => "🐚 ShellHub Edge",
+            Self::Tailscale => "🟣 Tailscale SSH",
+        }
+    }
 }
 
 /// Trusted SSH server host key entry for TOFU (Trust On First Use) verification.
@@ -211,6 +241,9 @@ impl Default for SessionProfile {
             jump_host_id: None,
             proxy_jump: String::new(),
             deploy_primary_key_on_connect: false,
+            edge_preset: EdgeGatewayPreset::None,
+            shellhub_device_id: String::new(),
+            shellhub_server: "ssh.shellhub.io".to_string(),
         }
     }
 }
@@ -1422,6 +1455,99 @@ pub fn remove_known_host(host_port: &str) -> bool {
     removed
 }
 
+/// An entry in the local Cuty-SSH session & connection audit trail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditLogEntry {
+    pub id: Uuid,
+    pub timestamp_rfc3339: String,
+    #[serde(default)]
+    pub session_id: Option<Uuid>,
+    pub session_name: String,
+    pub protocol: ProtocolType,
+    pub target: String,
+    /// Event type: "CONNECT", "DISCONNECT", "ERROR", "DEPLOY_KEY"
+    pub event_type: String,
+    #[serde(default)]
+    pub duration_secs: Option<u64>,
+    #[serde(default)]
+    pub details: String,
+}
+
+impl AppConfig {
+    /// Resolves the path to `cuty-ssh-portable/audit_log.json`.
+    pub fn audit_log_path() -> PathBuf {
+        Self::portable_config_path()
+            .parent()
+            .map(|p| p.join("audit_log.json"))
+            .unwrap_or_else(|| PathBuf::from("cuty-ssh-portable").join("audit_log.json"))
+    }
+}
+
+/// Loads all audit trail entries from `audit_log.json`.
+pub fn load_audit_log() -> Vec<AuditLogEntry> {
+    let path = AppConfig::audit_log_path();
+    if path.exists()
+        && let Ok(data) = fs::read_to_string(&path)
+        && let Ok(entries) = serde_json::from_str::<Vec<AuditLogEntry>>(&data)
+    {
+        return entries;
+    }
+    Vec::new()
+}
+
+/// Appends a new audit record to `audit_log.json`.
+pub fn append_audit_entry(entry: AuditLogEntry) {
+    let path = AppConfig::audit_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut entries = load_audit_log();
+    entries.push(entry);
+    // Keep the most recent 10,000 entries to prevent unbounded growth
+    if entries.len() > 10_000 {
+        entries.drain(0..entries.len() - 10_000);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(&entries) {
+        let tmp = path.with_extension("tmp");
+        if fs::write(&tmp, json).is_ok() {
+            let _ = fs::rename(tmp, path);
+        }
+    }
+}
+
+/// Clears the entire local audit trail.
+pub fn clear_audit_log() -> bool {
+    let path = AppConfig::audit_log_path();
+    if path.exists() {
+        fs::remove_file(path).is_ok()
+    } else {
+        true
+    }
+}
+
+/// Formats audit entries as a standard CSV string.
+pub fn export_audit_csv(entries: &[AuditLogEntry]) -> String {
+    let mut csv = String::from("ID,Timestamp,Session,Protocol,Target,Event,DurationSecs,Details\n");
+    for e in entries {
+        let dur = e.duration_secs.map(|d| d.to_string()).unwrap_or_default();
+        let safe_name = e.session_name.replace('"', "\"\"");
+        let safe_target = e.target.replace('"', "\"\"");
+        let safe_details = e.details.replace('"', "\"\"");
+        csv.push_str(&format!(
+            "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"\n",
+            e.id,
+            e.timestamp_rfc3339,
+            safe_name,
+            e.protocol.label(),
+            safe_target,
+            e.event_type,
+            dur,
+            safe_details
+        ));
+    }
+    csv
+}
+
 /// Encrypts a sensitive credential string using Windows DPAPI (`CryptProtectData`), returning `"dpapi:<base64>"`.
 pub fn dpapi_encrypt(plaintext: &str) -> String {
     if plaintext.is_empty() || plaintext.starts_with("dpapi:") {
@@ -1603,5 +1729,34 @@ Host app-internal db-internal
             "AAAAC3NzaC1lZDI1NTE5BBBB",
         );
         assert!(matches!(r3, HostKeyCheckResult::Mismatch { .. }));
+    }
+
+    #[test]
+    fn test_audit_log_csv_export() {
+        let entries = vec![AuditLogEntry {
+            id: Uuid::new_v4(),
+            timestamp_rfc3339: "2026-10-18T14:30:00Z".to_string(),
+            session_id: None,
+            session_name: "Prod Bastion".to_string(),
+            protocol: ProtocolType::Ssh,
+            target: "bastion.example.com:22".to_string(),
+            event_type: "CONNECT".to_string(),
+            duration_secs: Some(3600),
+            details: "Logged in via Ed25519 key".to_string(),
+        }];
+
+        let csv = export_audit_csv(&entries);
+        assert!(csv.contains("Prod Bastion"));
+        assert!(csv.contains("CONNECT"));
+        assert!(csv.contains("3600"));
+        assert!(csv.contains("bastion.example.com:22"));
+    }
+
+    #[test]
+    fn test_edge_gateway_preset_defaults() {
+        let p = SessionProfile::default();
+        assert_eq!(p.edge_preset, EdgeGatewayPreset::None);
+        assert_eq!(p.shellhub_server, "ssh.shellhub.io");
+        assert_eq!(p.shellhub_device_id, "");
     }
 }

@@ -1,10 +1,13 @@
+pub mod audit_modal;
 pub mod help_modal;
 pub mod known_hosts_modal;
+pub mod replay_modal;
 pub mod terminal_view;
 
 use crate::config::{
-    AppConfig, ExpectRule, KnownHostEntry, PortForwardRule, PortForwardType, PredefinedCommand,
-    ProtocolType, SessionProfile, SshAuthMethod, UiLanguage, load_known_hosts, split_user_and_host,
+    AppConfig, AuditLogEntry, EdgeGatewayPreset, ExpectRule, KnownHostEntry, PortForwardRule,
+    PortForwardType, PredefinedCommand, ProtocolType, SessionProfile, SshAuthMethod, UiLanguage,
+    append_audit_entry, load_audit_log, load_known_hosts, split_user_and_host,
 };
 use crate::protocols::{
     BackendCommand, BackendEvent, CidrCalculation, HostProbeResult, RemoteServerMetrics,
@@ -97,6 +100,10 @@ pub struct SessionTab {
 
     // Session log file
     pub log_file_path: Option<PathBuf>,
+
+    // Session recording (.cast asciinema v2)
+    pub recorder: Option<crate::terminal::recording::SessionRecorder>,
+    pub connect_instant: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,6 +277,22 @@ pub struct CutySshApp {
     pub show_help: bool,
     pub help_topic: HelpTopic,
     pub cockpit_screenshot_texture: Option<egui::TextureHandle>,
+
+    // Audit & Activity log (📜 Audit)
+    pub show_audit_modal: bool,
+    pub audit_entries: Vec<AuditLogEntry>,
+    pub audit_query: String,
+    pub audit_filter_event: Option<String>,
+
+    // Session Replay Player (.cast)
+    pub show_replay_modal: bool,
+    pub replay_player: Option<crate::terminal::recording::SessionPlayer>,
+    pub replay_terminal: Option<crate::terminal::TerminalEmulator>,
+    pub replay_file_name: String,
+    pub replay_last_tick: Option<std::time::Instant>,
+
+    // Fleet Live Ping Timer
+    pub last_fleet_probe_time: Option<std::time::Instant>,
 }
 
 impl CutySshApp {
@@ -389,6 +412,16 @@ impl CutySshApp {
             show_help: false,
             help_topic: HelpTopic::Overview,
             cockpit_screenshot_texture: None,
+            show_audit_modal: false,
+            audit_entries: load_audit_log(),
+            audit_query: String::new(),
+            audit_filter_event: None,
+            show_replay_modal: false,
+            replay_player: None,
+            replay_terminal: None,
+            replay_file_name: String::new(),
+            replay_last_tick: None,
+            last_fleet_probe_time: Some(std::time::Instant::now()),
         };
 
         if let Some(stage) = demo_stage {
@@ -942,6 +975,8 @@ impl CutySshApp {
             show_search_bar: false,
             search_query: String::new(),
             log_file_path,
+            recorder: None,
+            connect_instant: None,
         };
 
         self.tabs.push(tab);
@@ -1009,6 +1044,7 @@ impl CutySshApp {
                         auth_used,
                     } => {
                         tab.state = TabConnectionState::Connected;
+                        tab.connect_instant = Some(std::time::Instant::now());
                         tab.host_fingerprint = host_key_fingerprint.clone();
                         tab.auth_summary = auth_used.clone();
                         tab.status_line = format!("Connecté : {} ({})", banner_info, auth_used);
@@ -1027,6 +1063,24 @@ impl CutySshApp {
                             )
                         };
                         tab.terminal.feed_str(&msg);
+
+                        // Audit log CONNECT
+                        append_audit_entry(AuditLogEntry {
+                            id: Uuid::new_v4(),
+                            timestamp_rfc3339: chrono::Utc::now().to_rfc3339(),
+                            session_id: Some(tab.profile.id),
+                            session_name: tab.profile.name.clone(),
+                            protocol: tab.profile.protocol,
+                            target: format!("{}:{}", tab.profile.host, tab.profile.port),
+                            event_type: "CONNECT".to_string(),
+                            duration_secs: None,
+                            details: format!(
+                                "Auth: {} | HostKey: {}",
+                                auth_used,
+                                host_key_fingerprint.as_deref().unwrap_or("none")
+                            ),
+                        });
+
                         if tab.profile.deploy_primary_key_on_connect {
                             tab.profile.deploy_primary_key_on_connect = false;
                             auto_deploy_tabs.push(tab_idx);
@@ -1034,6 +1088,9 @@ impl CutySshApp {
                     }
                     BackendEvent::Output(bytes) => {
                         tab.terminal.feed_bytes(&bytes);
+                        if let Some(rec) = &mut tab.recorder {
+                            rec.record_output(&bytes);
+                        }
                         // Forward CPR/DA/etc. responses triggered by input immediately
                         for resp in tab.terminal.take_pending_responses() {
                             let _ = tab.handle.cmd_tx.send(BackendCommand::SendInput(resp));
@@ -1054,6 +1111,19 @@ impl CutySshApp {
                         tab.status_line = err.clone();
                         tab.terminal
                             .feed_str(&format!("\r\n\x1b[1;31m✖ {}\x1b[0m\r\n", err));
+
+                        // Audit log ERROR
+                        append_audit_entry(AuditLogEntry {
+                            id: Uuid::new_v4(),
+                            timestamp_rfc3339: chrono::Utc::now().to_rfc3339(),
+                            session_id: Some(tab.profile.id),
+                            session_name: tab.profile.name.clone(),
+                            protocol: tab.profile.protocol,
+                            target: format!("{}:{}", tab.profile.host, tab.profile.port),
+                            event_type: "ERROR".to_string(),
+                            duration_secs: None,
+                            details: err.clone(),
+                        });
                     }
                     BackendEvent::PromptSecret {
                         title,
@@ -1163,6 +1233,24 @@ impl CutySshApp {
                         tab.status_line = reason.clone();
                         tab.terminal
                             .feed_str(&format!("\r\n\x1b[1;33m⚠ {}\x1b[0m\r\n", reason));
+
+                        let dur_secs = tab.connect_instant.take().map(|i| i.elapsed().as_secs());
+                        if let Some(rec) = tab.recorder.take() {
+                            let _ = rec.stop();
+                        }
+
+                        // Audit log DISCONNECT
+                        append_audit_entry(AuditLogEntry {
+                            id: Uuid::new_v4(),
+                            timestamp_rfc3339: chrono::Utc::now().to_rfc3339(),
+                            session_id: Some(tab.profile.id),
+                            session_name: tab.profile.name.clone(),
+                            protocol: tab.profile.protocol,
+                            target: format!("{}:{}", tab.profile.host, tab.profile.port),
+                            event_type: "DISCONNECT".to_string(),
+                            duration_secs: dur_secs,
+                            details: reason.clone(),
+                        });
                     }
                 }
             }
@@ -1283,6 +1371,9 @@ impl CutySshApp {
         if self.broadcast_mode {
             for tab in &mut self.tabs {
                 if !tab.profile.read_only && tab.state == TabConnectionState::Connected {
+                    if let Some(rec) = &mut tab.recorder {
+                        rec.record_input(bytes);
+                    }
                     let _ = tab
                         .handle
                         .cmd_tx
@@ -1292,6 +1383,9 @@ impl CutySshApp {
         } else if let Some(tab) = self.tabs.get_mut(self.active_tab_idx)
             && !tab.profile.read_only
         {
+            if let Some(rec) = &mut tab.recorder {
+                rec.record_input(bytes);
+            }
             let _ = tab
                 .handle
                 .cmd_tx
@@ -1376,10 +1470,24 @@ impl eframe::App for CutySshApp {
         if self.show_known_hosts {
             self.render_known_hosts_modal(&ctx);
         }
+        if self.show_audit_modal {
+            self.render_audit_modal(&ctx);
+        }
+        if self.show_replay_modal {
+            self.render_replay_modal(&ctx);
+        }
         if self.show_help {
             self.render_help_modal(&ctx);
         }
         self.render_pending_secret_modal(&ctx);
+
+        // Background non-blocking Fleet Ping refresh every 45 seconds
+        if let Some(last_probe) = self.last_fleet_probe_time
+            && last_probe.elapsed() > std::time::Duration::from_secs(45)
+        {
+            self.last_fleet_probe_time = Some(std::time::Instant::now());
+            self.probe_all_sessions();
+        }
     }
 }
 
@@ -1536,6 +1644,37 @@ impl CutySshApp {
                         .clicked()
                     {
                         self.show_network_tools = true;
+                    }
+
+                    if ui
+                        .button(
+                            RichText::new(tr(lang, "📜 Audit", "📜 Audit"))
+                                .color(Color32::from_rgb(210, 168, 255)),
+                        )
+                        .on_hover_text(tr(
+                            lang,
+                            "Journal d'audit des connexions, déconnexions et durées de sessions avec export CSV/JSON",
+                            "Session connections and duration audit log with CSV/JSON export",
+                        ))
+                        .clicked()
+                    {
+                        self.refresh_audit_entries();
+                        self.show_audit_modal = true;
+                    }
+
+                    if ui
+                        .button(
+                            RichText::new(tr(lang, "▶ Replay", "▶ Replay"))
+                                .color(Color32::from_rgb(248, 81, 73)),
+                        )
+                        .on_hover_text(tr(
+                            lang,
+                            "Lecteur Replay interactif d'enregistrements de sessions (.cast Asciinema)",
+                            "Interactive Asciinema session replay player (.cast)",
+                        ))
+                        .clicked()
+                    {
+                        self.show_replay_modal = true;
                     }
 
                     if ui
@@ -2629,8 +2768,55 @@ impl CutySshApp {
                     let can_split = self.tabs.len() >= 2;
                     let mut next_split_mode = self.split_mode;
                     let mut deploy_key_for_active = false;
+                    let mut toggle_rec = false;
+                    let mut toggle_broadcast = false;
                     if let Some(active_tab) = self.tabs.get_mut(self.active_tab_idx) {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            // 🔴 REC / ⏹ REC
+                            let rec_label = if let Some(rec) = &active_tab.recorder {
+                                let elapsed = rec.elapsed().as_secs();
+                                let m = elapsed / 60;
+                                let s = elapsed % 60;
+                                format!("⏹ REC ({:02}:{:02})", m, s)
+                            } else {
+                                "🔴 REC".to_string()
+                            };
+                            let rec_color = if active_tab.recorder.is_some() {
+                                Color32::from_rgb(248, 81, 73)
+                            } else {
+                                Color32::from_rgb(201, 209, 217)
+                            };
+                            if ui
+                                .button(RichText::new(rec_label).strong().color(rec_color))
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Démarrer / Arrêter l'enregistrement de la session (Asciinema v2 .cast)",
+                                    "Start / Stop session recording (Asciinema v2 .cast format)",
+                                ))
+                                .clicked()
+                            {
+                                toggle_rec = true;
+                            }
+
+                            if can_split {
+                                let bcast_text = if self.broadcast_mode {
+                                    RichText::new("📡 Broadcast ON").color(Color32::from_rgb(248, 81, 73)).strong()
+                                } else {
+                                    RichText::new("📡 Broadcast")
+                                };
+                                if ui
+                                    .selectable_label(self.broadcast_mode, bcast_text)
+                                    .on_hover_text(tr(
+                                        lang,
+                                        "Envoyer la saisie clavier simultanément à tous les terminaux ouverts",
+                                        "Send keyboard input simultaneously to all open terminal panes",
+                                    ))
+                                    .clicked()
+                                {
+                                    toggle_broadcast = true;
+                                }
+                            }
+
                             if ui
                                 .button(tr(lang, "🧹 Vider", "🧹 Clear"))
                                 .on_hover_text(tr(
@@ -2816,6 +3002,41 @@ impl CutySshApp {
                         });
                     }
                     self.split_mode = next_split_mode;
+
+                    if toggle_broadcast {
+                        self.broadcast_mode = !self.broadcast_mode;
+                    }
+
+                    if toggle_rec
+                        && let Some(tab) = self.tabs.get_mut(self.active_tab_idx)
+                    {
+                        if let Some(rec) = tab.recorder.take() {
+                            match rec.stop() {
+                                Ok(path) => {
+                                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                                    self.set_toast(format!("Enregistrement sauvegardé : {}", name));
+                                    self.load_replay_file(&path);
+                                }
+                                Err(e) => {
+                                    self.set_toast(format!("Erreur enregistrement : {}", e));
+                                }
+                            }
+                        } else {
+                            match crate::terminal::recording::SessionRecorder::start(
+                                &tab.profile.name,
+                                tab.terminal.state.cols,
+                                tab.terminal.state.rows,
+                            ) {
+                                Ok(rec) => {
+                                    tab.recorder = Some(rec);
+                                    self.set_toast("🔴 Enregistrement session démarré !");
+                                }
+                                Err(e) => {
+                                    self.set_toast(format!("Erreur démarrage REC : {}", e));
+                                }
+                            }
+                        }
+                    }
 
                     if deploy_key_for_active {
                         self.deploy_primary_key_to_tab(self.active_tab_idx);
@@ -5004,6 +5225,68 @@ impl CutySshApp {
                                     });
                                     ui.end_row();
                                 } else {
+                                    if self.editing_session.protocol == ProtocolType::Ssh {
+                                        ui.label(tr(lang, "Passerelle Edge :", "Edge Gateway:"));
+                                        ui.horizontal(|ui| {
+                                            for preset in [
+                                                EdgeGatewayPreset::None,
+                                                EdgeGatewayPreset::ShellHub,
+                                                EdgeGatewayPreset::Tailscale,
+                                            ] {
+                                                if ui
+                                                    .selectable_value(
+                                                        &mut self.editing_session.edge_preset,
+                                                        preset,
+                                                        preset.label(),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    match preset {
+                                                        EdgeGatewayPreset::ShellHub => {
+                                                            if self.editing_session.shellhub_server.trim().is_empty() {
+                                                                self.editing_session.shellhub_server = "ssh.shellhub.io".to_string();
+                                                            }
+                                                            self.editing_session.host = self.editing_session.shellhub_server.clone();
+                                                            self.editing_session.port = 22;
+                                                        }
+                                                        EdgeGatewayPreset::Tailscale => {
+                                                            if !self.editing_session.host.ends_with(".ts.net") && !self.editing_session.host.contains('.') {
+                                                                self.editing_session.host = format!("{}.ts.net", self.editing_session.host);
+                                                            }
+                                                            self.editing_session.port = 22;
+                                                        }
+                                                        EdgeGatewayPreset::None => {}
+                                                    }
+                                                }
+                                            }
+                                        });
+                                        ui.end_row();
+
+                                        if self.editing_session.edge_preset == EdgeGatewayPreset::ShellHub {
+                                            ui.label(tr(lang, "Device ShellHub :", "ShellHub Device:"));
+                                            ui.horizontal(|ui| {
+                                                let dev_resp = ui.add(
+                                                    egui::TextEdit::singleline(&mut self.editing_session.shellhub_device_id)
+                                                        .hint_text("Device Name ou ID (ex: debian-edge-01)")
+                                                        .desired_width(180.0),
+                                                );
+                                                ui.label(tr(lang, "Serveur :", "Server:"));
+                                                let srv_resp = ui.add(
+                                                    egui::TextEdit::singleline(&mut self.editing_session.shellhub_server)
+                                                        .desired_width(140.0),
+                                                );
+                                                if dev_resp.changed() || srv_resp.changed() {
+                                                    self.editing_session.host = self.editing_session.shellhub_server.clone();
+                                                    let base_user = self.editing_session.username.split('@').next().unwrap_or("root");
+                                                    if !self.editing_session.shellhub_device_id.trim().is_empty() {
+                                                        self.editing_session.username = format!("{}@{}", base_user, self.editing_session.shellhub_device_id.trim());
+                                                    }
+                                                }
+                                            });
+                                            ui.end_row();
+                                        }
+                                    }
+
                                     ui.label(tr(lang, "Hôte / Adresse IP :", "Host / IP Address:"));
                                     ui.text_edit_singleline(&mut self.editing_session.host);
                                     ui.end_row();
@@ -7133,6 +7416,71 @@ impl CutySshApp {
                             }
 
                             ui.separator();
+
+                            if ui
+                                .button(
+                                    RichText::new(tr(
+                                        lang,
+                                        "🔑 Déployer Clé Principale",
+                                        "🔑 Deploy Primary Key",
+                                    ))
+                                    .strong()
+                                    .color(Color32::from_rgb(63, 185, 80)),
+                                )
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Déploie votre clé publique SSH principale sur toutes les sessions SSH sélectionnées et les configure pour l'authentification par clé",
+                                    "Deploy your primary SSH public key to all selected SSH sessions and configure them for key authentication",
+                                ))
+                                .clicked()
+                            {
+                                match resolve_or_create_primary_key(&self.config.primary_key_path) {
+                                    Ok((key_path, info, _)) => {
+                                        let path_str = key_path.to_string_lossy().to_string();
+                                        if self.config.primary_key_path.trim().is_empty() {
+                                            self.config.primary_key_path = path_str.clone();
+                                        }
+                                        let ids: Vec<Uuid> = self.selected_session_ids.iter().copied().collect();
+                                        let mut count = 0;
+                                        for s in &mut self.config.sessions {
+                                            if ids.contains(&s.id) && s.protocol == ProtocolType::Ssh {
+                                                s.ssh_auth = SshAuthMethod::PrivateKeyFile {
+                                                    key_path: path_str.clone(),
+                                                    passphrase: String::new(),
+                                                    cert_path: String::new(),
+                                                };
+                                                s.deploy_primary_key_on_connect = true;
+                                                count += 1;
+                                            }
+                                        }
+                                        let _ = self.config.save();
+
+                                        // Also deploy immediately to any currently connected tabs for these sessions
+                                        for tab in &mut self.tabs {
+                                            if ids.contains(&tab.profile.id) && tab.state == TabConnectionState::Connected {
+                                                let _ = tab.handle.cmd_tx.send(BackendCommand::DeployPublicKey {
+                                                    openssh_public_key: info.openssh_public_key.clone(),
+                                                    private_key_path: path_str.clone(),
+                                                    key_comment: info.comment.clone(),
+                                                });
+                                            }
+                                        }
+
+                                        self.set_toast(format!(
+                                            "{} {}",
+                                            count,
+                                            tr(
+                                                lang,
+                                                "session(s) SSH configurée(s) avec la clé principale !",
+                                                "SSH session(s) configured with primary key!"
+                                            )
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        self.set_toast(format!("Erreur clé principale : {}", e));
+                                    }
+                                }
+                            }
 
                             if ui
                                 .button(tr(
