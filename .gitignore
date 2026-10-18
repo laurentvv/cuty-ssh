@@ -3,6 +3,9 @@
 /Sessions/
 *.exe
 *.pdb
+*.msi
+*.zip
+*.wixpdb
 config.json
 known_hosts.json
 cuty-ssh-crash.log

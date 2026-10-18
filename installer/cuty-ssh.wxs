@@ -3,7 +3,7 @@
   Per-user installer for Cuty-SSH: no administrator rights required, installs to
   %LOCALAPPDATA%\Programs\Cuty-SSH, adds a Start menu shortcut and an uninstall entry.
   Build (from the repository root):
-    wix build installer/cuty-ssh.wxs -arch x64 -d Version=0.3.0 -d CutySshExe=cuty-ssh.exe -o cuty-ssh-v0.3.0-windows-x64.msi
+    wix build installer/cuty-ssh.wxs -arch x64 -d Version=0.4.0 -d CutySshExe=cuty-ssh.exe -o cuty-ssh-v0.4.0-windows-x64.msi
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Cuty-SSH" Manufacturer="Laurent Volff" Version="$(Version)"
