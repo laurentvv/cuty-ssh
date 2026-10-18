@@ -19,7 +19,7 @@
   <img src="assets/cuty_ssh_icon.png" width="88" alt="Cuty-SSH App Icon" style="border-radius: 18px;" />
 </p>
 
-[**Download Latest Release (`v0.3.0`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**Animated Tour**](#interactive-animated-tour--cockpit-preview) · [**Key Features**](#key-features) · [**1-Click `ssh-copy-id`**](#1-click-ssh-copy-id--automatic-password-to-key-migration) · [**Bastion (`-J`)**](#ssh-bastion--jump-host--j--proxyjump) · [**Architecture**](#architecture) · [**Build from Source**](#build-from-source)
+[**Download Latest Release (`v0.3.0`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#interactive-animated-tour--cockpit-preview) · [**Key Features**](#key-features) · [**1-Click `ssh-copy-id`**](#1-click-ssh-copy-id--automatic-password-to-key-migration) · [**Bastion (`-J`)**](#ssh-bastion--jump-host--j--proxyjump) · [**Architecture**](#architecture) · [**Build from Source**](#build-from-source)
 
 </div>
 
@@ -235,7 +235,7 @@ Requires the **Rust 2024 toolchain** (`rustup` stable on Windows 10/11 x64):
 git clone https://github.com/laurentvv/cuty-ssh.git
 cd cuty-ssh
 
-# Format check, Clippy linter, and unit tests (17 tests)
+# Format check, Clippy linter, and unit tests (21 tests)
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
@@ -255,14 +255,17 @@ The compiled executable is generated at `target/release/cuty-ssh.exe`.
 | Module | File | Responsibility |
 | :--- | :--- | :--- |
 | **Entrypoint & Native Viewport** | [`src/main.rs`](src/main.rs) | Native `eframe 0.37` viewport bootstrap (`1320×820`), DirectX 12 `wgpu` backend, embedded cyber-cat icon, Tokio runtime setup, and integration test suite. |
-| **Config, DPAPI Vault & Known Hosts** | [`src/config/mod.rs`](src/config/mod.rs) | `SessionProfile`, `AppConfig`, `UiLanguage` (`English` / `French`), Windows DPAPI encryption (`CryptProtectData`), TOFU `known_hosts.json` store, `~/.ssh/config` parser, and Windows Registry PuTTY importer. |
+| **Config, DPAPI Vault & Audit Storage** | [`src/config/mod.rs`](src/config/mod.rs) | `SessionProfile`, `AppConfig`, `UiLanguage` (`English` / `French`), Windows DPAPI encryption (`CryptProtectData`), TOFU `known_hosts.json` store, `AuditLogEntry` append-only engine, Edge Gateway presets, `~/.ssh/config` parser, and Registry PuTTY importer. |
 | **PuTTY `.ppk`, Agents & `ssh-copy-id`** | [`src/ssh/ppk.rs`](src/ssh/ppk.rs) | `.ppk` v2/v3 & OpenSSH/PEM/`.pub` inspection, `zeroize`-hardened decoding, `.ppk` v3 encoder, Primary Key resolver/generator, `ssh-copy-id` POSIX script builder, and Pageant/OpenSSH Agent client helpers. |
-| **VT100 / ANSI Terminal Engine** | [`src/terminal/mod.rs`](src/terminal/mod.rs) | `vte 0.15`-backed terminal grid, compact 1-byte bitflag `TerminalCell`, alternate screen (`?1049h`), 256-color/TrueColor SGR, scrollback, text selection, search, and URL detection. |
+| **VT100 Terminal Engine & Fast Selection** | [`src/terminal/mod.rs`](src/terminal/mod.rs) | `vte 0.15`-backed terminal grid, compact 1-byte bitflag `TerminalCell`, alternate screen (`?1049h`), 256-color/TrueColor SGR, scrollback, double-click word/token and triple-click line selection, search, and URL detection. |
+| **Asciinema v2 Session Recorder & Player** | [`src/terminal/recording.rs`](src/terminal/recording.rs) | Standard `.cast` JSON Lines session recorder, event parser, and interactive playback engine. |
 | **Async Protocols, Bastion & SFTP** | [`src/protocols/mod.rs`](src/protocols/mod.rs) | Async SSH2 (`russh`), `ProxyJump` (`direct-tcpip`), TOFU host key check, `DeployPublicKey` (`ssh-copy-id` exec channel), streaming SFTP (`russh-sftp`), Telnet RFC 854, Raw TCP, Windows ConPTY (`portable-pty`), live SSH telemetry, and IPv4 CIDR calculator. |
-| **Desktop UI & SysAdmin Cockpit** | [`src/ui/mod.rs`](src/ui/mod.rs) | `egui 0.37` / `eframe 0.37` desktop interface: Dark-Tech theme, bilingual EN/FR localization, interactive Cockpit dashboard, Command Palette (`Ctrl+K`), 1-click Password-to-Key migration, Network Toolkit, and SFTP side panel. |
-| **Built-in Illustrated User Guide** | [`src/ui/help_modal.rs`](src/ui/help_modal.rs) | In-app bilingual User Guide modal (`📖 Help`), 8 illustrated topics, embedded Cockpit screenshot texture, and standalone HTML User Guide exporter. |
-| **Batched Terminal & Split View** | [`src/ui/terminal_view.rs`](src/ui/terminal_view.rs) | Run-length batched terminal renderer, Horizontal/Vertical Split View panes, and VT key encoder. |
+| **Desktop UI & SysAdmin Cockpit** | [`src/ui/mod.rs`](src/ui/mod.rs) | `egui 0.37` / `eframe 0.37` desktop interface: Dark-Tech theme, bilingual EN/FR localization, interactive Cockpit dashboard, Command Palette (`Ctrl+K`), 1-click Password-to-Key migration, Fleet Health check, Network Toolkit, and SFTP side panel. |
+| **Batched Terminal & Split View** | [`src/ui/terminal_view.rs`](src/ui/terminal_view.rs) | Run-length batched terminal renderer, Horizontal/Vertical Split View panes, Broadcast Input mode, and VT key encoder. |
+| **Local Audit Trail Modal** | [`src/ui/audit_modal.rs`](src/ui/audit_modal.rs) | Full-text audit log explorer, event filters, duration tracking, and 1-click CSV/JSON export. |
+| **Asciinema Replay Player Modal** | [`src/ui/replay_modal.rs`](src/ui/replay_modal.rs) | In-app session replay player with interactive timeline scrubber and speed multiplier (`0.5x`–`4x`). |
 | **Known Hosts TOFU Modal** | [`src/ui/known_hosts_modal.rs`](src/ui/known_hosts_modal.rs) | TOFU `known_hosts` SHA-256 fingerprint manager and `~/.ssh/config` import dialog. |
+| **Built-in Illustrated User Guide** | [`src/ui/help_modal.rs`](src/ui/help_modal.rs) | In-app bilingual User Guide modal (`📖 Help`), 9 illustrated chapters, embedded Cockpit screenshot texture, and standalone HTML User Guide exporter. |
 
 ---
 

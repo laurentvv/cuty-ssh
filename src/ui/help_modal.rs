@@ -279,18 +279,18 @@ impl CutySshApp {
             &[
                 tr(
                     lang,
-                    "① Barre d'outils supérieure : Accès direct à 🗂 Sessions, ➕ Session, ⚡ Shell PowerShell, 🔍 Palette (Ctrl+K), 📁 Gestionnaire, 🔑 Clés .ppk, 🛡 Hosts (TOFU), 🛠 Diagnostic, 📥 Sync (PuTTY + ~/.ssh/config), ⚡ Snippets, 📖 Aide et 🌐 Langue (FR/EN).",
-                    "① Top Toolbar: Direct access to 🗂 Sessions, ➕ Session, ⚡ Local Shell, 🔍 Palette (Ctrl+K), 📁 Session Manager, 🔑 .ppk Keys, 🛡 Hosts (TOFU), 🛠 Diagnostics, 📥 Sync (PuTTY + ~/.ssh/config), ⚡ Snippets, 📖 Help, and 🌐 Language (FR/EN).",
+                    "① Barre d'outils supérieure : Accès direct à 🗂 Sessions, ➕ Session, ⚡ Shell PowerShell, 🔍 Palette (Ctrl+K), 📁 Gestionnaire, 🔑 Clés .ppk, 🛡 Hosts (TOFU), 🛠 Diagnostic, 📜 Audit, ▶ Replay, 📥 Sync (PuTTY + ~/.ssh/config), ⚡ Snippets, 📖 Aide et 🌐 Langue (FR/EN).",
+                    "① Top Toolbar: Direct access to 🗂 Sessions, ➕ Session, ⚡ Local Shell, 🔍 Palette (Ctrl+K), 📁 Session Manager, 🔑 .ppk Keys, 🛡 Hosts (TOFU), 🛠 Diagnostics, 📜 Audit, ▶ Replay, 📥 Sync (PuTTY + ~/.ssh/config), ⚡ Snippets, 📖 Help, and 🌐 Language (FR/EN).",
                 ),
                 tr(
                     lang,
-                    "② Barre latérale gauche : Arborescence par dossiers, filtre instantané, Connexion Rapide à la volée, et bouton large « 🚀 Connecter » sous chaque session.",
-                    "② Left Sidebar: Folder tree, instant filter box, ad-hoc Quick Connect, and a full-width '🚀 Connect' button under each session.",
+                    "② Barre latérale gauche : Arborescence par dossiers, filtre instantané, pastilles d'état santé (🟢/🔴/⏳), Connexion Rapide à la volée, et bouton large « 🚀 Connecter » sous chaque session.",
+                    "② Left Sidebar: Folder tree, instant filter box, live health dots (🟢/🔴/⏳), ad-hoc Quick Connect, and a full-width '🚀 Connect' button under each session.",
                 ),
                 tr(
                     lang,
-                    "③ Cockpit central & Cartes de sessions : Chaque carte affiche le protocole (SSH2, TELNET, CONPTY), la latence ping en ms, la clé .ppk associée, les badges #tag, le badge 🏰 Bastion, et les boutons 🚀 Connecter / 🔑 → Pageant / ⚙ Modifier.",
-                    "③ Central Cockpit & Session Cards: Each card displays the protocol badge (SSH2, TELNET, CONPTY), live ping latency in ms, attached .ppk key, #tag pills, 🏰 Bastion badge, and 🚀 Connect / 🔑 → Pageant / ⚙ Edit buttons.",
+                    "③ Cockpit central & Cartes de sessions : Chaque carte affiche le protocole (SSH2, TELNET, CONPTY), la pastille d'état réseau, la clé .ppk associée, les badges #tag, le badge 🏰 Bastion, et les boutons 🚀 Connecter / 🔑 → Pageant / ⚙ Modifier.",
+                    "③ Central Cockpit & Session Cards: Each card displays the protocol badge (SSH2, TELNET, CONPTY), live health status dot, attached .ppk key, #tag pills, 🏰 Bastion badge, and 🚀 Connect / 🔑 → Pageant / ⚙ Edit buttons.",
                 ),
             ],
         );
