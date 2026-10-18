@@ -495,7 +495,7 @@ fn render_single_terminal_pane(
     let (rect, response) = ui.allocate_exact_size(avail, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
 
-    let theme = &tab.terminal.state.theme;
+    let theme = tab.terminal.state.theme;
     painter.rect_filled(rect, 0.0, theme.bg);
 
     let clicked_pane = response.clicked() || response.drag_started();
@@ -541,6 +541,26 @@ fn render_single_terminal_pane(
             && let Ok(mut cb) = Clipboard::new()
         {
             let _ = cb.set_text(selected);
+        }
+    } else if response.triple_clicked_by(egui::PointerButton::Primary)
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let (abs_r, _) = pos_to_cell(pos);
+        if let Some(text) = tab.terminal.state.select_line_at(abs_r)
+            && copy_on_select
+            && let Ok(mut cb) = Clipboard::new()
+        {
+            let _ = cb.set_text(text);
+        }
+    } else if response.double_clicked_by(egui::PointerButton::Primary)
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let (abs_r, col) = pos_to_cell(pos);
+        if let Some(text) = tab.terminal.state.select_word_at(abs_r, col)
+            && copy_on_select
+            && let Ok(mut cb) = Clipboard::new()
+        {
+            let _ = cb.set_text(text);
         }
     } else if response.clicked_by(egui::PointerButton::Primary)
         && let Some(pos) = response.interact_pointer_pos()

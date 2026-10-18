@@ -98,7 +98,7 @@ impl Default for TerminalCell {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct TerminalTheme {
     pub name: &'static str,
     pub bg: Color32,
@@ -513,9 +513,6 @@ impl TerminalState {
             }
             _ => return None,
         };
-        if s == e {
-            return None;
-        }
 
         let mut out = String::new();
         for r in s.0..=e.0 {
@@ -562,6 +559,113 @@ impl TerminalState {
             col <= e.1
         } else {
             true
+        }
+    }
+
+    /// Returns the (start_col, end_col) boundary of the word/token under `col` in `abs_row`.
+    pub fn word_boundaries_at(&self, abs_row: usize, col: usize) -> Option<(usize, usize)> {
+        let row_cells = self.line_at_absolute(abs_row)?;
+        if col >= row_cells.len() {
+            return None;
+        }
+
+        let is_word_char = |c: char| -> bool {
+            c.is_alphanumeric()
+                || matches!(
+                    c,
+                    '_' | '-'
+                        | '.'
+                        | '/'
+                        | '\\'
+                        | ':'
+                        | '@'
+                        | '~'
+                        | '%'
+                        | '+'
+                        | '='
+                        | '#'
+                        | '?'
+                        | '$'
+                )
+        };
+
+        let ch = row_cells[col].ch;
+        if ch == '\0' || ch.is_whitespace() {
+            let mut start = col;
+            while start > 0
+                && (row_cells[start - 1].ch == '\0' || row_cells[start - 1].ch.is_whitespace())
+            {
+                start -= 1;
+            }
+            let mut end = col;
+            while end + 1 < row_cells.len()
+                && (row_cells[end + 1].ch == '\0' || row_cells[end + 1].ch.is_whitespace())
+            {
+                end += 1;
+            }
+            Some((start, end))
+        } else if is_word_char(ch) {
+            let mut start = col;
+            while start > 0 && is_word_char(row_cells[start - 1].ch) {
+                start -= 1;
+            }
+            let mut end = col;
+            while end + 1 < row_cells.len() && is_word_char(row_cells[end + 1].ch) {
+                end += 1;
+            }
+            Some((start, end))
+        } else {
+            let mut start = col;
+            while start > 0 && row_cells[start - 1].ch == ch {
+                start -= 1;
+            }
+            let mut end = col;
+            while end + 1 < row_cells.len() && row_cells[end + 1].ch == ch {
+                end += 1;
+            }
+            Some((start, end))
+        }
+    }
+
+    /// Selects the word/token under the pointer at `(abs_row, col)`, sets `selection_start` and `selection_end`,
+    /// and returns the extracted text.
+    pub fn select_word_at(&mut self, abs_row: usize, col: usize) -> Option<String> {
+        let (start, end) = self.word_boundaries_at(abs_row, col)?;
+        let row_cells = self.line_at_absolute(abs_row)?;
+        let text: String = row_cells[start..=end]
+            .iter()
+            .map(|c| if c.ch == '\0' { ' ' } else { c.ch })
+            .collect();
+        let trimmed = text.trim_end().to_string();
+
+        self.selection_start = Some((abs_row, start));
+        self.selection_end = Some((abs_row, end));
+
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }
+
+    /// Selects the entire row at `abs_row` (line selection on triple-click), sets `selection_start` and `selection_end`,
+    /// and returns the extracted text of the line.
+    pub fn select_line_at(&mut self, abs_row: usize) -> Option<String> {
+        let row_cells = self.line_at_absolute(abs_row)?;
+        let end_col = row_cells.len().saturating_sub(1);
+        let text: String = row_cells
+            .iter()
+            .map(|c| if c.ch == '\0' { ' ' } else { c.ch })
+            .collect();
+        let trimmed = text.trim_end().to_string();
+
+        self.selection_start = Some((abs_row, 0));
+        self.selection_end = Some((abs_row, end_col));
+
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
         }
     }
 
@@ -1177,5 +1281,30 @@ mod tests {
         let responses = term.take_pending_responses();
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0], b"\x1b[8;24;80t");
+    }
+
+    #[test]
+    fn test_word_and_line_selection() {
+        let mut term = TerminalEmulator::new(80, 24, 1000, "Cuty Dark");
+        term.feed_bytes(b"curl -s https://example.com/api/v1?token=xyz_123 192.168.1.100\r\n");
+
+        // Double click on the URL
+        let word1 = term.state.select_word_at(0, 15).expect("Should select URL");
+        assert_eq!(word1, "https://example.com/api/v1?token=xyz_123");
+
+        // Double click on the IP address
+        let word2 = term.state.select_word_at(0, 55).expect("Should select IP");
+        assert_eq!(word2, "192.168.1.100");
+
+        // Double click on "curl"
+        let word3 = term.state.select_word_at(0, 1).expect("Should select curl");
+        assert_eq!(word3, "curl");
+
+        // Triple click (select line)
+        let line = term.state.select_line_at(0).expect("Should select line");
+        assert_eq!(
+            line,
+            "curl -s https://example.com/api/v1?token=xyz_123 192.168.1.100"
+        );
     }
 }

@@ -192,10 +192,13 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 
 ---
 
-## Keyboard Shortcuts
+## Mouse & Keyboard Shortcuts
 
-| Shortcut | Action |
+| Shortcut / Interaction | Action |
 | :--- | :--- |
+| **`Double-Click`** | Select word, IP address, path, or URL under pointer (auto-copies if `Copy on Select` is on) |
+| **`Triple-Click`** | Select entire line across the terminal row |
+| **`Right-Click`** | Paste clipboard text (PuTTY style, or copies text if selection is active) |
 | **`Ctrl + K`** | Open the **Command Palette** (fuzzy search sessions, filter by `#tag`, or launch `ssh user@host:port`) |
 | **`Ctrl + Shift + C`** | Copy selected terminal text to clipboard (or right-click selection) |
 | **`Ctrl + Shift + V`** | Paste clipboard text into the active terminal (or right-click when nothing is selected) |

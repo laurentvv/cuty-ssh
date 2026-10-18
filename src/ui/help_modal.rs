@@ -585,8 +585,8 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
-                    "• Raccourcis essentiels : Ctrl+K (Palette rapide), Sélection souris = Copier automatiquement, Clic droit = Coller (style PuTTY), Ctrl+Clic sur une URL = Ouvrir dans le navigateur.",
-                    "• Essential Shortcuts: Ctrl+K (Command Palette), Mouse selection = Auto-copy, Right-click = Paste (PuTTY style), Ctrl+Click on URL = Open in browser.",
+                    "• Raccourcis essentiels : Double-clic = Sélectionner mot/token/URL, Triple-clic = Sélectionner la ligne entière, Ctrl+K (Palette rapide), Glisser souris = Sélectionner (et copier automatiquement), Clic droit = Coller (style PuTTY), Ctrl+Clic sur une URL = Ouvrir dans le navigateur.",
+                    "• Essential Shortcuts: Double-click = Select word/token/URL, Triple-click = Select entire line, Ctrl+K (Command Palette), Mouse drag = Select (and auto-copy), Right-click = Paste (PuTTY style), Ctrl+Click on URL = Open in browser.",
                 ),
             ],
         );
