@@ -55,13 +55,16 @@ impl CutySshApp {
                     ui.allocate_ui(Vec2::new(half_w, total.y), |ui| {
                         let is_focused = true;
                         if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
-                            render_pane_header(
+                            if render_pane_header(
                                 ui,
                                 &tab.profile.name,
                                 &tab.profile.host,
                                 true,
+                                self.broadcast_mode,
                                 lang,
-                            );
+                            ) {
+                                self.broadcast_mode = !self.broadcast_mode;
+                            }
                             let (clicked, bytes) = render_single_terminal_pane(
                                 ui,
                                 ctx,
@@ -88,6 +91,7 @@ impl CutySshApp {
                                 &tab.profile.name,
                                 &tab.profile.host,
                                 false,
+                                self.broadcast_mode,
                                 lang,
                             );
                             let (clicked, bytes) = render_single_terminal_pane(
@@ -142,13 +146,16 @@ impl CutySshApp {
                 ui.vertical(|ui| {
                     ui.allocate_ui(Vec2::new(total.x, half_h), |ui| {
                         if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
-                            render_pane_header(
+                            if render_pane_header(
                                 ui,
                                 &tab.profile.name,
                                 &tab.profile.host,
                                 true,
+                                self.broadcast_mode,
                                 lang,
-                            );
+                            ) {
+                                self.broadcast_mode = !self.broadcast_mode;
+                            }
                             let (_clicked, bytes) = render_single_terminal_pane(
                                 ui,
                                 ctx,
@@ -174,6 +181,7 @@ impl CutySshApp {
                                 &tab.profile.name,
                                 &tab.profile.host,
                                 false,
+                                self.broadcast_mode,
                                 lang,
                             );
                             let (clicked, bytes) = render_single_terminal_pane(
@@ -255,8 +263,18 @@ struct TerminalPaneOpts {
     lang: UiLanguage,
 }
 
-fn render_pane_header(ui: &mut Ui, name: &str, host: &str, is_primary: bool, lang: UiLanguage) {
-    let border_col = if is_primary {
+fn render_pane_header(
+    ui: &mut Ui,
+    name: &str,
+    host: &str,
+    is_primary: bool,
+    broadcast: bool,
+    lang: UiLanguage,
+) -> bool {
+    let mut toggle_broadcast = false;
+    let border_col = if broadcast {
+        Color32::from_rgb(248, 81, 73)
+    } else if is_primary {
         Color32::from_rgb(88, 166, 255)
     } else {
         Color32::from_rgb(48, 54, 61)
@@ -290,8 +308,36 @@ fn render_pane_header(ui: &mut Ui, name: &str, host: &str, is_primary: bool, lan
                             Color32::from_rgb(139, 148, 158)
                         }),
                 );
+
+                if is_primary {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (bcast_txt, bcast_col) = if broadcast {
+                            ("📡 BROADCAST ON", Color32::from_rgb(248, 81, 73))
+                        } else {
+                            ("📡 Broadcast", Color32::from_rgb(139, 148, 158))
+                        };
+                        if ui
+                            .selectable_label(
+                                broadcast,
+                                RichText::new(bcast_txt)
+                                    .size(10.5)
+                                    .color(bcast_col)
+                                    .strong(),
+                            )
+                            .on_hover_text(tr(
+                                lang,
+                                "Transmettre simultanément toutes les frappes aux deux panneaux",
+                                "Simultaneously broadcast keystrokes to both panes",
+                            ))
+                            .clicked()
+                        {
+                            toggle_broadcast = true;
+                        }
+                    });
+                }
             });
         });
+    toggle_broadcast
 }
 
 fn render_single_terminal_pane(

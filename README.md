@@ -64,6 +64,11 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 | **Windows DPAPI Hardware-Bound Secret Encryption** | ❌ Plaintext registry | ❌ | ✅ **`CryptProtectData` + `zeroize`** |
 | **TOFU `known_hosts` SHA-256 Fingerprint Manager** | Registry popup | Text file only | ✅ **Visual `🛡 Hosts` modal + MITM alert** |
 | **Split-Screen Terminal (`◫ Split V` / `⊟ Split H`)** | ❌ | ✅ | ✅ **Side-by-side & top-bottom panes** |
+| **Multi-Terminal Keystroke Broadcast (`📡 Broadcast`)** | ❌ | ❌ | ✅ **Simultaneous input with visual badge** |
+| **Session Recording (`🔴 REC`) & Player (`▶ Replay`)** | Text logging only | ❌ | ✅ **Asciinema v2 (`.cast`) + GUI player** |
+| **Zero-Trust Edge Presets (ShellHub / Tailscale)** | ❌ | ❌ | ✅ **Native integration & auto-formatting** |
+| **Fleet Health Probing & Bulk `ssh-copy-id`** | ❌ | ❌ | ✅ **Periodic 45s TCP ping + 1-click batch key** |
+| **Audit Log Trail (`📜 Audit`) with CSV/JSON Export** | ❌ | ❌ | ✅ **Local session events + zero-secret audit** |
 | **SysAdmin Toolkit (Port Scanner, CIDR, Health Check)** | ❌ | ❌ | ✅ **Built-in `🛠 Network & CIDR`** |
 | **Bilingual UI (`🌐 EN / FR`) + Illustrated User Guide** | ❌ | ❌ | ✅ **Instant switch + HTML export** |
 
@@ -159,7 +164,31 @@ Connect to isolated private or DMZ servers transparently through an intermediate
     3. The **`🇬🇧 English` / `🇫🇷 Français`** selector inside the `📖 Help` modal.
   - Persisted automatically in `cuty-ssh-portable/config.json` (`"language": "English"` or `"French"`).
 - **In-App Illustrated User Guide (`📖 Help`) & Standalone HTML Export**:
-  - Click **`📖 Help`** in the top toolbar to browse **8 illustrated documentation chapters** with embedded high-DPI screenshots, step-by-step callouts, and a 1-click **`🌐 Open in Browser (HTML)`** exporter (`cuty-ssh-portable/user-guide.html`).
+  - Click **`📖 Help`** in the top toolbar to browse **9 illustrated documentation chapters** with embedded high-DPI screenshots, step-by-step callouts, and a 1-click **`🌐 Open in Browser (HTML)`** exporter (`cuty-ssh-portable/user-guide.html`).
+
+---
+
+### 6. Fleet Management, Zero-Trust Edge, Session Recording & Audit Trail
+- **Multi-Terminal Keystroke Broadcast (`📡 Broadcast`)**:
+  - In Split View mode (Vertical or Horizontal), toggle `📡 Broadcast` to mirror every typed character simultaneously across all connected sessions.
+  - Distinct safety indicators (orange `📡 BROADCAST ON` badge) in each terminal header clearly alert you when broadcast mode is armed.
+- **Session Recording (`🔴 REC`) & Built-in Player (`▶ Replay`)**:
+  - Record any active SSH or local terminal session on-the-fly into standard **Asciinema v2 (`.cast`)** JSON Lines format stored in `cuty-ssh-portable/recordings/`.
+  - Replay recordings anytime with the built-in **`▶ Replay`** modal featuring interactive timeline scrubbing, play/pause controls, and speed multipliers (`0.5x`, `1x`, `2x`, `4x`).
+  - 100% compatible with external tools like `asciinema play` or `agg`.
+- **Zero-Trust & Edge Gateway Presets (ShellHub & Tailscale)**:
+  - First-class support for **ShellHub** IoT & edge device access (UUID-based routing through ShellHub Cloud or self-hosted instances) and **Tailscale** MagicDNS mesh IPs.
+  - Automatically formats the SSH target connection string according to each gateway's connection protocol.
+- **Background Fleet Health Probing & Bulk `ssh-copy-id`**:
+  - Automatic non-blocking TCP ping probes run every 45 seconds across all saved sessions.
+  - Live color-coded reachability dots (`🟢 Online`, `🔴 Offline`, `⏳ Timeout`) appear in both the Cockpit cards and the Sidebar session list.
+  - Manual `📡 Ping` button in the Cockpit toolbar triggers an immediate fleet-wide check.
+  - In **`📁 Manager`**, select multiple hosts and click **`🔑 Deploy Primary Key`** to bulk-install your public key across your fleet in parallel.
+- **Local Session & Audit Log (`📜 Audit`)**:
+  - Centralized local audit trail recording connect, disconnect, session duration, error, and key deployment events.
+  - Full-text search and event filter chips (`CONNECT`, `DISCONNECT`, `ERROR`, `DEPLOY_KEY`).
+  - 1-click **CSV** and **JSON** exports for security audits and reporting.
+  - Strictly compliant with our **Zero Plaintext Secrets** policy (no credentials, passwords, or private keys are ever written to the audit log).
 
 ---
 

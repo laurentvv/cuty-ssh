@@ -1,3 +1,5 @@
+pub mod recording;
+
 use egui::Color32;
 use std::collections::VecDeque;
 use vte::{Params, Parser, Perform};
