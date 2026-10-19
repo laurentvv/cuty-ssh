@@ -737,14 +737,6 @@ impl CutySshApp {
             "snippets" => {
                 self.show_commands_editor = true;
             }
-            "tab" => {
-                self.launch_session(SessionProfile {
-                    name: "PowerShell Local".to_string(),
-                    protocol: ProtocolType::LocalShell,
-                    local_shell_cmd: "powershell.exe".to_string(),
-                    ..Default::default()
-                });
-            }
             _ => {}
         }
     }
@@ -2790,12 +2782,11 @@ impl CutySshApp {
             .inner_margin(egui::Margin::symmetric(8, 4))
             .stroke(Stroke::new(1.0, Color32::from_rgb(38, 46, 62)))
             .show(ui, |ui| {
-                ui.vertical(|ui| {
+                ui.horizontal(|ui| {
                     let mut close_idx: Option<usize> = None;
                     let mut duplicate_profile: Option<SessionProfile> = None;
 
                     // 1. GAUCHE : Onglets de sessions
-                    ui.horizontal(|ui| {
                     for (idx, tab) in self.tabs.iter().enumerate() {
                         let is_active = idx == self.active_tab_idx;
                         let status_icon = match tab.state {
@@ -2893,20 +2884,14 @@ impl CutySshApp {
                         self.launch_session(p);
                     }
 
-                    });
-
-                    // 2. DROITE : Outils de la session active ancrés à droite. They live on their
-                    // own wrapping row so they can never be drawn over the tabs when the central
-                    // area is narrow (e.g. with the SFTP side panel open).
+                    // 2. DROITE : Outils de la session active ancrés à droite
                     let can_split = self.tabs.len() >= 2;
                     let mut next_split_mode = self.split_mode;
                     let mut deploy_key_for_active = false;
                     let mut toggle_rec = false;
                     let mut toggle_broadcast = false;
                     if let Some(active_tab) = self.tabs.get_mut(self.active_tab_idx) {
-                        ui.with_layout(
-                            Layout::right_to_left(Align::Center).with_main_wrap(true),
-                            |ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             // 🔴 REC / ⏹ REC
                             let rec_label = if let Some(rec) = &active_tab.recorder {
                                 let elapsed = rec.elapsed().as_secs();
