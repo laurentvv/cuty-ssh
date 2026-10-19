@@ -30,7 +30,7 @@ use egui::{
 use std::collections::{BTreeMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use uuid::Uuid;
 use zeroize::Zeroize;
@@ -200,6 +200,7 @@ pub struct CutySshApp {
     pub dashboard_folder_filter: String,
     pub dashboard_tag_filter: String,
     pub dashboard_online_only: bool,
+    pub dashboard_offline_only: bool,
     pub dashboard_sort_mode: SessionSortMode,
     pub selected_session_ids: HashSet<Uuid>,
     pub bulk_target_folder: String,
@@ -357,6 +358,7 @@ impl CutySshApp {
             dashboard_folder_filter: "Tous".to_string(),
             dashboard_tag_filter: "Tous".to_string(),
             dashboard_online_only: false,
+            dashboard_offline_only: false,
             dashboard_sort_mode: SessionSortMode::NameAsc,
             selected_session_ids: HashSet::new(),
             bulk_target_folder: "Production".to_string(),
@@ -713,6 +715,17 @@ impl CutySshApp {
         self.toast_message = Some((msg.into(), std::time::Instant::now()));
     }
 
+    /// Reachability filter derived from the dashboard toggles (`Some(true)` = online only).
+    fn dashboard_reachability_filter(&self) -> Option<bool> {
+        if self.dashboard_online_only {
+            Some(true)
+        } else if self.dashboard_offline_only {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
     /// Filters and sorts saved sessions by search query, protocol, folder, tag, reachability, and sort mode.
     pub fn filter_and_sort_sessions(
         &self,
@@ -720,7 +733,7 @@ impl CutySshApp {
         proto_filter: Option<ProtocolType>,
         folder_filter: &str,
         tag_filter: &str,
-        online_only: bool,
+        reachability: Option<bool>,
         sort_mode: SessionSortMode,
     ) -> Vec<SessionProfile> {
         let q = query.trim().to_lowercase();
@@ -757,13 +770,10 @@ impl CutySshApp {
                 {
                     return false;
                 }
-                if online_only {
-                    let is_online = self
-                        .session_probes
-                        .get(&s.id)
-                        .map(|p| p.reachable)
-                        .unwrap_or(false);
-                    if !is_online {
+                if let Some(want_online) = reachability {
+                    // Unprobed sessions (e.g. local shells) match neither filter.
+                    let probe = self.session_probes.get(&s.id).map(|p| p.reachable);
+                    if probe != Some(want_online) {
                         return false;
                     }
                 }
@@ -1694,6 +1704,13 @@ impl CutySshApp {
                         if let Ok(n) = self.config.import_from_openssh_config(None) {
                             total_imported += n;
                         }
+                        if !self.config.kitty_dir.trim().is_empty()
+                            && let Ok(n) = self
+                                .config
+                                .import_from_kitty_dir(Path::new(&self.config.kitty_dir.clone()))
+                        {
+                            total_imported += n;
+                        }
                         self.probe_all_sessions();
                         self.set_toast(if lang == UiLanguage::French {
                             format!(
@@ -1706,6 +1723,46 @@ impl CutySshApp {
                                 total_imported
                             )
                         });
+                    }
+
+                    if ui
+                        .button("📥 KiTTY")
+                        .on_hover_text(tr(
+                            lang,
+                            "Importer les sessions d'un dossier KiTTY portable (contenant Sessions)",
+                            "Import sessions from a portable KiTTY folder (containing Sessions)",
+                        ))
+                        .clicked()
+                        && let Some(dir) = rfd::FileDialog::new()
+                            .set_title(tr(
+                                lang,
+                                "Dossier KiTTY portable (contenant Sessions)",
+                                "Portable KiTTY folder (containing Sessions)",
+                            ))
+                            .pick_folder()
+                    {
+                        self.config.kitty_dir = dir.to_string_lossy().to_string();
+                        let msg = match self.config.import_from_kitty_dir(&dir) {
+                            Ok(n) => {
+                                self.probe_all_sessions();
+                                format!(
+                                    "{} {}",
+                                    n,
+                                    tr(
+                                        lang,
+                                        "session(s) KiTTY importée(s) !",
+                                        "KiTTY session(s) imported!"
+                                    )
+                                )
+                            }
+                            Err(e) => format!(
+                                "{} {}",
+                                tr(lang, "Erreur import KiTTY :", "KiTTY import error:"),
+                                e
+                            ),
+                        };
+                        let _ = self.config.save();
+                        self.set_toast(msg);
                     }
 
                     if ui
@@ -3778,7 +3835,7 @@ impl CutySshApp {
                     self.dashboard_protocol_filter,
                     &self.dashboard_folder_filter,
                     &self.dashboard_tag_filter,
-                    self.dashboard_online_only,
+                    self.dashboard_reachability_filter(),
                     self.dashboard_sort_mode,
                 );
 
@@ -3950,6 +4007,29 @@ impl CutySshApp {
                         .clicked()
                     {
                         self.dashboard_online_only = !self.dashboard_online_only;
+                        self.dashboard_offline_only = false;
+                    }
+
+                    // Offline-only filter toggle
+                    let offline_col = if self.dashboard_offline_only {
+                        Color32::from_rgb(248, 81, 73)
+                    } else {
+                        Color32::from_rgb(139, 148, 158)
+                    };
+                    if ui
+                        .selectable_label(
+                            self.dashboard_offline_only,
+                            RichText::new(tr(lang, "● Hors ligne", "● Offline")).color(offline_col),
+                        )
+                        .on_hover_text(tr(
+                            lang,
+                            "Filtrer uniquement les serveurs injoignables",
+                            "Show only unreachable servers",
+                        ))
+                        .clicked()
+                    {
+                        self.dashboard_offline_only = !self.dashboard_offline_only;
+                        self.dashboard_online_only = false;
                     }
 
                     // Sort mode ComboBox
@@ -3977,7 +4057,8 @@ impl CutySshApp {
                             && self.dashboard_folder_filter != "Tous les dossiers")
                         || (self.dashboard_tag_filter != "Tous"
                             && self.dashboard_tag_filter != "Tous les tags")
-                        || self.dashboard_online_only;
+                        || self.dashboard_online_only
+                        || self.dashboard_offline_only;
 
                     if has_filter
                         && ui
@@ -3994,6 +4075,7 @@ impl CutySshApp {
                         self.dashboard_folder_filter = "Tous".to_string();
                         self.dashboard_tag_filter = "Tous".to_string();
                         self.dashboard_online_only = false;
+                        self.dashboard_offline_only = false;
                     }
                 });
                 ui.add_space(14.0);
@@ -4031,6 +4113,7 @@ impl CutySshApp {
                                         self.dashboard_folder_filter = "Tous".to_string();
                                         self.dashboard_tag_filter = "Tous".to_string();
                                         self.dashboard_online_only = false;
+                                        self.dashboard_offline_only = false;
                                     }
                                 });
                             });
@@ -7289,6 +7372,48 @@ impl CutySshApp {
                         });
                 }
 
+                // Reachability filters (shared with the Cockpit)
+                let online_col = if self.dashboard_online_only {
+                    Color32::from_rgb(63, 185, 80)
+                } else {
+                    Color32::from_rgb(139, 148, 158)
+                };
+                if ui
+                    .selectable_label(
+                        self.dashboard_online_only,
+                        RichText::new(tr(lang, "● En ligne", "● Online")).color(online_col),
+                    )
+                    .on_hover_text(tr(
+                        lang,
+                        "Filtrer uniquement les serveurs avec ping réussi",
+                        "Show only servers responding to TCP ping",
+                    ))
+                    .clicked()
+                {
+                    self.dashboard_online_only = !self.dashboard_online_only;
+                    self.dashboard_offline_only = false;
+                }
+                let offline_col = if self.dashboard_offline_only {
+                    Color32::from_rgb(248, 81, 73)
+                } else {
+                    Color32::from_rgb(139, 148, 158)
+                };
+                if ui
+                    .selectable_label(
+                        self.dashboard_offline_only,
+                        RichText::new(tr(lang, "● Hors ligne", "● Offline")).color(offline_col),
+                    )
+                    .on_hover_text(tr(
+                        lang,
+                        "Filtrer uniquement les serveurs injoignables (puis tout sélectionner pour les supprimer)",
+                        "Show only unreachable servers (then select all to delete them)",
+                    ))
+                    .clicked()
+                {
+                    self.dashboard_offline_only = !self.dashboard_offline_only;
+                    self.dashboard_online_only = false;
+                }
+
                 // Sort mode
                 egui::ComboBox::from_id_salt("manager_sort_mode")
                     .selected_text(self.dashboard_sort_mode.label(lang))
@@ -7572,7 +7697,7 @@ impl CutySshApp {
                 self.dashboard_protocol_filter,
                 &self.dashboard_folder_filter,
                 &self.dashboard_tag_filter,
-                self.dashboard_online_only,
+                self.dashboard_reachability_filter(),
                 self.dashboard_sort_mode,
             );
 
@@ -7679,6 +7804,7 @@ impl CutySshApp {
                                 self.dashboard_protocol_filter = None;
                                 self.dashboard_folder_filter = "Tous".to_string();
                                 self.dashboard_online_only = false;
+                                self.dashboard_offline_only = false;
                             }
                         });
                         ui.add_space(30.0);

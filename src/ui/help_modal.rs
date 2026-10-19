@@ -279,8 +279,8 @@ impl CutySshApp {
             &[
                 tr(
                     lang,
-                    "① Barre d'outils supérieure : Accès direct à 🗂 Sessions, ➕ Session, ⚡ Shell PowerShell, 🔍 Palette (Ctrl+K), 📁 Gestionnaire, 🔑 Clés .ppk, 🛡 Hosts (TOFU), 🛠 Diagnostic, 📜 Audit, ▶ Replay, 📥 Sync (PuTTY + ~/.ssh/config), ⚡ Snippets, 📖 Aide et 🌐 Langue (FR/EN).",
-                    "① Top Toolbar: Direct access to 🗂 Sessions, ➕ Session, ⚡ Local Shell, 🔍 Palette (Ctrl+K), 📁 Session Manager, 🔑 .ppk Keys, 🛡 Hosts (TOFU), 🛠 Diagnostics, 📜 Audit, ▶ Replay, 📥 Sync (PuTTY + ~/.ssh/config), ⚡ Snippets, 📖 Help, and 🌐 Language (FR/EN).",
+                    "① Barre d'outils supérieure : Accès direct à 🗂 Sessions, ➕ Session, ⚡ Shell PowerShell, 🔍 Palette (Ctrl+K), 📁 Gestionnaire, 🔑 Clés .ppk, 🛡 Hosts (TOFU), 🛠 Diagnostic, 📜 Audit, ▶ Replay, 📥 Sync (PuTTY + ~/.ssh/config), 📥 KiTTY (import dossier portable), ⚡ Snippets, 📖 Aide et 🌐 Langue (FR/EN).",
+                    "① Top Toolbar: Direct access to 🗂 Sessions, ➕ Session, ⚡ Local Shell, 🔍 Palette (Ctrl+K), 📁 Session Manager, 🔑 .ppk Keys, 🛡 Hosts (TOFU), 🛠 Diagnostics, 📜 Audit, ▶ Replay, 📥 Sync (PuTTY + ~/.ssh/config), 📥 KiTTY (portable folder import), ⚡ Snippets, 📖 Help, and 🌐 Language (FR/EN).",
                 ),
                 tr(
                     lang,
@@ -645,8 +645,8 @@ impl CutySshApp {
             &[
                 tr(
                     lang,
-                    "• Sondes de santé en arrière-plan : Cuty-SSH vérifie automatiquement la disponibilité TCP de tous vos serveurs toutes les 45 secondes. Des pastilles colorées (🟢 En ligne, 🔴 Injoignable, ⏳ Timeout) s'affichent sur le Cockpit et dans la barre latérale.",
-                    "• Background Health Probing: Cuty-SSH automatically checks TCP availability for all configured servers every 45 seconds. Color-coded status dots (🟢 Online, 🔴 Unreachable, ⏳ Timeout) are displayed on the Cockpit and sidebar.",
+                    "• Sondes de santé en arrière-plan : Cuty-SSH vérifie automatiquement la disponibilité TCP de tous vos serveurs toutes les 45 secondes. Des pastilles colorées (🟢 En ligne, 🔴 Injoignable, ⏳ Timeout) s'affichent sur le Cockpit et dans la barre latérale. Les boutons « ● En ligne » et « ● Hors ligne » du Cockpit filtrent les serveurs joignables ou injoignables.",
+                    "• Background Health Probing: Cuty-SSH automatically checks TCP availability for all configured servers every 45 seconds. Color-coded status dots (🟢 Online, 🔴 Unreachable, ⏳ Timeout) are displayed on the Cockpit and sidebar. The '● Online' and '● Offline' Cockpit toggles show only reachable or only unreachable servers.",
                 ),
                 tr(
                     lang,
