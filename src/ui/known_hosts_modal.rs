@@ -63,8 +63,8 @@ impl CutySshApp {
         let mut refresh_requested = false;
 
         egui::Window::new(tr(
-            "🛡 Gestionnaire Known Hosts (TOFU) & Sécurité DPAPI",
-            "🛡 Known Hosts Manager (TOFU) & DPAPI Security",
+            "\u{E40C} Gestionnaire Known Hosts (TOFU) & Sécurité DPAPI",
+            "\u{E40C} Known Hosts Manager (TOFU) & DPAPI Security",
         ))
         .open(&mut open)
         .resizable(true)
@@ -80,8 +80,8 @@ impl CutySshApp {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
                             RichText::new(tr(
-                                "🛡 Protection Anti-MITM (TOFU) & Coffre-fort Windows DPAPI actifs",
-                                "🛡 Anti-MITM Protection (TOFU) & Windows DPAPI Vault Active",
+                                "\u{E40C} Protection Anti-MITM (TOFU) & Coffre-fort Windows DPAPI actifs",
+                                "\u{E40C} Anti-MITM Protection (TOFU) & Windows DPAPI Vault Active",
                             ))
                             .strong()
                             .color(Color32::from_rgb(88, 166, 255)),
@@ -101,22 +101,22 @@ impl CutySshApp {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label(tr(
-                    "🔍 Filtrer un hôte ou une empreinte :",
-                    "🔍 Filter host or fingerprint:",
+                    "\u{E30C} Filtrer un hôte ou une empreinte :",
+                    "\u{E30C} Filter host or fingerprint:",
                 ));
                 ui.add(
                     egui::TextEdit::singleline(&mut self.known_hosts_filter)
                         .hint_text("192.168.1.10, ssh-ed25519, SHA256...")
                         .desired_width(260.0),
                 );
-                if !self.known_hosts_filter.is_empty() && ui.small_button("✖").clicked() {
+                if !self.known_hosts_filter.is_empty() && ui.small_button("\u{E4F6}").clicked() {
                     self.known_hosts_filter.clear();
                 }
 
                 if ui
                     .button(tr(
-                        "📥 Importer ~/.ssh/config",
-                        "📥 Import ~/.ssh/config",
+                        "\u{E20C} Importer ~/.ssh/config",
+                        "\u{E20C} Import ~/.ssh/config",
                     ))
                     .clicked()
                 {
@@ -124,7 +124,7 @@ impl CutySshApp {
                 }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button(tr("🔄 Actualiser", "🔄 Refresh")).clicked() {
+                    if ui.button(tr("\u{E094} Actualiser", "\u{E094} Refresh")).clicked() {
                         refresh_requested = true;
                     }
                     ui.label(
@@ -188,7 +188,7 @@ impl CutySshApp {
                                         ui.vertical(|ui| {
                                             ui.horizontal(|ui| {
                                                 ui.label(
-                                                    RichText::new(format!("🖥 {}", entry.host_port))
+                                                    RichText::new(format!("\u{E560} {}", entry.host_port))
                                                         .strong()
                                                         .monospace()
                                                         .color(Color32::from_rgb(240, 246, 252)),
@@ -232,7 +232,7 @@ impl CutySshApp {
                                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                             if ui
                                                 .button(
-                                                    RichText::new(tr("🗑 Révoquer", "🗑 Revoke"))
+                                                    RichText::new(tr("\u{E4A6} Révoquer", "\u{E4A6} Revoke"))
                                                         .size(11.5)
                                                         .color(Color32::from_rgb(248, 81, 73)),
                                                 )
@@ -246,7 +246,7 @@ impl CutySshApp {
                                             }
 
                                             if ui
-                                                .small_button(tr("📋 Copier SHA256", "📋 Copy SHA256"))
+                                                .small_button(tr("\u{E196} Copier SHA256", "\u{E196} Copy SHA256"))
                                                 .on_hover_text(tr(
                                                     "Copier l'empreinte SHA256 dans le presse-papiers",
                                                     "Copy SHA256 fingerprint to clipboard",

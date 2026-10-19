@@ -172,11 +172,19 @@ pub enum SessionSortMode {
 impl SessionSortMode {
     pub fn label(self, lang: UiLanguage) -> &'static str {
         match self {
-            Self::NameAsc => tr(lang, "🔤 Nom (A ➡ Z)", "🔤 Name (A ➡ Z)"),
-            Self::NameDesc => tr(lang, "🔤 Nom (Z ➡ A)", "🔤 Name (Z ➡ A)"),
-            Self::FolderAndName => tr(lang, "📁 Dossier & Nom", "📁 Folder & Name"),
+            Self::NameAsc => tr(
+                lang,
+                "\u{E6EE} Nom (A \u{E06C} Z)",
+                "\u{E6EE} Name (A \u{E06C} Z)",
+            ),
+            Self::NameDesc => tr(
+                lang,
+                "\u{E6EE} Nom (Z \u{E06C} A)",
+                "\u{E6EE} Name (Z \u{E06C} A)",
+            ),
+            Self::FolderAndName => tr(lang, "\u{E24A} Dossier & Nom", "\u{E24A} Folder & Name"),
             Self::Protocol => tr(lang, "🔌 Protocole", "🔌 Protocol"),
-            Self::Latency => tr(lang, "📡 Ping / Latence", "📡 Ping / Latency"),
+            Self::Latency => tr(lang, "\u{E0F2} Ping / Latence", "\u{E0F2} Ping / Latency"),
         }
     }
 }
@@ -570,7 +578,7 @@ impl CutySshApp {
         let predefined_commands = vec![
             PredefinedCommand {
                 id: Uuid::new_v4(),
-                label: "📊 System & Uptime".to_string(),
+                label: "\u{E150} System & Uptime".to_string(),
                 category: "Monitoring".to_string(),
                 command: "uname -a && uptime && df -h / && free -h".to_string(),
                 append_enter: true,
@@ -595,7 +603,7 @@ impl CutySshApp {
             },
             PredefinedCommand {
                 id: Uuid::new_v4(),
-                label: "📜 Journald Errors".to_string(),
+                label: "\u{EB7A} Journald Errors".to_string(),
                 category: "Logs".to_string(),
                 command: "journalctl -p 3 -xb -n 50".to_string(),
                 append_enter: true,
@@ -611,7 +619,7 @@ impl CutySshApp {
             },
             PredefinedCommand {
                 id: Uuid::new_v4(),
-                label: "🧹 Clear".to_string(),
+                label: "\u{EC54} Clear".to_string(),
                 category: "Terminal".to_string(),
                 command: "clear".to_string(),
                 append_enter: true,
@@ -1064,12 +1072,12 @@ impl CutySshApp {
                         }
                         let msg = if let Some(fp) = &host_key_fingerprint {
                             format!(
-                                "\x1b[1;32m✔ Connecté à {} | Auth: {} | HostKey: {}\x1b[0m\r\n",
+                                "\x1b[1;32m\u{E182} Connecté à {} | Auth: {} | HostKey: {}\x1b[0m\r\n",
                                 banner_info, auth_used, fp
                             )
                         } else {
                             format!(
-                                "\x1b[1;32m✔ Connecté à {} | Mode: {}\x1b[0m\r\n",
+                                "\x1b[1;32m\u{E182} Connecté à {} | Mode: {}\x1b[0m\r\n",
                                 banner_info, auth_used
                             )
                         };
@@ -1121,7 +1129,7 @@ impl CutySshApp {
                     BackendEvent::ErrorMessage(err) => {
                         tab.status_line = err.clone();
                         tab.terminal
-                            .feed_str(&format!("\r\n\x1b[1;31m✖ {}\x1b[0m\r\n", err));
+                            .feed_str(&format!("\r\n\x1b[1;31m\u{E4F6} {}\x1b[0m\r\n", err));
 
                         // Audit log ERROR
                         append_audit_entry(AuditLogEntry {
@@ -1175,23 +1183,23 @@ impl CutySshApp {
                         let term_msg = if lang == UiLanguage::French {
                             if already_present {
                                 format!(
-                                    "\r\n\x1b[1;32m🔑✔ Clé publique principale ({}) déjà présente dans ~/.ssh/authorized_keys — Session basculée sur l'authentification par clé (mot de passe supprimé).\x1b[0m\r\n",
+                                    "\r\n\x1b[1;32m\u{E2D6}\u{E182} Clé publique principale ({}) déjà présente dans ~/.ssh/authorized_keys — Session basculée sur l'authentification par clé (mot de passe supprimé).\x1b[0m\r\n",
                                     key_label
                                 )
                             } else {
                                 format!(
-                                    "\r\n\x1b[1;32m🔑✔ Clé publique principale ({}) installée dans ~/.ssh/authorized_keys (ssh-copy-id) ! Session basculée sur votre clé (mot de passe supprimé).\x1b[0m\r\n",
+                                    "\r\n\x1b[1;32m\u{E2D6}\u{E182} Clé publique principale ({}) installée dans ~/.ssh/authorized_keys (ssh-copy-id) ! Session basculée sur votre clé (mot de passe supprimé).\x1b[0m\r\n",
                                     key_label
                                 )
                             }
                         } else if already_present {
                             format!(
-                                "\r\n\x1b[1;32m🔑✔ Primary public key ({}) already in ~/.ssh/authorized_keys — Session switched to key auth (password removed).\x1b[0m\r\n",
+                                "\r\n\x1b[1;32m\u{E2D6}\u{E182} Primary public key ({}) already in ~/.ssh/authorized_keys — Session switched to key auth (password removed).\x1b[0m\r\n",
                                 key_label
                             )
                         } else {
                             format!(
-                                "\r\n\x1b[1;32m🔑✔ Primary public key ({}) installed in ~/.ssh/authorized_keys (ssh-copy-id)! Session switched to key auth (password removed).\x1b[0m\r\n",
+                                "\r\n\x1b[1;32m\u{E2D6}\u{E182} Primary public key ({}) installed in ~/.ssh/authorized_keys (ssh-copy-id)! Session switched to key auth (password removed).\x1b[0m\r\n",
                                 key_label
                             )
                         };
@@ -1938,7 +1946,7 @@ impl CutySshApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("⚡ Snippets :")
+                        RichText::new("\u{E2DE} Snippets :")
                             .size(11.0)
                             .strong()
                             .color(Color32::from_rgb(140, 190, 255)),
@@ -1971,11 +1979,11 @@ impl CutySshApp {
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .small_button("✖")
+                            .small_button("\u{E4F6}")
                             .on_hover_text(tr(
                                 lang,
-                                "Masquer ce bandeau (réactivable via ⚡ Snippets dans la barre supérieure)",
-                                "Hide this bar (re-enable via ⚡ Snippets in the top toolbar)",
+                                "Masquer ce bandeau (réactivable via \u{E2DE} Snippets dans la barre supérieure)",
+                                "Hide this bar (re-enable via \u{E2DE} Snippets in the top toolbar)",
                             ))
                             .clicked()
                         {
@@ -1984,7 +1992,7 @@ impl CutySshApp {
                         }
 
                         if ui
-                            .small_button(tr(lang, "⚙ Éditer", "⚙ Edit"))
+                            .small_button(tr(lang, "\u{E270} Éditer", "\u{E270} Edit"))
                             .on_hover_text(tr(
                                 lang,
                                 "Ajouter ou modifier les raccourcis de commandes prédéfinies",
@@ -2035,7 +2043,7 @@ impl CutySshApp {
                         if let Some(fp) = &tab.host_fingerprint {
                             ui.separator();
                             ui.label(
-                                RichText::new(format!("🛡 {}", fp))
+                                RichText::new(format!("\u{E40C} {}", fp))
                                     .small()
                                     .color(Color32::from_rgb(139, 148, 158)),
                             );
@@ -2055,8 +2063,8 @@ impl CutySshApp {
                         ui.label(
                             RichText::new(tr(
                                 lang,
-                                "Prêt — Mode Portable actif (cuty-ssh-portable/) • Ctrl+K : Palette rapide • 📖 Aide disponible",
-                                "Ready — Portable Mode active (cuty-ssh-portable/) • Ctrl+K: Quick Palette • 📖 Help available",
+                                "Prêt — Mode Portable actif (cuty-ssh-portable/) • Ctrl+K : Palette rapide • \u{E0E6} Aide disponible",
+                                "Ready — Portable Mode active (cuty-ssh-portable/) • Ctrl+K: Quick Palette • \u{E0E6} Help available",
                             ))
                             .small()
                             .color(Color32::from_rgb(139, 148, 158)),
@@ -2094,7 +2102,7 @@ impl CutySshApp {
                         {
                             ui.separator();
                             ui.label(
-                                RichText::new(format!("✨ {}", msg))
+                                RichText::new(format!("\u{E6A2} {}", msg))
                                     .small()
                                     .color(Color32::from_rgb(88, 166, 255)),
                             );
@@ -2120,7 +2128,7 @@ impl CutySshApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading(
-                        RichText::new("🚀 Sessions")
+                        RichText::new("\u{E3FE} Sessions")
                             .size(15.0)
                             .color(Color32::from_rgb(240, 246, 252)),
                     );
@@ -2129,15 +2137,15 @@ impl CutySshApp {
                             .small_button("⏴")
                             .on_hover_text(tr(
                                 lang,
-                                "Masquer le volet des sessions (rouvrable via le bouton 🗂 Sessions)",
-                                "Hide the sessions sidebar (re-open via 🗂 Sessions)",
+                                "Masquer le volet des sessions (rouvrable via le bouton \u{E260} Sessions)",
+                                "Hide the sessions sidebar (re-open via \u{E260} Sessions)",
                             ))
                             .clicked()
                         {
                             self.show_sidebar = false;
                         }
                         if ui
-                            .small_button("📡 Ping")
+                            .small_button("\u{E0F2} Ping")
                             .on_hover_text(tr(
                                 lang,
                                 "Tester en parallèle la disponibilité et la latence TCP de toutes les sessions",
@@ -2158,7 +2166,7 @@ impl CutySshApp {
 
                 // Session filter
                 ui.horizontal(|ui| {
-                    ui.label("🔍");
+                    ui.label("\u{E30C}");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.session_filter)
                             .hint_text(tr(
@@ -2168,7 +2176,7 @@ impl CutySshApp {
                             ))
                             .desired_width(f32::INFINITY),
                     );
-                    if !self.session_filter.is_empty() && ui.small_button("✖").clicked() {
+                    if !self.session_filter.is_empty() && ui.small_button("\u{E4F6}").clicked() {
                         self.session_filter.clear();
                     }
                 });
@@ -2177,8 +2185,8 @@ impl CutySshApp {
                 ui.label(
                     RichText::new(tr(
                         lang,
-                        "💡 Cliquez sur 🚀 Connecter ou sur le nom d'une session",
-                        "💡 Click 🚀 Connect or any session title to launch",
+                        "\u{E2DC} Cliquez sur \u{E3FE} Connecter ou sur le nom d'une session",
+                        "\u{E2DC} Click \u{E3FE} Connect or any session title to launch",
                     ))
                     .size(10.0)
                     .color(Color32::from_rgb(110, 118, 129)),
@@ -2195,8 +2203,8 @@ impl CutySshApp {
                             egui::Button::new(
                                 RichText::new(tr(
                                     lang,
-                                    "➕ Nouvelle Session",
-                                    "➕ New Session",
+                                    "\u{E3D4} Nouvelle Session",
+                                    "\u{E3D4} New Session",
                                 ))
                                 .size(11.5)
                                 .strong()
@@ -2220,7 +2228,7 @@ impl CutySshApp {
                         .add_sized(
                             [btn_w, 24.0],
                             egui::Button::new(
-                                RichText::new(tr(lang, "📁 Gestionnaire", "📁 Manager"))
+                                RichText::new(tr(lang, "\u{E24A} Gestionnaire", "\u{E24A} Manager"))
                                     .size(11.5)
                                     .strong()
                                     .color(Color32::from_rgb(88, 166, 255)),
@@ -2241,7 +2249,7 @@ impl CutySshApp {
 
                 // Quick connect with direct .ppk support
                 egui::CollapsingHeader::new(
-                    RichText::new(tr(lang, "⚡ Connexion Rapide", "⚡ Quick Connect"))
+                    RichText::new(tr(lang, "\u{E2DE} Connexion Rapide", "\u{E2DE} Quick Connect"))
                         .color(Color32::from_rgb(165, 214, 255)),
                 )
                 .default_open(false)
@@ -2303,7 +2311,7 @@ impl CutySshApp {
                                             .desired_width(110.0),
                                     );
                                     if ui
-                                        .small_button("📂")
+                                        .small_button("\u{E256}")
                                         .on_hover_text(tr(
                                             lang,
                                             "Choisir une clé PuTTY (.ppk) ou OpenSSH",
@@ -2330,8 +2338,8 @@ impl CutySshApp {
                         .button(
                             RichText::new(tr(
                                 lang,
-                                "▶ Connecter maintenant",
-                                "▶ Connect Now",
+                                "\u{E3D0} Connecter maintenant",
+                                "\u{E3D0} Connect Now",
                             ))
                             .strong()
                             .color(Color32::from_rgb(88, 166, 255)),
@@ -2405,7 +2413,7 @@ impl CutySshApp {
                     .show(ui, |ui| {
                         for (folder, list) in grouped {
                             egui::CollapsingHeader::new(
-                                RichText::new(format!("📁 {} ({})", folder, list.len()))
+                                RichText::new(format!("\u{E24A} {} ({})", folder, list.len()))
                                     .strong()
                                     .color(Color32::from_rgb(201, 209, 217)),
                             )
@@ -2438,7 +2446,7 @@ impl CutySshApp {
                                                     .add(
                                                         egui::Button::new(
                                                             RichText::new(format!(
-                                                                "▶ {} {}",
+                                                                "\u{E3D0} {} {}",
                                                                 s.icon_badge, s.name
                                                             ))
                                                             .strong()
@@ -2450,8 +2458,8 @@ impl CutySshApp {
                                                     )
                                                     .on_hover_text(tr(
                                                         lang,
-                                                        "🚀 Cliquer ou double-cliquer pour vous connecter",
-                                                        "🚀 Click or double-click to connect",
+                                                        "\u{E3FE} Cliquer ou double-cliquer pour vous connecter",
+                                                        "\u{E3FE} Click or double-click to connect",
                                                     ))
                                                     .on_hover_cursor(egui::CursorIcon::PointingHand);
                                                 if title_btn.clicked() || title_btn.double_clicked() {
@@ -2462,7 +2470,7 @@ impl CutySshApp {
                                                     Layout::right_to_left(Align::Center),
                                                     |ui| {
                                                         if ui
-                                                            .small_button("🗑")
+                                                            .small_button("\u{E4A6}")
                                                             .on_hover_text(tr(
                                                                 lang,
                                                                 "Supprimer la session",
@@ -2473,7 +2481,7 @@ impl CutySshApp {
                                                             to_delete = Some(s.id);
                                                         }
                                                         if ui
-                                                            .small_button("📑")
+                                                            .small_button("\u{E710}")
                                                             .on_hover_text(tr(
                                                                 lang,
                                                                 "Dupliquer la session",
@@ -2484,7 +2492,7 @@ impl CutySshApp {
                                                             to_duplicate = Some(s.clone());
                                                         }
                                                         if ui
-                                                            .small_button("⚙")
+                                                            .small_button("\u{E270}")
                                                             .on_hover_text(tr(
                                                                 lang,
                                                                 "Configurer la session",
@@ -2625,7 +2633,7 @@ impl CutySshApp {
                                             ui.horizontal(|ui| {
                                                 let avail_w = ui.available_width();
                                                 let connect_label =
-                                                    tr(lang, "🚀 Connecter", "🚀 Connect");
+                                                    tr(lang, "\u{E3FE} Connecter", "\u{E3FE} Connect");
                                                 if let Some(ppk_path) = &has_ppk {
                                                     let pageant_w = 75.0;
                                                     let conn_w = (avail_w - pageant_w - 6.0).max(110.0);
@@ -2658,7 +2666,7 @@ impl CutySshApp {
                                                         .add_sized(
                                                             [pageant_w, 23.0],
                                                             egui::Button::new(
-                                                                RichText::new("🔑 Pageant")
+                                                                RichText::new("\u{E2D6} Pageant")
                                                                     .size(10.5)
                                                                     .color(Color32::from_rgb(210, 153, 34)),
                                                             ),
@@ -2766,7 +2774,7 @@ impl CutySshApp {
                             .dynamic_title
                             .as_deref()
                             .unwrap_or(&tab.profile.name);
-                        let lock_badge = if tab.profile.read_only { " 🔒" } else { "" };
+                        let lock_badge = if tab.profile.read_only { " \u{E2FA}" } else { "" };
 
                         let bg = if is_active {
                             Color32::from_rgb(28, 37, 52)
@@ -2800,7 +2808,7 @@ impl CutySshApp {
                                     self.active_tab_idx = idx;
                                 }
                                 if ui
-                                    .small_button("✖")
+                                    .small_button("\u{E4F6}")
                                     .on_hover_text(tr(
                                         lang,
                                         "Fermer cet onglet",
@@ -2816,7 +2824,7 @@ impl CutySshApp {
                     // Bouton rapide '+' pour ouvrir un shell local
                     if ui
                         .button(
-                            RichText::new("➕")
+                            RichText::new("\u{E3D4}")
                                 .size(11.0)
                                 .color(Color32::from_rgb(139, 148, 158)),
                         )
@@ -2850,7 +2858,7 @@ impl CutySshApp {
                                 let elapsed = rec.elapsed().as_secs();
                                 let m = elapsed / 60;
                                 let s = elapsed % 60;
-                                format!("⏹ REC ({:02}:{:02})", m, s)
+                                format!("\u{E46C} REC ({:02}:{:02})", m, s)
                             } else {
                                 "🔴 REC".to_string()
                             };
@@ -2873,9 +2881,9 @@ impl CutySshApp {
 
                             if can_split {
                                 let bcast_text = if self.broadcast_mode {
-                                    RichText::new("📡 Broadcast ON").color(Color32::from_rgb(248, 81, 73)).strong()
+                                    RichText::new("\u{E0F2} Broadcast ON").color(Color32::from_rgb(248, 81, 73)).strong()
                                 } else {
-                                    RichText::new("📡 Broadcast")
+                                    RichText::new("\u{E0F2} Broadcast")
                                 };
                                 if ui
                                     .selectable_label(self.broadcast_mode, bcast_text)
@@ -2891,7 +2899,7 @@ impl CutySshApp {
                             }
 
                             if ui
-                                .button(tr(lang, "🧹 Vider", "🧹 Clear"))
+                                .button(tr(lang, "\u{EC54} Vider", "\u{EC54} Clear"))
                                 .on_hover_text(tr(
                                     lang,
                                     "Effacer l'historique du terminal (Clear scrollback)",
@@ -2905,7 +2913,7 @@ impl CutySshApp {
                             if ui
                                 .selectable_label(
                                     active_tab.show_search_bar,
-                                    tr(lang, "🔍 Chercher", "🔍 Find"),
+                                    tr(lang, "\u{E30C} Chercher", "\u{E30C} Find"),
                                 )
                                 .on_hover_text(tr(
                                     lang,
@@ -2918,7 +2926,7 @@ impl CutySshApp {
                             }
 
                             if ui
-                                .button("📜 Script")
+                                .button("\u{EB7A} Script")
                                 .on_hover_text(tr(
                                     lang,
                                     "Exécuter un script local sur la session distante",
@@ -2938,7 +2946,7 @@ impl CutySshApp {
                             if ui
                                 .selectable_label(
                                     active_tab.profile.read_only,
-                                    tr(lang, "🔒 Verrou", "🔒 Lock"),
+                                    tr(lang, "\u{E2FA} Verrou", "\u{E2FA} Lock"),
                                 )
                                 .on_hover_text(tr(
                                     lang,
@@ -2958,11 +2966,11 @@ impl CutySshApp {
                                 let btn_label = if is_pwd_auth {
                                     tr(
                                         lang,
-                                        "🔑➡🖥 Copier ma Clé (ssh-copy-id)",
-                                        "🔑➡🖥 Copy My Key (ssh-copy-id)",
+                                        "\u{E2D6}\u{E06C}\u{E560} Copier ma Clé (ssh-copy-id)",
+                                        "\u{E2D6}\u{E06C}\u{E560} Copy My Key (ssh-copy-id)",
                                     )
                                 } else {
-                                    tr(lang, "🔑➡🖥 ssh-copy-id", "🔑➡🖥 ssh-copy-id")
+                                    tr(lang, "\u{E2D6}\u{E06C}\u{E560} ssh-copy-id", "\u{E2D6}\u{E06C}\u{E560} ssh-copy-id")
                                 };
                                 let btn_color = if is_pwd_auth {
                                     Color32::from_rgb(63, 185, 80)
@@ -2982,7 +2990,7 @@ impl CutySshApp {
                                 }
 
                                 if ui
-                                    .selectable_label(active_tab.show_sftp_panel, "📂 SFTP")
+                                    .selectable_label(active_tab.show_sftp_panel, "\u{E256} SFTP")
                                     .on_hover_text(tr(
                                         lang,
                                         "Ouvrir l'explorateur de fichiers SFTP latéral",
@@ -3003,7 +3011,7 @@ impl CutySshApp {
                                 if ui
                                     .selectable_label(
                                         active_tab.show_telemetry_bar,
-                                        tr(lang, "📊 Télémétrie", "📊 Telemetry"),
+                                        tr(lang, "\u{E150} Télémétrie", "\u{E150} Telemetry"),
                                     )
                                     .on_hover_text(tr(
                                         lang,
@@ -3062,7 +3070,7 @@ impl CutySshApp {
                             }
 
                             if ui
-                                .button(tr(lang, "📑 Dupliquer", "📑 Duplicate"))
+                                .button(tr(lang, "\u{E710} Dupliquer", "\u{E710} Duplicate"))
                                 .on_hover_text(tr(
                                     lang,
                                     "Démarrer une session identique (dupliquer la session)",
@@ -3170,14 +3178,14 @@ impl CutySshApp {
                     ui.heading(
                         RichText::new(tr(
                             lang,
-                            "📂 Explorateur SFTP",
-                            "📂 SFTP Explorer",
+                            "\u{E256} Explorateur SFTP",
+                            "\u{E256} SFTP Explorer",
                         ))
                         .size(15.0),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .small_button("🚀 WinSCP")
+                            .small_button("\u{E3FE} WinSCP")
                             .on_hover_text(tr(
                                 lang,
                                 "Lancer WinSCP externe sur cette session (intégration WinSCP)",
@@ -3211,8 +3219,8 @@ impl CutySshApp {
                                     "{} {}",
                                     tr(
                                         lang,
-                                        "📥 Relâchez le fichier ici pour l'uploader dans",
-                                        "📥 Drop file here to upload into",
+                                        "\u{E20C} Relâchez le fichier ici pour l'uploader dans",
+                                        "\u{E20C} Drop file here to upload into",
                                     ),
                                     tab.sftp_current_path
                                 ))
@@ -3228,7 +3236,7 @@ impl CutySshApp {
                     } else {
                         0.0
                     };
-                    let dir_label = if prog.is_upload { "📤 Upload" } else { "📥 Download" };
+                    let dir_label = if prog.is_upload { "\u{E4C0} Upload" } else { "\u{E20C} Download" };
                     ui.add_space(3.0);
                     ui.add(
                         egui::ProgressBar::new(frac)
@@ -3247,7 +3255,7 @@ impl CutySshApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui
-                        .small_button("⬆")
+                        .small_button("\u{E08E}")
                         .on_hover_text(tr(lang, "Dossier parent", "Parent directory"))
                         .clicked()
                     {
@@ -3274,7 +3282,7 @@ impl CutySshApp {
                             .send(BackendCommand::SftpListDir(tab.sftp_path_input.clone()));
                     }
                     if ui
-                        .small_button("🔄")
+                        .small_button("\u{E094}")
                         .on_hover_text(tr(lang, "Rafraîchir", "Refresh"))
                         .clicked()
                     {
@@ -3288,7 +3296,7 @@ impl CutySshApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui
-                        .small_button(tr(lang, "📤 Uploader fichier", "📤 Upload file"))
+                        .small_button(tr(lang, "\u{E4C0} Uploader fichier", "\u{E4C0} Upload file"))
                         .clicked()
                         && let Some(local_file) = rfd::FileDialog::new().pick_file()
                     {
@@ -3312,7 +3320,7 @@ impl CutySshApp {
                             .hint_text(tr(lang, "Nouveau dossier...", "New folder..."))
                             .desired_width(110.0),
                     );
-                    if ui.small_button("📁+").clicked() && !tab.sftp_mkdir_name.trim().is_empty()
+                    if ui.small_button("\u{E24A}+").clicked() && !tab.sftp_mkdir_name.trim().is_empty()
                     {
                         let target = if tab.sftp_current_path.ends_with('/') {
                             format!("{}{}", tab.sftp_current_path, tab.sftp_mkdir_name.trim())
@@ -3333,7 +3341,7 @@ impl CutySshApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let (ff_icon, ff_tip) = if tab.sftp_folders_first {
                             (
-                                tr(lang, "📁⬆ Dossiers 1er", "📁⬆ Folders 1st"),
+                                tr(lang, "\u{E24A}\u{E08E} Dossiers 1er", "\u{E24A}\u{E08E} Folders 1st"),
                                 tr(
                                     lang,
                                     "Dossiers regroupés en haut (Actif) — Cliquez pour mélanger dossiers et fichiers",
@@ -3342,7 +3350,7 @@ impl CutySshApp {
                             )
                         } else {
                             (
-                                tr(lang, "📁⬍ Dossiers mix", "📁⬍ Mixed"),
+                                tr(lang, "\u{E24A}⬍ Dossiers mix", "\u{E24A}⬍ Mixed"),
                                 tr(
                                     lang,
                                     "Dossiers et fichiers mélangés — Cliquez pour regrouper les dossiers en haut",
@@ -3545,7 +3553,7 @@ impl CutySshApp {
                         for entry in &tab.sftp_entries {
                             ui.horizontal(|ui| {
                                 let icon = if entry.is_dir {
-                                    "📁"
+                                    "\u{E24A}"
                                 } else if entry.is_symlink {
                                     "🔗"
                                 } else {
@@ -3563,7 +3571,7 @@ impl CutySshApp {
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     // 1. Delete button
                                     if ui
-                                        .small_button("🗑")
+                                        .small_button("\u{E4A6}")
                                         .on_hover_text(tr(
                                             lang,
                                             "Supprimer sur le serveur",
@@ -3577,7 +3585,7 @@ impl CutySshApp {
                                     // 2. Download button or 22px spacing for directories
                                     if !entry.is_dir {
                                         if ui
-                                            .small_button("📥")
+                                            .small_button("\u{E20C}")
                                             .on_hover_text(tr(
                                                 lang,
                                                 "Télécharger ce fichier",
@@ -3675,8 +3683,8 @@ impl CutySshApp {
                     ui.heading(
                         RichText::new(tr(
                             lang,
-                            "🐾 Cuty-SSH — Cockpit SysAdmin & Client SSH / Telnet",
-                            "🐾 Cuty-SSH — SysAdmin Cockpit & SSH / Telnet Client",
+                            "\u{E648} Cuty-SSH — Cockpit SysAdmin & Client SSH / Telnet",
+                            "\u{E648} Cuty-SSH — SysAdmin Cockpit & SSH / Telnet Client",
                         ))
                         .size(24.0)
                         .strong()
@@ -3705,8 +3713,8 @@ impl CutySshApp {
                             egui::Button::new(
                                 RichText::new(tr(
                                     lang,
-                                    "➕ Nouvelle Session",
-                                    "➕ New Session",
+                                    "\u{E3D4} Nouvelle Session",
+                                    "\u{E3D4} New Session",
                                 ))
                                 .strong(),
                             ),
@@ -3723,8 +3731,8 @@ impl CutySshApp {
                             egui::Button::new(
                                 RichText::new(tr(
                                     lang,
-                                    "🔑 Clés .ppk & Pageant",
-                                    "🔑 .ppk Keys & Pageant",
+                                    "\u{E2D6} Clés .ppk & Pageant",
+                                    "\u{E2D6} .ppk Keys & Pageant",
                                 ))
                                 .strong(),
                             ),
@@ -3740,8 +3748,8 @@ impl CutySshApp {
                             egui::Button::new(
                                 RichText::new(tr(
                                     lang,
-                                    "📥 Charger .ppk → Pageant",
-                                    "📥 Load .ppk → Pageant",
+                                    "\u{E20C} Charger .ppk → Pageant",
+                                    "\u{E20C} Load .ppk → Pageant",
                                 ))
                                 .strong()
                                 .color(Color32::from_rgb(210, 153, 34)),
@@ -3763,8 +3771,8 @@ impl CutySshApp {
                             egui::Button::new(
                                 RichText::new(tr(
                                     lang,
-                                    "📁 Gestion Sessions",
-                                    "📁 Session Manager",
+                                    "\u{E24A} Gestion Sessions",
+                                    "\u{E24A} Session Manager",
                                 ))
                                 .strong()
                                 .color(Color32::from_rgb(88, 166, 255)),
@@ -3785,8 +3793,8 @@ impl CutySshApp {
                             egui::Button::new(
                                 RichText::new(tr(
                                     lang,
-                                    "🛠 Outils Réseau",
-                                    "🛠 Network Tools",
+                                    "\u{E5D4} Outils Réseau",
+                                    "\u{E5D4} Network Tools",
                                 ))
                                 .strong(),
                             ),
@@ -3798,7 +3806,7 @@ impl CutySshApp {
                     if ui
                         .add_sized(
                             [145.0, 36.0],
-                            egui::Button::new(RichText::new("🎯 Palette (Ctrl+K)").strong()),
+                            egui::Button::new(RichText::new("\u{E47C} Palette (Ctrl+K)").strong()),
                         )
                         .clicked()
                     {
@@ -3810,8 +3818,8 @@ impl CutySshApp {
                             egui::Button::new(
                                 RichText::new(tr(
                                     lang,
-                                    "📖 Guide & Aide",
-                                    "📖 User Guide",
+                                    "\u{E0E6} Guide & Aide",
+                                    "\u{E0E6} User Guide",
                                 ))
                                 .strong()
                                 .color(Color32::from_rgb(56, 189, 248)),
@@ -3832,8 +3840,8 @@ impl CutySshApp {
                             egui::Button::new(
                                 RichText::new(tr(
                                     lang,
-                                    "📡 Ping Serveurs",
-                                    "📡 Ping Servers",
+                                    "\u{E0F2} Ping Serveurs",
+                                    "\u{E0F2} Ping Servers",
                                 ))
                                 .strong(),
                             ),
@@ -3864,7 +3872,7 @@ impl CutySshApp {
                     ui.add_space(side_pad);
                     ui.label(
                         RichText::new(format!(
-                            "🖥 {} ({} / {})",
+                            "\u{E560} {} ({} / {})",
                             tr(
                                 lang,
                                 "VOS SESSIONS DISPONIBLES",
@@ -3883,7 +3891,7 @@ impl CutySshApp {
                 // Search & Filter Toolbar on Dashboard
                 ui.horizontal_wrapped(|ui| {
                     ui.add_space(side_pad);
-                    ui.label("🔍");
+                    ui.label("\u{E30C}");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.dashboard_session_query)
                             .hint_text(tr(
@@ -3893,7 +3901,7 @@ impl CutySshApp {
                             ))
                             .desired_width(260.0),
                     );
-                    if !self.dashboard_session_query.is_empty() && ui.small_button("✖").clicked() {
+                    if !self.dashboard_session_query.is_empty() && ui.small_button("\u{E4F6}").clicked() {
                         self.dashboard_session_query.clear();
                     }
 
@@ -3944,9 +3952,9 @@ impl CutySshApp {
                     // Folder filter dropdown
                     let all_folders = self.config.all_folders();
                     let folder_btn_txt = if self.dashboard_folder_filter == "Tous" {
-                        tr(lang, "📁 Tous", "📁 All Folders").to_string()
+                        tr(lang, "\u{E24A} Tous", "\u{E24A} All Folders").to_string()
                     } else {
-                        format!("📁 {}", self.dashboard_folder_filter)
+                        format!("\u{E24A} {}", self.dashboard_folder_filter)
                     };
                     egui::ComboBox::from_id_salt("dashboard_folder_filter")
                         .selected_text(folder_btn_txt)
@@ -3954,7 +3962,7 @@ impl CutySshApp {
                             ui.selectable_value(
                                 &mut self.dashboard_folder_filter,
                                 "Tous".to_string(),
-                                tr(lang, "📁 Tous les dossiers", "📁 All Folders"),
+                                tr(lang, "\u{E24A} Tous les dossiers", "\u{E24A} All Folders"),
                             );
                             for f in &all_folders {
                                 let f_count = self
@@ -3966,7 +3974,7 @@ impl CutySshApp {
                                 ui.selectable_value(
                                     &mut self.dashboard_folder_filter,
                                     f.clone(),
-                                    format!("📁 {} ({})", f, f_count),
+                                    format!("\u{E24A} {} ({})", f, f_count),
                                 );
                             }
                         });
@@ -3976,15 +3984,15 @@ impl CutySshApp {
                     if !all_tags.is_empty() {
                         egui::ComboBox::from_id_salt("dashboard_tag_filter")
                             .selected_text(if self.dashboard_tag_filter == "Tous" {
-                                tr(lang, "🏷 Tous les tags", "🏷 All Tags").to_string()
+                                tr(lang, "\u{E478} Tous les tags", "\u{E478} All Tags").to_string()
                             } else {
-                                format!("🏷 #{}", self.dashboard_tag_filter)
+                                format!("\u{E478} #{}", self.dashboard_tag_filter)
                             })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut self.dashboard_tag_filter,
                                     "Tous".to_string(),
-                                    tr(lang, "🏷 Tous les tags", "🏷 All Tags"),
+                                    tr(lang, "\u{E478} Tous les tags", "\u{E478} All Tags"),
                                 );
                                 for t in &all_tags {
                                     let t_count = self
@@ -3998,7 +4006,7 @@ impl CutySshApp {
                                     ui.selectable_value(
                                         &mut self.dashboard_tag_filter,
                                         t.clone(),
-                                        format!("🏷 #{} ({})", t, t_count),
+                                        format!("\u{E478} #{} ({})", t, t_count),
                                     );
                                 }
                             });
@@ -4078,7 +4086,7 @@ impl CutySshApp {
 
                     if has_filter
                         && ui
-                            .small_button("🔄 Reset")
+                            .small_button("\u{E094} Reset")
                             .on_hover_text(tr(
                                 lang,
                                 "Réinitialiser tous les filtres de recherche",
@@ -4109,8 +4117,8 @@ impl CutySshApp {
                                     ui.label(
                                         RichText::new(tr(
                                             lang,
-                                            "🔍 Aucune session ne correspond à vos critères de recherche",
-                                            "🔍 No session matches your search criteria",
+                                            "\u{E30C} Aucune session ne correspond à vos critères de recherche",
+                                            "\u{E30C} No session matches your search criteria",
                                         ))
                                         .size(14.0)
                                         .color(Color32::from_rgb(139, 148, 158)),
@@ -4119,8 +4127,8 @@ impl CutySshApp {
                                     if ui
                                         .button(tr(
                                             lang,
-                                            "🔄 Réinitialiser tous les filtres",
-                                            "🔄 Reset all filters",
+                                            "\u{E094} Réinitialiser tous les filtres",
+                                            "\u{E094} Reset all filters",
                                         ))
                                         .clicked()
                                     {
@@ -4301,14 +4309,14 @@ impl CutySshApp {
                                                     .map(|f| f.to_string_lossy().to_string())
                                                     .unwrap_or_else(|| kp.clone());
                                                 ui.label(
-                                                    RichText::new(format!("🔑 {}", short_name))
+                                                    RichText::new(format!("\u{E2D6} {}", short_name))
                                                         .size(10.5)
                                                         .monospace()
                                                         .color(Color32::from_rgb(210, 153, 34)),
                                                 );
                                             } else {
                                                 ui.label(
-                                                    RichText::new(format!("📁 {}", s.folder))
+                                                    RichText::new(format!("\u{E24A} {}", s.folder))
                                                         .size(10.5)
                                                         .color(Color32::from_rgb(110, 118, 129)),
                                                 );
@@ -4340,8 +4348,8 @@ impl CutySshApp {
                                                     .button(
                                                         RichText::new(tr(
                                                             lang,
-                                                            "🚀 Connecter",
-                                                            "🚀 Connect",
+                                                            "\u{E3FE} Connecter",
+                                                            "\u{E3FE} Connect",
                                                         ))
                                                         .strong()
                                                         .color(Color32::from_rgb(88, 166, 255)),
@@ -4352,7 +4360,7 @@ impl CutySshApp {
                                                 }
                                                 if let Some(kp) = ppk_file
                                                     && ui
-                                                        .button("🔑 → Pageant")
+                                                        .button("\u{E2D6} → Pageant")
                                                         .on_hover_text(tr(
                                                             lang,
                                                             "Charger cette clé .ppk dans Pageant",
@@ -4363,7 +4371,7 @@ impl CutySshApp {
                                                     ppk_to_load = Some(kp);
                                                 }
                                                 if ui
-                                                    .button("⚙")
+                                                    .button("\u{E270}")
                                                     .on_hover_text(tr(
                                                         lang,
                                                         "Modifier la session",
@@ -4374,7 +4382,7 @@ impl CutySshApp {
                                                     session_to_edit = Some((*s).clone());
                                                 }
                                                 if ui
-                                                    .button("📑")
+                                                    .button("\u{E710}")
                                                     .on_hover_text(tr(
                                                         lang,
                                                         "Dupliquer cette session",
@@ -4385,7 +4393,7 @@ impl CutySshApp {
                                                     session_to_duplicate = Some(s.id);
                                                 }
                                                 if ui
-                                                    .button("🗑")
+                                                    .button("\u{E4A6}")
                                                     .on_hover_text(tr(
                                                         lang,
                                                         "Supprimer cette session",
@@ -4449,8 +4457,8 @@ impl CutySshApp {
         let mut open = self.show_key_manager;
         egui::Window::new(tr(
             lang,
-            "🔑 Gestionnaire Clés PuTTY (.ppk) & Agent Pageant",
-            "🔑 PuTTY Keys (.ppk) & Pageant Agent Manager",
+            "\u{E2D6} Gestionnaire Clés PuTTY (.ppk) & Agent Pageant",
+            "\u{E2D6} PuTTY Keys (.ppk) & Pageant Agent Manager",
         ))
         .id(egui::Id::unique("key_manager_modal_v2"))
         .open(&mut open)
@@ -4469,8 +4477,8 @@ impl CutySshApp {
                         ui.heading(
                             RichText::new(tr(
                                 lang,
-                                "⭐ Clé SSH Principale (ssh-copy-id — Remplacement du mot de passe)",
-                                "⭐ Primary SSH Key (ssh-copy-id — Passwordless Provisioning)",
+                                "\u{E46A} Clé SSH Principale (ssh-copy-id — Remplacement du mot de passe)",
+                                "\u{E46A} Primary SSH Key (ssh-copy-id — Passwordless Provisioning)",
                             ))
                             .color(Color32::from_rgb(86, 211, 100)),
                         );
@@ -4497,7 +4505,7 @@ impl CutySshApp {
                                 .desired_width(320.0),
                         );
                         if ui
-                            .button(tr(lang, "📂 Choisir", "📂 Choose"))
+                            .button(tr(lang, "\u{E256} Choisir", "\u{E256} Choose"))
                             .clicked()
                             && let Some(p) = rfd::FileDialog::new()
                                 .add_filter("SSH & PuTTY Keys", &["ppk", "pem", "key", "pub", "*"])
@@ -4511,8 +4519,8 @@ impl CutySshApp {
                             .button(
                                 RichText::new(tr(
                                     lang,
-                                    "✨ Générer / Initialiser ma Clé Principale",
-                                    "✨ Generate / Initialize Primary Key",
+                                    "\u{E6A2} Générer / Initialiser ma Clé Principale",
+                                    "\u{E6A2} Generate / Initialize Primary Key",
                                 ))
                                 .color(Color32::from_rgb(86, 211, 100)),
                             )
@@ -4564,8 +4572,8 @@ impl CutySshApp {
                 .show(ui, |ui| {
                     ui.heading(tr(
                         lang,
-                        "🛡 Intégration Pageant (PuTTY SSH Agent)",
-                        "🛡 Pageant Integration (PuTTY SSH Agent)",
+                        "\u{E40C} Intégration Pageant (PuTTY SSH Agent)",
+                        "\u{E40C} Pageant Integration (PuTTY SSH Agent)",
                     ));
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
@@ -4579,7 +4587,7 @@ impl CutySshApp {
                                 .desired_width(340.0),
                         );
                         if ui
-                            .small_button(tr(lang, "📂 Parcourir", "📂 Browse"))
+                            .small_button(tr(lang, "\u{E256} Parcourir", "\u{E256} Browse"))
                             .clicked()
                             && let Some(p) = rfd::FileDialog::new()
                                 .add_filter("Executable", &["exe"])
@@ -4593,7 +4601,7 @@ impl CutySshApp {
                     ui.add_space(6.0);
                     ui.horizontal_wrapped(|ui| {
                         if ui
-                            .button(tr(lang, "🚀 Démarrer Pageant", "🚀 Launch Pageant"))
+                            .button(tr(lang, "\u{E3FE} Démarrer Pageant", "\u{E3FE} Launch Pageant"))
                             .on_hover_text("Launches \"C:\\Program Files\\PuTTY\\pageant.exe\"")
                             .clicked()
                         {
@@ -4615,8 +4623,8 @@ impl CutySshApp {
                         if ui
                             .button(tr(
                                 lang,
-                                "➕ Charger un fichier .ppk dans Pageant",
-                                "➕ Load .ppk File into Pageant",
+                                "\u{E3D4} Charger un fichier .ppk dans Pageant",
+                                "\u{E3D4} Load .ppk File into Pageant",
                             ))
                             .on_hover_text(tr(
                                 lang,
@@ -4651,8 +4659,8 @@ impl CutySshApp {
                             .button(
                                 RichText::new(tr(
                                     lang,
-                                    "📥 Charger toutes les clés .ppk des sessions",
-                                    "📥 Load All Session .ppk Keys",
+                                    "\u{E20C} Charger toutes les clés .ppk des sessions",
+                                    "\u{E20C} Load All Session .ppk Keys",
                                 ))
                                 .color(Color32::from_rgb(210, 153, 34)),
                             )
@@ -4667,7 +4675,7 @@ impl CutySshApp {
                         }
 
                         if ui
-                            .button(tr(lang, "🔄 Rafraîchir l'Agent", "🔄 Refresh Agent"))
+                            .button(tr(lang, "\u{E094} Rafraîchir l'Agent", "\u{E094} Refresh Agent"))
                             .clicked()
                         {
                             self.refresh_agent_keys();
@@ -4688,7 +4696,7 @@ impl CutySshApp {
                     } else {
                         ui.label(
                             RichText::new(format!(
-                                "✔ {} {}",
+                                "\u{E182} {} {}",
                                 self.agent_keys.len(),
                                 tr(
                                     lang,
@@ -4714,8 +4722,8 @@ impl CutySshApp {
                                 if ui
                                     .small_button(tr(
                                         lang,
-                                        "📋 Copier clé publique",
-                                        "📋 Copy Public Key",
+                                        "\u{E196} Copier clé publique",
+                                        "\u{E196} Copy Public Key",
                                     ))
                                     .clicked()
                                 {
@@ -4745,16 +4753,16 @@ impl CutySshApp {
                 .show(ui, |ui| {
                     ui.heading(tr(
                         lang,
-                        "🔍 Inspecteur & Convertisseur de Clés (.ppk v2/v3 ↔ OpenSSH)",
-                        "🔍 Key Inspector & Converter (.ppk v2/v3 ↔ OpenSSH)",
+                        "\u{E30C} Inspecteur & Convertisseur de Clés (.ppk v2/v3 \u{E0A0} OpenSSH)",
+                        "\u{E30C} Key Inspector & Converter (.ppk v2/v3 \u{E0A0} OpenSSH)",
                     ));
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         if ui
                             .button(tr(
                                 lang,
-                                "📂 Ouvrir une clé (.ppk / OpenSSH / PEM)",
-                                "📂 Open Key File (.ppk / OpenSSH / PEM)",
+                                "\u{E256} Ouvrir une clé (.ppk / OpenSSH / PEM)",
+                                "\u{E256} Open Key File (.ppk / OpenSSH / PEM)",
                             ))
                             .clicked()
                             && let Some(path) = rfd::FileDialog::new()
@@ -4809,8 +4817,8 @@ impl CutySshApp {
                                         .small_button(
                                             RichText::new(tr(
                                                 lang,
-                                                "⭐ Définir comme Clé Principale",
-                                                "⭐ Set as Primary Key",
+                                                "\u{E46A} Définir comme Clé Principale",
+                                                "\u{E46A} Set as Primary Key",
                                             ))
                                             .color(Color32::from_rgb(86, 211, 100)),
                                         )
@@ -4865,7 +4873,7 @@ impl CutySshApp {
                                     "Public Key (authorized_keys):",
                                 ));
                                 if ui
-                                    .small_button(tr(lang, "📋 Copier", "📋 Copy"))
+                                    .small_button(tr(lang, "\u{E196} Copier", "\u{E196} Copy"))
                                     .clicked()
                                 {
                                     if let Ok(mut cb) = Clipboard::new() {
@@ -4893,8 +4901,8 @@ impl CutySshApp {
                             if ui
                                 .button(tr(
                                     lang,
-                                    "🔄 Convertir & Sauvegarder en OpenSSH (id_rsa / id_ed25519)",
-                                    "🔄 Convert & Save as OpenSSH (id_rsa / id_ed25519)",
+                                    "\u{E094} Convertir & Sauvegarder en OpenSSH (id_rsa / id_ed25519)",
+                                    "\u{E094} Convert & Save as OpenSSH (id_rsa / id_ed25519)",
                                 ))
                                 .clicked()
                             {
@@ -4933,8 +4941,8 @@ impl CutySshApp {
                             if ui
                                 .button(tr(
                                     lang,
-                                    "🔄 Convertir & Sauvegarder en PuTTY (.ppk v3)",
-                                    "🔄 Convert & Save as PuTTY (.ppk v3)",
+                                    "\u{E094} Convertir & Sauvegarder en PuTTY (.ppk v3)",
+                                    "\u{E094} Convert & Save as PuTTY (.ppk v3)",
                                 ))
                                 .clicked()
                             {
@@ -5004,8 +5012,8 @@ impl CutySshApp {
                 .show(ui, |ui| {
                     ui.heading(tr(
                         lang,
-                        "⚡ Générateur de Clés SSH / PuTTYgen intégré",
-                        "⚡ Built-in SSH / PuTTYgen Key Generator",
+                        "\u{E2DE} Générateur de Clés SSH / PuTTYgen intégré",
+                        "\u{E2DE} Built-in SSH / PuTTYgen Key Generator",
                     ));
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
@@ -5043,8 +5051,8 @@ impl CutySshApp {
                         if ui
                             .button(tr(
                                 lang,
-                                "✨ Générer une nouvelle clé .PPK (PuTTY)",
-                                "✨ Generate New .PPK Key (PuTTY)",
+                                "\u{E6A2} Générer une nouvelle clé .PPK (PuTTY)",
+                                "\u{E6A2} Generate New .PPK Key (PuTTY)",
                             ))
                             .clicked()
                         {
@@ -5104,11 +5112,15 @@ impl CutySshApp {
         let title = if self.is_new_session {
             tr(
                 lang,
-                "➕ Nouvelle Session (Configuration Avancée)",
-                "➕ New Session (Advanced Configuration)",
+                "\u{E3D4} Nouvelle Session (Configuration Avancée)",
+                "\u{E3D4} New Session (Advanced Configuration)",
             )
         } else {
-            tr(lang, "✏ Configurer la Session", "✏ Configure Session")
+            tr(
+                lang,
+                "\u{E3B4} Configurer la Session",
+                "\u{E3B4} Configure Session",
+            )
         };
 
         egui::Window::new(title)
@@ -5143,8 +5155,8 @@ impl CutySshApp {
                         ConfigEditorTab::Appearance,
                         tr(
                             lang,
-                            "🎨 Apparence & Options",
-                            "🎨 Appearance & Options",
+                            "\u{E6C8} Apparence & Options",
+                            "\u{E6C8} Appearance & Options",
                         ),
                     );
                 });
@@ -5198,7 +5210,7 @@ impl CutySshApp {
                                                                         165, 214, 255,
                                                                     )),
                                                             );
-                                                            if ui.small_button("✖").clicked() {
+                                                            if ui.small_button("\u{E4F6}").clicked() {
                                                                 tag_to_remove = Some(idx);
                                                             }
                                                         });
@@ -5225,7 +5237,7 @@ impl CutySshApp {
                                         let enter_pressed = tag_resp.lost_focus()
                                             && ui.input(|i| i.key_pressed(egui::Key::Enter));
                                         if (ui
-                                            .button(tr(lang, "➕ Ajouter", "➕ Add"))
+                                            .button(tr(lang, "\u{E3D4} Ajouter", "\u{E3D4} Add"))
                                             .clicked()
                                             || enter_pressed)
                                             && !self.session_tag_input.trim().is_empty()
@@ -5432,8 +5444,8 @@ impl CutySshApp {
                                 if ui
                                     .small_button(tr(
                                         lang,
-                                        "📖 Comment ça marche ?",
-                                        "📖 How does it work?",
+                                        "\u{E0E6} Comment ça marche ?",
+                                        "\u{E0E6} How does it work?",
                                     ))
                                     .clicked()
                                 {
@@ -5514,8 +5526,8 @@ impl CutySshApp {
                             ui.label(
                                 RichText::new(tr(
                                     lang,
-                                    "🔑 Authentification SSH2, Clé PuTTY (.ppk), Pageant & OpenSSH Agent",
-                                    "🔑 SSH2 Authentication, PuTTY Key (.ppk), Pageant & OpenSSH Agent",
+                                    "\u{E2D6} Authentification SSH2, Clé PuTTY (.ppk), Pageant & OpenSSH Agent",
+                                    "\u{E2D6} SSH2 Authentication, PuTTY Key (.ppk), Pageant & OpenSSH Agent",
                                 ))
                                 .strong(),
                             );
@@ -5613,8 +5625,8 @@ impl CutySshApp {
                                             &mut self.editing_session.deploy_primary_key_on_connect,
                                             RichText::new(tr(
                                                 lang,
-                                                "🔑➡🖥 Copier ma Clé Principale à la 1re connexion (ssh-copy-id) puis ne plus utiliser le mot de passe",
-                                                "🔑➡🖥 Copy my Primary Key on 1st login (ssh-copy-id) and switch to passwordless key auth",
+                                                "\u{E2D6}\u{E06C}\u{E560} Copier ma Clé Principale à la 1re connexion (ssh-copy-id) puis ne plus utiliser le mot de passe",
+                                                "\u{E2D6}\u{E06C}\u{E560} Copy my Primary Key on 1st login (ssh-copy-id) and switch to passwordless key auth",
                                             ))
                                             .strong()
                                             .color(Color32::from_rgb(86, 211, 100)),
@@ -5643,8 +5655,8 @@ impl CutySshApp {
                                             if ui
                                                 .button(tr(
                                                     lang,
-                                                    "📂 Choisir .ppk",
-                                                    "📂 Choose .ppk",
+                                                    "\u{E256} Choisir .ppk",
+                                                    "\u{E256} Choose .ppk",
                                                 ))
                                                 .clicked()
                                                 && let Some(p) = rfd::FileDialog::new()
@@ -5660,8 +5672,8 @@ impl CutySshApp {
                                                 .button(
                                                     RichText::new(tr(
                                                         lang,
-                                                        "⭐ Ma Clé Principale",
-                                                        "⭐ My Primary Key",
+                                                        "\u{E46A} Ma Clé Principale",
+                                                        "\u{E46A} My Primary Key",
                                                     ))
                                                     .color(Color32::from_rgb(86, 211, 100)),
                                                 )
@@ -5760,7 +5772,7 @@ impl CutySshApp {
                         ui.horizontal(|ui| {
                             ui.text_edit_singleline(&mut self.editing_session.local_script_path);
                             if ui
-                                .button(tr(lang, "📂 Choisir script", "📂 Choose Script"))
+                                .button(tr(lang, "\u{E256} Choisir script", "\u{E256} Choose Script"))
                                 .clicked()
                                 && let Some(p) = rfd::FileDialog::new().pick_file()
                             {
@@ -5805,7 +5817,7 @@ impl CutySshApp {
                                     .desired_width(130.0),
                             );
                             if ui
-                                .button(tr(lang, "➕ Ajouter règle", "➕ Add Rule"))
+                                .button(tr(lang, "\u{E3D4} Ajouter règle", "\u{E3D4} Add Rule"))
                                 .clicked()
                                 && !self.new_expect_trigger.is_empty()
                             {
@@ -5830,13 +5842,13 @@ impl CutySshApp {
                             ui.horizontal(|ui| {
                                 ui.checkbox(&mut r.enabled, "");
                                 ui.monospace(format!(
-                                    "{} \"{}\" ➡ {} \"{}\"",
+                                    "{} \"{}\" \u{E06C} {} \"{}\"",
                                     tr(lang, "Attendre", "Expect"),
                                     r.trigger_prompt,
                                     tr(lang, "Envoyer", "Send"),
                                     r.send_response
                                 ));
-                                if ui.small_button("🗑").clicked() {
+                                if ui.small_button("\u{E4A6}").clicked() {
                                     remove_rule = Some(idx);
                                 }
                             });
@@ -5868,7 +5880,7 @@ impl CutySshApp {
                             ui.add(
                                 egui::DragValue::new(&mut self.new_pf_bind_port).range(1..=65535),
                             );
-                            ui.label(tr(lang, "➡ Cible:", "➡ Target:"));
+                            ui.label(tr(lang, "\u{E06C} Cible:", "\u{E06C} Target:"));
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.new_pf_target_host)
                                     .desired_width(90.0),
@@ -5876,7 +5888,7 @@ impl CutySshApp {
                             ui.add(
                                 egui::DragValue::new(&mut self.new_pf_target_port).range(1..=65535),
                             );
-                            if ui.button(tr(lang, "➕ Ajouter", "➕ Add")).clicked() {
+                            if ui.button(tr(lang, "\u{E3D4} Ajouter", "\u{E3D4} Add")).clicked() {
                                 self.editing_session.port_forwards.push(PortForwardRule {
                                     enabled: true,
                                     forward_type: if self.new_pf_is_remote {
@@ -5902,14 +5914,14 @@ impl CutySshApp {
                                     PortForwardType::Remote => "Remote (-R)",
                                 };
                                 ui.monospace(format!(
-                                    "[{}] {}:{} ➡ {}:{}",
+                                    "[{}] {}:{} \u{E06C} {}:{}",
                                     badge,
                                     pf.bind_address,
                                     pf.bind_port,
                                     pf.target_host,
                                     pf.target_port
                                 ));
-                                if ui.small_button("🗑").clicked() {
+                                if ui.small_button("\u{E4A6}").clicked() {
                                     rem_pf = Some(idx);
                                 }
                             });
@@ -5926,8 +5938,8 @@ impl CutySshApp {
                             .show(ui, |ui| {
                                 ui.label(tr(
                                     lang,
-                                    "🌐 Langue de l'application :",
-                                    "🌐 Application Language:",
+                                    "\u{E288} Langue de l'application :",
+                                    "\u{E288} Application Language:",
                                 ));
                                 ui.horizontal(|ui| {
                                     if ui
@@ -6011,7 +6023,7 @@ impl CutySshApp {
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .button(
-                            RichText::new(tr(lang, "💾 Sauvegarder", "💾 Save"))
+                            RichText::new(tr(lang, "\u{E248} Sauvegarder", "\u{E248} Save"))
                                 .strong()
                                 .color(Color32::from_rgb(63, 185, 80)),
                         )
@@ -6025,8 +6037,8 @@ impl CutySshApp {
                         .button(
                             RichText::new(tr(
                                 lang,
-                                "🚀 Sauvegarder & Connecter",
-                                "🚀 Save & Connect",
+                                "\u{E3FE} Sauvegarder & Connecter",
+                                "\u{E3FE} Save & Connect",
                             ))
                             .strong()
                             .color(Color32::from_rgb(88, 166, 255)),
@@ -6044,8 +6056,8 @@ impl CutySshApp {
                             .button(
                                 RichText::new(tr(
                                     lang,
-                                    "🔑➡🖥 Connecter (Mdp) & Copier ma Clé Principale (ssh-copy-id)",
-                                    "🔑➡🖥 Connect (Pwd) & Push Primary Key (ssh-copy-id)",
+                                    "\u{E2D6}\u{E06C}\u{E560} Connecter (Mdp) & Copier ma Clé Principale (ssh-copy-id)",
+                                    "\u{E2D6}\u{E06C}\u{E560} Connect (Pwd) & Push Primary Key (ssh-copy-id)",
                                 ))
                                 .strong()
                                 .color(Color32::from_rgb(86, 211, 100)),
@@ -6097,8 +6109,8 @@ impl CutySshApp {
         let mut open = self.show_commands_editor;
         egui::Window::new(tr(
             lang,
-            "⚡ Raccourcis de Commandes Prédéfinies",
-            "⚡ Predefined Command Macros",
+            "\u{E2DE} Raccourcis de Commandes Prédéfinies",
+            "\u{E2DE} Predefined Command Macros",
         ))
         .open(&mut open)
         .resizable(true)
@@ -6109,7 +6121,9 @@ impl CutySshApp {
                 ui.add(egui::TextEdit::singleline(&mut self.new_cmd_label).desired_width(110.0));
                 ui.label(tr(lang, "Commande:", "Command:"));
                 ui.add(egui::TextEdit::singleline(&mut self.new_cmd_text).desired_width(200.0));
-                if ui.button(tr(lang, "➕ Ajouter", "➕ Add")).clicked()
+                if ui
+                    .button(tr(lang, "\u{E3D4} Ajouter", "\u{E3D4} Add"))
+                    .clicked()
                     && !self.new_cmd_label.is_empty()
                     && !self.new_cmd_text.is_empty()
                 {
@@ -6133,7 +6147,7 @@ impl CutySshApp {
                 ui.horizontal(|ui| {
                     ui.strong(&cmd.label);
                     ui.monospace(&cmd.command);
-                    if ui.small_button("🗑").clicked() {
+                    if ui.small_button("\u{E4A6}").clicked() {
                         del_id = Some(cmd.id);
                     }
                 });
@@ -6176,10 +6190,16 @@ impl CutySshApp {
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button(tr(lang, "✔ Valider", "✔ Submit")).clicked() {
+                    if ui
+                        .button(tr(lang, "\u{E182} Valider", "\u{E182} Submit"))
+                        .clicked()
+                    {
                         submit = true;
                     }
-                    if ui.button(tr(lang, "✖ Annuler", "✖ Cancel")).clicked() {
+                    if ui
+                        .button(tr(lang, "\u{E4F6} Annuler", "\u{E4F6} Cancel"))
+                        .clicked()
+                    {
                         cancel = true;
                     }
                 });
@@ -6206,8 +6226,8 @@ impl CutySshApp {
 
         egui::Window::new(tr(
             lang,
-            "🎯 Palette de Commandes & Sessions (Ctrl+K)",
-            "🎯 Command & Session Palette (Ctrl+K)",
+            "\u{E47C} Palette de Commandes & Sessions (Ctrl+K)",
+            "\u{E47C} Command & Session Palette (Ctrl+K)",
         ))
         .open(&mut open)
         .resizable(false)
@@ -6223,7 +6243,7 @@ impl CutySshApp {
         )
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("🔍").size(16.0));
+                ui.label(RichText::new("\u{E30C}").size(16.0));
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.palette_query)
                         .hint_text(tr(
@@ -6264,7 +6284,7 @@ impl CutySshApp {
 
                     if !matching_sessions.is_empty() {
                         ui.label(
-                            RichText::new("🖥 SESSIONS")
+                            RichText::new("\u{E560} SESSIONS")
                                 .size(11.0)
                                 .strong()
                                 .color(Color32::from_rgb(139, 148, 158)),
@@ -6336,7 +6356,7 @@ impl CutySshApp {
 
                     // Section 2: Actions & Tools
                     ui.label(
-                        RichText::new(tr(lang, "⚡ ACTIONS & OUTILS", "⚡ ACTIONS & TOOLS"))
+                        RichText::new(tr(lang, "\u{E2DE} ACTIONS & OUTILS", "\u{E2DE} ACTIONS & TOOLS"))
                             .size(11.0)
                             .strong()
                             .color(Color32::from_rgb(139, 148, 158)),
@@ -6344,7 +6364,7 @@ impl CutySshApp {
 
                     let actions = [
                         (
-                            tr(lang, "➕ Nouvelle Session", "➕ New Session"),
+                            tr(lang, "\u{E3D4} Nouvelle Session", "\u{E3D4} New Session"),
                             tr(
                                 lang,
                                 "Créer une nouvelle configuration de connexion",
@@ -6355,8 +6375,8 @@ impl CutySshApp {
                         (
                             tr(
                                 lang,
-                                "📖 Guide Utilisateur & Documentation",
-                                "📖 User Guide & Documentation",
+                                "\u{E0E6} Guide Utilisateur & Documentation",
+                                "\u{E0E6} User Guide & Documentation",
                             ),
                             tr(
                                 lang,
@@ -6368,8 +6388,8 @@ impl CutySshApp {
                         (
                             tr(
                                 lang,
-                                "🔑 Clés PuTTY (.ppk) & Pageant",
-                                "🔑 PuTTY Keys (.ppk) & Pageant",
+                                "\u{E2D6} Clés PuTTY (.ppk) & Pageant",
+                                "\u{E2D6} PuTTY Keys (.ppk) & Pageant",
                             ),
                             tr(
                                 lang,
@@ -6381,8 +6401,8 @@ impl CutySshApp {
                         (
                             tr(
                                 lang,
-                                "📥 Charger toutes les clés .ppk dans Pageant",
-                                "📥 Load All .ppk Keys into Pageant",
+                                "\u{E20C} Charger toutes les clés .ppk dans Pageant",
+                                "\u{E20C} Load All .ppk Keys into Pageant",
                             ),
                             tr(
                                 lang,
@@ -6394,8 +6414,8 @@ impl CutySshApp {
                         (
                             tr(
                                 lang,
-                                "🛠 Boîte à Outils Réseau & CIDR",
-                                "🛠 Network & CIDR Toolkit",
+                                "\u{E5D4} Boîte à Outils Réseau & CIDR",
+                                "\u{E5D4} Network & CIDR Toolkit",
                             ),
                             tr(
                                 lang,
@@ -6407,8 +6427,8 @@ impl CutySshApp {
                         (
                             tr(
                                 lang,
-                                "🎨 Design System & À Propos",
-                                "🎨 Design System & About",
+                                "\u{E6C8} Design System & À Propos",
+                                "\u{E6C8} Design System & About",
                             ),
                             tr(
                                 lang,
@@ -6420,8 +6440,8 @@ impl CutySshApp {
                         (
                             tr(
                                 lang,
-                                "⚡ Ouvrir PowerShell Local",
-                                "⚡ Open Local PowerShell",
+                                "\u{E2DE} Ouvrir PowerShell Local",
+                                "\u{E2DE} Open Local PowerShell",
                             ),
                             tr(
                                 lang,
@@ -6433,8 +6453,8 @@ impl CutySshApp {
                         (
                             tr(
                                 lang,
-                                "📡 Tester la Santé de tous les Serveurs",
-                                "📡 Probe All Server Health",
+                                "\u{E0F2} Tester la Santé de tous les Serveurs",
+                                "\u{E0F2} Probe All Server Health",
                             ),
                             tr(
                                 lang,
@@ -6446,8 +6466,8 @@ impl CutySshApp {
                         (
                             tr(
                                 lang,
-                                "📜 Dupliquer l'Onglet Actif",
-                                "📜 Duplicate Active Tab",
+                                "\u{EB7A} Dupliquer l'Onglet Actif",
+                                "\u{EB7A} Duplicate Active Tab",
                             ),
                             tr(
                                 lang,
@@ -6457,7 +6477,7 @@ impl CutySshApp {
                             PaletteAction::DuplicateActiveTab,
                         ),
                         (
-                            tr(lang, "✖ Fermer l'Onglet Actif", "✖ Close Active Tab"),
+                            tr(lang, "\u{E4F6} Fermer l'Onglet Actif", "\u{E4F6} Close Active Tab"),
                             tr(
                                 lang,
                                 "Déconnecter et fermer l'onglet sélectionné",
@@ -6561,8 +6581,8 @@ impl CutySshApp {
             .unwrap_or(Pos2::new(500.0, 400.0));
         egui::Window::new(tr(
             lang,
-            "🛠 Boîte à Outils Diagnostic & Réseau SysAdmin",
-            "🛠 SysAdmin Network & Diagnostic Toolkit",
+            "\u{E5D4} Boîte à Outils Diagnostic & Réseau SysAdmin",
+            "\u{E5D4} SysAdmin Network & Diagnostic Toolkit",
         ))
         .id(egui::Id::unique("network_tools_modal_v3"))
         .open(&mut open)
@@ -6584,8 +6604,8 @@ impl CutySshApp {
                         .show(ui, |ui| {
                             ui.heading(tr(
                                 lang,
-                                "📡 Scanner TCP & Détection de Bannière (SSH / Telnet)",
-                                "📡 TCP Port Scanner & Banner Grabber (SSH / Telnet)",
+                                "\u{E0F2} Scanner TCP & Détection de Bannière (SSH / Telnet)",
+                                "\u{E0F2} TCP Port Scanner & Banner Grabber (SSH / Telnet)",
                             ));
                             ui.add_space(4.0);
                             ui.horizontal(|ui| {
@@ -6603,8 +6623,8 @@ impl CutySshApp {
                                     .button(
                                         RichText::new(tr(
                                             lang,
-                                            "🚀 Scanner le Port",
-                                            "🚀 Scan Port",
+                                            "\u{E3FE} Scanner le Port",
+                                            "\u{E3FE} Scan Port",
                                         ))
                                         .strong()
                                         .color(Color32::from_rgb(88, 166, 255)),
@@ -6684,16 +6704,16 @@ impl CutySshApp {
                             ui.horizontal(|ui| {
                                 ui.heading(tr(
                                     lang,
-                                    "🖥 Santé & Latence des Serveurs Sauvegardés",
-                                    "🖥 Saved Servers Health & Latency",
+                                    "\u{E560} Santé & Latence des Serveurs Sauvegardés",
+                                    "\u{E560} Saved Servers Health & Latency",
                                 ));
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     if ui
                                         .button(
                                             RichText::new(tr(
                                                 lang,
-                                                "🔄 Re-tester Tous les Serveurs",
-                                                "🔄 Re-probe All Servers",
+                                                "\u{E094} Re-tester Tous les Serveurs",
+                                                "\u{E094} Re-probe All Servers",
                                             ))
                                             .strong(),
                                         )
@@ -6733,7 +6753,11 @@ impl CutySshApp {
 
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if ui
-                                            .small_button(tr(lang, "🚀 Connecter", "🚀 Connect"))
+                                            .small_button(tr(
+                                                lang,
+                                                "\u{E3FE} Connecter",
+                                                "\u{E3FE} Connect",
+                                            ))
                                             .clicked()
                                         {
                                             session_to_launch = Some(s.clone());
@@ -6786,8 +6810,8 @@ impl CutySshApp {
                         .show(ui, |ui| {
                             ui.heading(tr(
                                 lang,
-                                "🧮 Calculateur de Sous-Réseau CIDR IPv4",
-                                "🧮 IPv4 CIDR Subnet Calculator",
+                                "\u{E538} Calculateur de Sous-Réseau CIDR IPv4",
+                                "\u{E538} IPv4 CIDR Subnet Calculator",
                             ));
                             ui.add_space(4.0);
                             ui.horizontal(|ui| {
@@ -6876,7 +6900,7 @@ impl CutySshApp {
                                         ));
                                         ui.label(
                                             RichText::new(format!(
-                                                "{}  ➡  {}",
+                                                "{}  \u{E06C}  {}",
                                                 c.first_usable, c.last_usable
                                             ))
                                             .strong()
@@ -6913,8 +6937,8 @@ impl CutySshApp {
                         .show(ui, |ui| {
                             ui.heading(tr(
                                 lang,
-                                "📋 Générateur de Lignes de Commande CLI (PuTTY / OpenSSH)",
-                                "📋 CLI Command Line Generator (PuTTY / OpenSSH)",
+                                "\u{E196} Générateur de Lignes de Commande CLI (PuTTY / OpenSSH)",
+                                "\u{E196} CLI Command Line Generator (PuTTY / OpenSSH)",
                             ));
                             ui.add_space(4.0);
 
@@ -6951,7 +6975,7 @@ impl CutySshApp {
                                 ui.horizontal(|ui| {
                                     ui.strong(format!("{} {}", s.icon_badge, s.name));
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if ui.small_button("📋 PuTTY").clicked() {
+                                        if ui.small_button("\u{E196} PuTTY").clicked() {
                                             if let Ok(mut cb) = Clipboard::new() {
                                                 let _ = cb.set_text(&putty_cmd);
                                             }
@@ -6965,7 +6989,11 @@ impl CutySshApp {
                                             );
                                         }
                                         if ui
-                                            .small_button(tr(lang, "📋 Copier SSH", "📋 Copy SSH"))
+                                            .small_button(tr(
+                                                lang,
+                                                "\u{E196} Copier SSH",
+                                                "\u{E196} Copy SSH",
+                                            ))
                                             .clicked()
                                         {
                                             if let Ok(mut cb) = Clipboard::new() {
@@ -7005,8 +7033,8 @@ impl CutySshApp {
         let mut should_close = false;
         egui::Window::new(tr(
             lang,
-            "🎨 Cuty-SSH — Design System & À Propos",
-            "🎨 Cuty-SSH — Design System & About",
+            "\u{E6C8} Cuty-SSH — Design System & À Propos",
+            "\u{E6C8} Cuty-SSH — Design System & About",
         ))
         .open(&mut open)
         .collapsible(false)
@@ -7075,7 +7103,7 @@ impl CutySshApp {
                     ui.add_space(10.0);
 
                     ui.heading(
-                        RichText::new("🏷 Design System & UI Badges")
+                        RichText::new("\u{E478} Design System & UI Badges")
                             .size(16.0)
                             .color(Color32::from_rgb(245, 158, 11)),
                     );
@@ -7103,8 +7131,8 @@ impl CutySshApp {
                         if ui
                             .button(tr(
                                 lang,
-                                "📁 Ouvrir le dossier des assets",
-                                "📁 Open Assets Folder",
+                                "\u{E24A} Ouvrir le dossier des assets",
+                                "\u{E24A} Open Assets Folder",
                             ))
                             .clicked()
                         {
@@ -7113,8 +7141,8 @@ impl CutySshApp {
                         if ui
                             .button(tr(
                                 lang,
-                                "🌐 Ouvrir README du projet",
-                                "🌐 Open Project README",
+                                "\u{E288} Ouvrir README du projet",
+                                "\u{E288} Open Project README",
                             ))
                             .clicked()
                         {
@@ -7148,8 +7176,8 @@ impl CutySshApp {
 
         egui::Window::new(tr(
             lang,
-            "📁 Gestionnaire & Organisation des Sessions",
-            "📁 Session Manager & Bulk Organization",
+            "\u{E24A} Gestionnaire & Organisation des Sessions",
+            "\u{E24A} Session Manager & Bulk Organization",
         ))
         .open(&mut open)
         .resizable(true)
@@ -7161,8 +7189,8 @@ impl CutySshApp {
                 ui.heading(
                     RichText::new(tr(
                         lang,
-                        "📁 Gestion & Organisation des Sessions",
-                        "📁 Session Management & Organization",
+                        "\u{E24A} Gestion & Organisation des Sessions",
+                        "\u{E24A} Session Management & Organization",
                     ))
                     .size(16.0)
                     .color(Color32::from_rgb(88, 166, 255)),
@@ -7170,7 +7198,7 @@ impl CutySshApp {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
                         .button(
-                            RichText::new(tr(lang, "➕ Nouvelle Session", "➕ New Session"))
+                            RichText::new(tr(lang, "\u{E3D4} Nouvelle Session", "\u{E3D4} New Session"))
                                 .strong()
                                 .color(Color32::from_rgb(63, 185, 80)),
                         )
@@ -7183,7 +7211,7 @@ impl CutySshApp {
                     }
 
                     if ui
-                        .button(tr(lang, "📤 Exporter Tout (JSON)", "📤 Export All (JSON)"))
+                        .button(tr(lang, "\u{E4C0} Exporter Tout (JSON)", "\u{E4C0} Export All (JSON)"))
                         .on_hover_text(tr(
                             lang,
                             "Exporter toutes vos sessions dans un fichier JSON",
@@ -7210,7 +7238,7 @@ impl CutySshApp {
                     }
 
                     if ui
-                        .button(tr(lang, "📥 Importer (JSON)", "📥 Import (JSON)"))
+                        .button(tr(lang, "\u{E20C} Importer (JSON)", "\u{E20C} Import (JSON)"))
                         .on_hover_text(tr(
                             lang,
                             "Importer des sessions depuis un fichier JSON",
@@ -7241,7 +7269,7 @@ impl CutySshApp {
                     }
 
                     if ui
-                        .button(tr(lang, "📥 Sync Registre", "📥 Sync Registry"))
+                        .button(tr(lang, "\u{E20C} Sync Registre", "\u{E20C} Sync Registry"))
                         .on_hover_text(tr(
                             lang,
                             "Synchroniser depuis le Registre PuTTY",
@@ -7272,7 +7300,7 @@ impl CutySshApp {
                     }
 
                     if ui
-                        .button(tr(lang, "📡 Tester Tout le Ping", "📡 Probe All Ping"))
+                        .button(tr(lang, "\u{E0F2} Tester Tout le Ping", "\u{E0F2} Probe All Ping"))
                         .clicked()
                     {
                         self.probe_all_sessions();
@@ -7286,7 +7314,7 @@ impl CutySshApp {
 
             // Search & Filter Toolbar
             ui.horizontal_wrapped(|ui| {
-                ui.label("🔍");
+                ui.label("\u{E30C}");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.dashboard_session_query)
                         .hint_text(tr(
@@ -7296,7 +7324,7 @@ impl CutySshApp {
                         ))
                         .desired_width(260.0),
                 );
-                if !self.dashboard_session_query.is_empty() && ui.small_button("✖").clicked() {
+                if !self.dashboard_session_query.is_empty() && ui.small_button("\u{E4F6}").clicked() {
                     self.dashboard_session_query.clear();
                 }
 
@@ -7347,18 +7375,18 @@ impl CutySshApp {
                 // Folder filter
                 let all_folders = self.config.all_folders();
                 egui::ComboBox::from_id_salt("manager_folder_filter")
-                    .selected_text(format!("📁 {}", self.dashboard_folder_filter))
+                    .selected_text(format!("\u{E24A} {}", self.dashboard_folder_filter))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.dashboard_folder_filter,
                             "Tous".to_string(),
-                            tr(lang, "📁 Tous les dossiers", "📁 All Folders"),
+                            tr(lang, "\u{E24A} Tous les dossiers", "\u{E24A} All Folders"),
                         );
                         for f in &all_folders {
                             ui.selectable_value(
                                 &mut self.dashboard_folder_filter,
                                 f.clone(),
-                                format!("📁 {}", f),
+                                format!("\u{E24A} {}", f),
                             );
                         }
                     });
@@ -7368,21 +7396,21 @@ impl CutySshApp {
                 if !all_tags.is_empty() {
                     egui::ComboBox::from_id_salt("manager_tag_filter")
                         .selected_text(if self.dashboard_tag_filter == "Tous" {
-                            tr(lang, "🏷 Tous les tags", "🏷 All Tags").to_string()
+                            tr(lang, "\u{E478} Tous les tags", "\u{E478} All Tags").to_string()
                         } else {
-                            format!("🏷 #{}", self.dashboard_tag_filter)
+                            format!("\u{E478} #{}", self.dashboard_tag_filter)
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut self.dashboard_tag_filter,
                                 "Tous".to_string(),
-                                tr(lang, "🏷 Tous les tags", "🏷 All Tags"),
+                                tr(lang, "\u{E478} Tous les tags", "\u{E478} All Tags"),
                             );
                             for t in &all_tags {
                                 ui.selectable_value(
                                     &mut self.dashboard_tag_filter,
                                     t.clone(),
-                                    format!("🏷 #{}", t),
+                                    format!("\u{E478} #{}", t),
                                 );
                             }
                         });
@@ -7499,7 +7527,7 @@ impl CutySshApp {
                                         "New folder...",
                                     )),
                             );
-                            if ui.button(tr(lang, "➡ Déplacer", "➡ Move")).clicked() {
+                            if ui.button(tr(lang, "\u{E06C} Déplacer", "\u{E06C} Move")).clicked() {
                                 let ids: Vec<Uuid> =
                                     self.selected_session_ids.iter().copied().collect();
                                 let moved = self
@@ -7525,7 +7553,7 @@ impl CutySshApp {
                                     .desired_width(80.0)
                                     .hint_text("e.g. prod"),
                             );
-                            if ui.button("🏷 + Tag").clicked()
+                            if ui.button("\u{E478} + Tag").clicked()
                                 && !self.bulk_tag_input.trim().is_empty()
                             {
                                 let ids: Vec<Uuid> =
@@ -7534,13 +7562,13 @@ impl CutySshApp {
                                     .config
                                     .add_tag_to_sessions(&ids, &self.bulk_tag_input);
                                 self.set_toast(format!(
-                                    "Tag '{}' ➡ {} session(s) !",
+                                    "Tag '{}' \u{E06C} {} session(s) !",
                                     self.bulk_tag_input.trim(),
                                     tagged
                                 ));
                                 self.bulk_tag_input.clear();
                             }
-                            if ui.button("🏷 - Tag").clicked()
+                            if ui.button("\u{E478} - Tag").clicked()
                                 && !self.bulk_tag_input.trim().is_empty()
                             {
                                 let ids: Vec<Uuid> =
@@ -7549,7 +7577,7 @@ impl CutySshApp {
                                     .config
                                     .remove_tag_from_sessions(&ids, &self.bulk_tag_input);
                                 self.set_toast(format!(
-                                    "Tag '{}' ✖ {} session(s) !",
+                                    "Tag '{}' \u{E4F6} {} session(s) !",
                                     self.bulk_tag_input.trim(),
                                     removed
                                 ));
@@ -7562,8 +7590,8 @@ impl CutySshApp {
                                 .button(
                                     RichText::new(tr(
                                         lang,
-                                        "🔑 Déployer Clé Principale",
-                                        "🔑 Deploy Primary Key",
+                                        "\u{E2D6} Déployer Clé Principale",
+                                        "\u{E2D6} Deploy Primary Key",
                                     ))
                                     .strong()
                                     .color(Color32::from_rgb(63, 185, 80)),
@@ -7626,8 +7654,8 @@ impl CutySshApp {
                             if ui
                                 .button(tr(
                                     lang,
-                                    "📑 Dupliquer sélection",
-                                    "📑 Duplicate Selected",
+                                    "\u{E710} Dupliquer sélection",
+                                    "\u{E710} Duplicate Selected",
                                 ))
                                 .clicked()
                             {
@@ -7649,8 +7677,8 @@ impl CutySshApp {
                             if ui
                                 .button(tr(
                                     lang,
-                                    "📤 Exporter sélection (JSON)",
-                                    "📤 Export Selected (JSON)",
+                                    "\u{E4C0} Exporter sélection (JSON)",
+                                    "\u{E4C0} Export Selected (JSON)",
                                 ))
                                 .clicked()
                             {
@@ -7676,8 +7704,8 @@ impl CutySshApp {
                                 .button(
                                     RichText::new(tr(
                                         lang,
-                                        "🗑 Supprimer sélection",
-                                        "🗑 Delete Selected",
+                                        "\u{E4A6} Supprimer sélection",
+                                        "\u{E4A6} Delete Selected",
                                     ))
                                     .color(Color32::from_rgb(248, 81, 73)),
                                 )
@@ -7696,7 +7724,7 @@ impl CutySshApp {
 
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if ui
-                                    .button(tr(lang, "✖ Désélectionner", "✖ Clear Selection"))
+                                    .button(tr(lang, "\u{E4F6} Désélectionner", "\u{E4F6} Clear Selection"))
                                     .clicked()
                                 {
                                     self.selected_session_ids.clear();
@@ -7801,8 +7829,8 @@ impl CutySshApp {
                             ui.label(
                                 RichText::new(tr(
                                     lang,
-                                    "🔍 Aucune session ne correspond à vos filtres",
-                                    "🔍 No session matches your filters",
+                                    "\u{E30C} Aucune session ne correspond à vos filtres",
+                                    "\u{E30C} No session matches your filters",
                                 ))
                                 .size(14.0)
                                 .color(Color32::from_rgb(139, 148, 158)),
@@ -7811,8 +7839,8 @@ impl CutySshApp {
                             if ui
                                 .button(tr(
                                     lang,
-                                    "🔄 Réinitialiser tous les filtres",
-                                    "🔄 Reset All Filters",
+                                    "\u{E094} Réinitialiser tous les filtres",
+                                    "\u{E094} Reset All Filters",
                                 ))
                                 .clicked()
                             {
@@ -7898,7 +7926,7 @@ impl CutySshApp {
                                             |ui| {
                                                 // Action buttons
                                                 if ui
-                                                    .small_button("🗑")
+                                                    .small_button("\u{E4A6}")
                                                     .on_hover_text(tr(
                                                         lang,
                                                         "Supprimer la session",
@@ -7909,7 +7937,7 @@ impl CutySshApp {
                                                     session_to_del = Some(s.id);
                                                 }
                                                 if ui
-                                                    .small_button("📑")
+                                                    .small_button("\u{E710}")
                                                     .on_hover_text(tr(
                                                         lang,
                                                         "Dupliquer la session",
@@ -7920,7 +7948,7 @@ impl CutySshApp {
                                                     session_to_dup = Some(s.id);
                                                 }
                                                 if ui
-                                                    .small_button("⚙")
+                                                    .small_button("\u{E270}")
                                                     .on_hover_text(tr(
                                                         lang,
                                                         "Configurer la session",
@@ -7936,7 +7964,7 @@ impl CutySshApp {
                                                 } = &s.ssh_auth
                                                     && !key_path.is_empty()
                                                     && ui
-                                                        .small_button("🔑")
+                                                        .small_button("\u{E2D6}")
                                                         .on_hover_text(tr(
                                                             lang,
                                                             "Charger la clé .ppk dans Pageant",
@@ -7948,7 +7976,7 @@ impl CutySshApp {
                                                 }
                                                 if ui
                                                     .button(
-                                                        RichText::new("🚀")
+                                                        RichText::new("\u{E3FE}")
                                                             .strong()
                                                             .color(Color32::from_rgb(
                                                                 88, 166, 255,
@@ -8050,7 +8078,7 @@ impl CutySshApp {
 
                                                 // Folder badge
                                                 ui.label(
-                                                    RichText::new(format!("📁 {}", s.folder))
+                                                    RichText::new(format!("\u{E24A} {}", s.folder))
                                                         .size(11.0)
                                                         .color(Color32::from_rgb(139, 148, 158)),
                                                 );

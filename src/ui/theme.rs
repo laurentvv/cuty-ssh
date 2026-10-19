@@ -80,6 +80,13 @@ fn install_fonts(ctx: &Context) {
     }
     proportional.push("phosphor".to_owned());
 
+    // Monospace labels (hints, code-like rows) may also carry icons.
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .push("phosphor".to_owned());
+
     ctx.set_fonts(fonts);
 }
 
