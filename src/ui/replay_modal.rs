@@ -72,8 +72,8 @@ impl CutySshApp {
         }
 
         egui::Window::new(tr(
-            "▶ Lecteur Replay de Session (.cast)",
-            "▶ Session Replay Player (.cast)",
+            "\u{E3D0} Lecteur Replay de Session (.cast)",
+            "\u{E3D0} Session Replay Player (.cast)",
         ))
         .open(&mut open)
         .resizable(true)
@@ -98,7 +98,7 @@ impl CutySshApp {
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
-                        .button(tr("📂 Ouvrir .cast", "📂 Open .cast"))
+                        .button(tr("\u{E256} Ouvrir .cast", "\u{E256} Open .cast"))
                         .on_hover_text(tr(
                             "Ouvrir un enregistrement .cast (Asciinema v2)",
                             "Open an Asciinema v2 .cast recording file",
@@ -132,7 +132,7 @@ impl CutySshApp {
 
                         if !cast_files.is_empty() {
                             egui::ComboBox::from_id_salt("recordings_quick_pick")
-                                .selected_text(tr("📼 Récents", "📼 Recent"))
+                                .selected_text(tr("\u{E792} Récents", "\u{E792} Recent"))
                                 .show_ui(ui, |ui| {
                                     for p in cast_files.iter().take(10) {
                                         let name = p
@@ -180,9 +180,12 @@ impl CutySshApp {
                     ui.add_space(10.0);
                     if ui
                         .button(
-                            RichText::new(tr("📂 Ouvrir un fichier .cast", "📂 Open a .cast file"))
-                                .strong()
-                                .color(Color32::from_rgb(88, 166, 255)),
+                            RichText::new(tr(
+                                "\u{E256} Ouvrir un fichier .cast",
+                                "\u{E256} Open a .cast file",
+                            ))
+                            .strong()
+                            .color(Color32::from_rgb(88, 166, 255)),
                         )
                         .clicked()
                     {
@@ -203,7 +206,11 @@ impl CutySshApp {
             // Timeline & Transport Controls
             ui.horizontal(|ui| {
                 // Play / Pause
-                let play_btn_text = if is_playing { "⏸ Pause" } else { "▶ Play" };
+                let play_btn_text = if is_playing {
+                    "\u{E39E} Pause"
+                } else {
+                    "\u{E3D0} Play"
+                };
                 if ui
                     .button(
                         RichText::new(play_btn_text)
@@ -219,7 +226,7 @@ impl CutySshApp {
 
                 // Restart
                 if ui
-                    .button("⏮")
+                    .button("\u{E5A4}")
                     .on_hover_text(tr("Recommencer", "Restart"))
                     .clicked()
                     && let (Some(p), Some(term)) =

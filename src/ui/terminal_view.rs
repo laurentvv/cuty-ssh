@@ -290,12 +290,12 @@ fn render_pane_header(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let badge = if is_primary {
-                    tr(lang, "🎯 Focus Actif", "🎯 Active Focus")
+                    tr(lang, "\u{E47C} Focus Actif", "\u{E47C} Active Focus")
                 } else {
                     tr(
                         lang,
-                        "👁 Vue Secondaire (cliquer pour activer)",
-                        "👁 Secondary Pane (click to focus)",
+                        "\u{E220} Vue Secondaire (cliquer pour activer)",
+                        "\u{E220} Secondary Pane (click to focus)",
                     )
                 };
                 ui.label(
@@ -312,9 +312,9 @@ fn render_pane_header(
                 if is_primary {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (bcast_txt, bcast_col) = if broadcast {
-                            ("📡 BROADCAST ON", Color32::from_rgb(248, 81, 73))
+                            ("\u{E0F2} BROADCAST ON", Color32::from_rgb(248, 81, 73))
                         } else {
-                            ("📡 Broadcast", Color32::from_rgb(139, 148, 158))
+                            ("\u{E0F2} Broadcast", Color32::from_rgb(139, 148, 158))
                         };
                         if ui
                             .selectable_label(
@@ -363,7 +363,7 @@ fn render_single_terminal_pane(
                 ui.horizontal_wrapped(|ui| {
                     if let Some(m) = &tab.telemetry {
                         ui.label(
-                            RichText::new(format!("🖥 {}", m.hostname))
+                            RichText::new(format!("\u{E560} {}", m.hostname))
                                 .monospace()
                                 .strong()
                                 .color(Color32::from_rgb(88, 166, 255)),
@@ -372,7 +372,7 @@ fn render_single_terminal_pane(
                         ui.separator();
 
                         ui.label(
-                            RichText::new(format!("⚡ Load: {}", m.load_avg))
+                            RichText::new(format!("\u{E2DE} Load: {}", m.load_avg))
                                 .monospace()
                                 .small()
                                 .color(Color32::from_rgb(201, 209, 217)),
@@ -389,7 +389,7 @@ fn render_single_terminal_pane(
                             } else {
                                 Color32::from_rgb(248, 81, 73)
                             };
-                            ui.label(RichText::new("🧠 RAM:").small());
+                            ui.label(RichText::new("\u{E74E} RAM:").small());
                             ui.add(
                                 egui::ProgressBar::new(mem_frac)
                                     .desired_width(115.0)
@@ -413,7 +413,10 @@ fn render_single_terminal_pane(
                             } else {
                                 Color32::from_rgb(248, 81, 73)
                             };
-                            ui.label(RichText::new(tr(lang, "💾 Disque /:", "💾 Disk /:")).small());
+                            ui.label(
+                                RichText::new(tr(lang, "\u{E248} Disque /:", "\u{E248} Disk /:"))
+                                    .small(),
+                            );
                             ui.add(
                                 egui::ProgressBar::new(disk_frac)
                                     .desired_width(110.0)
@@ -424,7 +427,7 @@ fn render_single_terminal_pane(
                         }
 
                         ui.label(
-                            RichText::new(format!("⏱ {}", m.uptime))
+                            RichText::new(format!("\u{E492} {}", m.uptime))
                                 .small()
                                 .color(Color32::from_rgb(139, 148, 158)),
                         );
@@ -432,8 +435,8 @@ fn render_single_terminal_pane(
                         ui.label(
                             RichText::new(tr(
                                 lang,
-                                "📊 Télémétrie serveur SSH en attente de collecte...",
-                                "📊 Waiting for SSH server telemetry...",
+                                "\u{E150} Télémétrie serveur SSH en attente de collecte...",
+                                "\u{E150} Waiting for SSH server telemetry...",
                             ))
                             .small()
                             .color(Color32::from_rgb(139, 148, 158)),
@@ -441,7 +444,7 @@ fn render_single_terminal_pane(
                     }
 
                     if ui
-                        .small_button(tr(lang, "🔄 Actualiser", "🔄 Refresh"))
+                        .small_button(tr(lang, "\u{E094} Actualiser", "\u{E094} Refresh"))
                         .on_hover_text(tr(
                             lang,
                             "Actualiser les métriques CPU / RAM / Disque du serveur",
@@ -463,8 +466,8 @@ fn render_single_terminal_pane(
                 ui.horizontal(|ui| {
                     ui.label(tr(
                         lang,
-                        "🔍 Recherche dans le terminal :",
-                        "🔍 Search in terminal:",
+                        "\u{E30C} Recherche dans le terminal :",
+                        "\u{E30C} Search in terminal:",
                     ));
                     ui.text_edit_singleline(&mut tab.search_query);
                     if ui.small_button(tr(lang, "Fermer", "Close")).clicked() {
@@ -799,28 +802,6 @@ pub fn protocol_badge_style(proto: ProtocolType) -> (&'static str, Color32) {
         ProtocolType::RawTcp => ("RAW TCP", Color32::from_rgb(163, 113, 247)),
         ProtocolType::LocalShell => ("CONPTY", Color32::from_rgb(63, 185, 80)),
     }
-}
-
-pub fn configure_visuals(ctx: &Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.window_fill = Color32::from_rgb(18, 22, 29);
-    visuals.panel_fill = Color32::from_rgb(13, 17, 23);
-    visuals.faint_bg_color = Color32::from_rgb(22, 27, 34);
-    visuals.extreme_bg_color = Color32::from_rgb(11, 14, 20);
-    visuals.window_stroke = Stroke::new(1.0, Color32::from_rgb(48, 54, 61));
-    visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(18, 22, 29);
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(38, 44, 54));
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(22, 27, 34);
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(48, 54, 61));
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(33, 40, 52);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(88, 166, 255));
-    visuals.widgets.active.bg_fill = Color32::from_rgb(40, 50, 66);
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(88, 166, 255));
-    visuals.selection.bg_fill = Color32::from_rgb(31, 75, 145);
-    visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(4);
-    visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(4);
-    visuals.widgets.active.corner_radius = egui::CornerRadius::same(4);
-    ctx.set_visuals(visuals);
 }
 
 pub fn encode_key_to_vt(key: Key, modifiers: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {

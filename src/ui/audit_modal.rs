@@ -19,8 +19,8 @@ impl CutySshApp {
         let mut open = self.show_audit_modal;
 
         egui::Window::new(tr(
-            "📜 Journal d'Audit & Historique des Connexions",
-            "📜 Connection Audit Trail & Activity Log",
+            "\u{EB7A} Journal d'Audit & Historique des Connexions",
+            "\u{EB7A} Connection Audit Trail & Activity Log",
         ))
         .open(&mut open)
         .resizable(true)
@@ -31,8 +31,8 @@ impl CutySshApp {
             ui.horizontal(|ui| {
                 ui.heading(
                     RichText::new(tr(
-                        "📜 Journal d'Audit Local",
-                        "📜 Local Audit & Activity Trail",
+                        "\u{EB7A} Journal d'Audit Local",
+                        "\u{EB7A} Local Audit & Activity Trail",
                     ))
                     .size(16.0)
                     .color(Color32::from_rgb(88, 166, 255)),
@@ -46,7 +46,7 @@ impl CutySshApp {
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
-                        .button(tr("🧹 Vider le journal", "🧹 Clear Audit Trail"))
+                        .button(tr("\u{EC54} Vider le journal", "\u{EC54} Clear Audit Trail"))
                         .on_hover_text(tr(
                             "Effacer définitivement l'historique d'audit local",
                             "Permanently clear the local audit trail",
@@ -59,7 +59,7 @@ impl CutySshApp {
                     }
 
                     if ui
-                        .button(tr("📤 Exporter JSON", "📤 Export JSON"))
+                        .button(tr("\u{E4C0} Exporter JSON", "\u{E4C0} Export JSON"))
                         .on_hover_text(tr(
                             "Exporter l'historique complet en fichier JSON",
                             "Export complete audit trail to a JSON file",
@@ -79,7 +79,7 @@ impl CutySshApp {
                     }
 
                     if ui
-                        .button(tr("📤 Exporter CSV", "📤 Export CSV"))
+                        .button(tr("\u{E4C0} Exporter CSV", "\u{E4C0} Export CSV"))
                         .on_hover_text(tr(
                             "Exporter l'historique sous forme de tableur CSV",
                             "Export audit trail as a standard CSV spreadsheet",
@@ -100,7 +100,7 @@ impl CutySshApp {
                         }
                     }
 
-                    if ui.button("🔄").on_hover_text(tr("Actualiser", "Refresh")).clicked() {
+                    if ui.button("\u{E094}").on_hover_text(tr("Actualiser", "Refresh")).clicked() {
                         self.refresh_audit_entries();
                     }
                 });
@@ -112,7 +112,7 @@ impl CutySshApp {
 
             // Filter bar
             ui.horizontal_wrapped(|ui| {
-                ui.label("🔍");
+                ui.label("\u{E30C}");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.audit_query)
                         .hint_text(tr(
@@ -121,7 +121,7 @@ impl CutySshApp {
                         ))
                         .desired_width(280.0),
                 );
-                if !self.audit_query.is_empty() && ui.small_button("✖").clicked() {
+                if !self.audit_query.is_empty() && ui.small_button("\u{E4F6}").clicked() {
                     self.audit_query.clear();
                 }
 
@@ -151,7 +151,7 @@ impl CutySshApp {
                     next_ev = Some("ERROR".to_string());
                 }
                 if ui
-                    .selectable_label(next_ev.as_deref() == Some("DEPLOY_KEY"), "🔑 Key Deployed")
+                    .selectable_label(next_ev.as_deref() == Some("DEPLOY_KEY"), "\u{E2D6} Key Deployed")
                     .clicked()
                 {
                     next_ev = Some("DEPLOY_KEY".to_string());
@@ -242,7 +242,7 @@ impl CutySshApp {
                                     "CONNECT" => ("🟢 CONNECT", Color32::from_rgb(63, 185, 80), Color32::from_rgb(18, 44, 25)),
                                     "DISCONNECT" => ("⚪ DISCONNECT", Color32::from_rgb(165, 214, 255), Color32::from_rgb(22, 34, 52)),
                                     "ERROR" => ("🔴 ERROR", Color32::from_rgb(248, 81, 73), Color32::from_rgb(52, 20, 20)),
-                                    "DEPLOY_KEY" => ("🔑 KEY DEPLOY", Color32::from_rgb(220, 185, 80), Color32::from_rgb(45, 38, 16)),
+                                    "DEPLOY_KEY" => ("\u{E2D6} KEY DEPLOY", Color32::from_rgb(220, 185, 80), Color32::from_rgb(45, 38, 16)),
                                     _ => (entry.event_type.as_str(), Color32::from_rgb(201, 209, 217), Color32::from_rgb(30, 36, 46)),
                                 };
 
