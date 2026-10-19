@@ -19,7 +19,7 @@
   <img src="assets/cuty_ssh_icon.png" width="88" alt="Icône Cuty-SSH" style="border-radius: 18px;" />
 </p>
 
-[**Télécharger la dernière version (`v0.4.0`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇬🇧 English Version**](README.md) · [**Visite animée**](#visite-guide-anime--aperu-du-cockpit) · [**Fonctionnalités**](#fonctionnalits-cls) · [**`ssh-copy-id` en 1 clic**](#dploiement-de-cl-ssh-copy-id-en-1-clic--migration-automatique-mot-de-passe--cl) · [**Bastion (`-J`)**](#bastion-ssh--hte-de-rebond--j--proxyjump) · [**Architecture**](#architecture) · [**Compiler depuis les sources**](#compiler-depuis-les-sources)
+[**Télécharger la dernière version (`v0.4.1`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇬🇧 English Version**](README.md) · [**Visite animée**](#visite-guide-anime--aperu-du-cockpit) · [**Fonctionnalités**](#fonctionnalits-cls) · [**`ssh-copy-id` en 1 clic**](#dploiement-de-cl-ssh-copy-id-en-1-clic--migration-automatique-mot-de-passe--cl) · [**Bastion (`-J`)**](#bastion-ssh--hte-de-rebond--j--proxyjump) · [**Architecture**](#architecture) · [**Compiler depuis les sources**](#compiler-depuis-les-sources)
 
 </div>
 
@@ -27,7 +27,7 @@
 
 ## Vue d'ensemble
 
-**Cuty-SSH** (`v0.4.0`) est un émulateur de terminal et cockpit d'administration système tout-en-un pour Windows, mono-binaire, portable et accéléré par GPU (**DirectX 12 / wgpu**), écrit en **Rust 100% sûr et asynchrone (`russh` + `egui` + `tokio`)**, sans **aucune dépendance binaire externe** (aucun emballage de `putty.exe` ou `kitty.exe`).
+**Cuty-SSH** (`v0.4.1`) est un émulateur de terminal et cockpit d'administration système tout-en-un pour Windows, mono-binaire, portable et accéléré par GPU (**DirectX 12 / wgpu**), écrit en **Rust 100% sûr et asynchrone (`russh` + `egui` + `tokio`)**, sans **aucune dépendance binaire externe** (aucun emballage de `putty.exe` ou `kitty.exe`).
 
 Il réconcilie l'écosystème classique **PuTTY / KiTTY** avec les méthodes de travail modernes **OpenSSH** :
 - Chargement natif des clés privées **PuTTY `.ppk` v2 et v3** (incluant le chiffrement par mot de passe **Argon2id**) en plus des formats OpenSSH et PEM.
@@ -53,7 +53,7 @@ Il réconcilie l'écosystème classique **PuTTY / KiTTY** avec les méthodes de 
 
 ## Tableau comparatif : Pourquoi Cuty-SSH ?
 
-| Fonctionnalité | PuTTY / KiTTY classique | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.4.0`)** |
+| Fonctionnalité | PuTTY / KiTTY classique | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.4.1`)** |
 | :--- | :---: | :---: | :---: |
 | **Moteur SSH2 pur Rust asynchrone (`russh`)** | ❌ Code C historique | ❌ Processus externe | ✅ **Intégré (`russh 0.64`)** |
 | **Clés PuTTY `.ppk` v2 & v3 (Argon2id) natives** | ✅ | ❌ Conversion requise | ✅ **Lecture & inspection directes** |
@@ -63,7 +63,7 @@ Il réconcilie l'écosystème classique **PuTTY / KiTTY** avec les méthodes de 
 | **Explorateur SFTP en streaming + Glisser-Déposer** | ❌ `psftp` séparé | ❌ | ✅ **Panneau intégré + flux 64 Ko** |
 | **Télémétrie serveur en direct (`Load` / `RAM` / `Disque`)** | ❌ | ❌ | ✅ **Bandeau d'en-tête non intrusif** |
 | **Chiffrement matériel des secrets (Windows DPAPI)** | ❌ Registre en clair | ❌ | ✅ **`CryptProtectData` + `zeroize`** |
-| **Gestionnaire d'empreintes TOFU `known_hosts` SHA-256** | Popup registre | Fichier texte seul | ✅ **Modale `🛡 Hosts` + alerte MITM** |
+| **Gestionnaire d'empreintes TOFU `known_hosts` SHA-256** | Popup registre | Fichier texte seul | ✅ **Modale `Outils ▾ → Known Hosts` + alerte MITM** |
 | **Écran scindé (`◫ Split V` / `⊟ Split H`)** | ❌ | ✅ | ✅ **Panneaux côte-à-côte et haut/bas** |
 | **Diffusion des frappes clavier (`📡 Broadcast`)** | ❌ | ❌ | ✅ **Saisie simultanée avec badge de sécurité** |
 | **Enregistrement de session (`🔴 REC`) & Lecteur (`▶ Replay`)** | Journal texte brut | ❌ | ✅ **Asciinema v2 (`.cast`) + lecteur GUI** |
@@ -112,11 +112,11 @@ Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur interméd
 1. Ouvrez l'éditeur de session (`➕ Session` ou cliquez sur `⚙` sur une carte de session).
 2. Dans l'onglet **🔌 Connexion & Clé .PPK / Pageant** (SSH2 sélectionné), accédez à la section **🏰 Bastion / Jump Host SSH (-J / ProxyJump)**.
 3. Choisissez une session Bastion enregistrée dans la liste déroulante ou renseignez un hôte inline (`user@bastion.corp:22`), puis cliquez sur **💾 Enregistrer**.
-4. Les sessions passant par un Bastion affichent un badge violet **`🏰 Bastion` / `🏰 -J`** sur le Cockpit et dans la barre latérale.
+4. Les sessions passant par un Bastion affichent un badge violet **`Bastion` / `-J`** sur le Cockpit et dans la barre latérale.
 
-- **Vérification TOFU des clés d'hôtes & Gestionnaire `known_hosts` (`🛡 Hosts`)** :
+- **Vérification TOFU des clés d'hôtes & Gestionnaire `known_hosts` (`Outils ▾ → 🛡 Known Hosts`)** :
   - Validation automatique Trust-On-First-Use (TOFU) des empreintes SHA-256 des serveurs dans `cuty-ssh-portable/known_hosts.json`.
-  - Protection stricte anti-MITM : blocage immédiat avec alerte de sécurité si la clé publique d'un serveur change, avec modale dédiée (`🛡 Hosts`) pour inspecter, copier ou révoquer une empreinte.
+  - Protection stricte anti-MITM : blocage immédiat avec alerte de sécurité si la clé publique d'un serveur change, avec modale dédiée (`Outils ▾ → Known Hosts`) pour inspecter, copier ou révoquer une empreinte.
 - **Coffre de stockage chiffré par Windows DPAPI** :
   - Les mots de passe et passphrases enregistrés sont chiffrés sur disque via l'API Windows **DPAPI** (`CryptProtectData` / `CryptUnprotectData`, lié à votre compte utilisateur Windows) avec préfixe `"dpapi:<base64>"` et protection `zeroize` en mémoire.
 - **Télémétrie serveur en direct** :
@@ -145,10 +145,10 @@ Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur interméd
 - **Recherche multicritère instantanée & Tags de sessions (`#tag`)** :
   - Filtrez instantanément par Nom, Hôte / IP, Port, Utilisateur, Protocole, Dossier ou `#tag`.
   - Associez des tags personnalisés (`prod`, `dmz`, `db`, `linux`, etc.) ou gérez les tags en lot sur plusieurs sessions via le **Gestionnaire (`📁 Gestionnaire`)**.
-- **Importateur automatique `~/.ssh/config` (`📥 Sync`) & Synchronisation PuTTY** :
+- **Importateur automatique `~/.ssh/config` (`Import ▾ → Sync`) & Synchronisation PuTTY** :
   - Analyse des fichiers `~/.ssh/config` standards (`Host`, `HostName`, `User`, `Port`, `IdentityFile`, `ProxyJump`, `LocalForward`, `RemoteForward`) avec import des tags et des tunnels.
   - Importation automatique ou manuelle depuis le Registre PuTTY (`HKCU\Software\SimonTatham\PuTTY\Sessions`).
-  - **Bouton `📥 KiTTY`** : choisissez un dossier KiTTY portable (celui qui contient `Sessions/`) pour importer toutes ses sessions ; `📥 Sync` le ré-importe ensuite.
+  - **Menu `Import ▾ → KiTTY…`** : choisissez un dossier KiTTY portable (celui qui contient `Sessions/`) pour importer toutes ses sessions ; `Import ▾ → Sync` le ré-importe ensuite.
 - **Boîte à outils Diagnostic Réseau (`🛠 Diagnostic & CIDR`) & Palette rapide (`Ctrl+K`)** :
   - Lanceur rapide de commandes et de sessions (`Ctrl+K`).
   - Scanner de ports TCP multi-threadé asynchrone & capture de bannières SSH.
