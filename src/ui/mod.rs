@@ -718,6 +718,25 @@ impl CutySshApp {
             "keys" => {
                 self.show_key_manager = true;
             }
+            "manager" => {
+                self.show_session_manager = true;
+            }
+            "palette" => {
+                self.show_command_palette = true;
+            }
+            "about" => {
+                self.show_about = true;
+            }
+            "audit" => {
+                self.refresh_audit_entries();
+                self.show_audit_modal = true;
+            }
+            "replay" => {
+                self.show_replay_modal = true;
+            }
+            "snippets" => {
+                self.show_commands_editor = true;
+            }
             _ => {}
         }
     }
@@ -2169,6 +2188,11 @@ impl CutySshApp {
                 // Session filter
                 ui.horizontal(|ui| {
                     ui.label("\u{E30C}");
+                    let clear_reserve = if self.session_filter.is_empty() {
+                        0.0
+                    } else {
+                        32.0
+                    };
                     ui.add(
                         egui::TextEdit::singleline(&mut self.session_filter)
                             .hint_text(tr(
@@ -2176,7 +2200,7 @@ impl CutySshApp {
                                 "Filtrer (nom, IP, #tag, dossier)...",
                                 "Filter (name, IP, #tag, folder)...",
                             ))
-                            .desired_width(f32::INFINITY),
+                            .desired_width((ui.available_width() - clear_reserve).max(60.0)),
                     );
                     if !self.session_filter.is_empty() && ui.small_button("\u{E4F6}").clicked() {
                         self.session_filter.clear();
@@ -4073,21 +4097,26 @@ impl CutySshApp {
                     });
                 } else {
                     let total_avail = ui.available_width();
-                    let net_grid_width = (total_avail - side_pad * 2.0).max(280.0);
+                    // Cards sit in a horizontal layout: every `add_space` is followed by the
+                    // layout's own item spacing, which must be part of the column math.
+                    let item_gap = ui.spacing().item_spacing.x;
+                    let gap = spacing + item_gap;
+                    let net_grid_width = (total_avail - side_pad * 2.0 - item_gap).max(280.0);
 
                     let min_card_outer = 290.0;
                     let max_card_outer = 380.0;
                     let max_allowed_cols = 4;
-                    let cols = (((net_grid_width + spacing) / (min_card_outer + spacing))
+                    let cols = (((net_grid_width + gap) / (min_card_outer + gap))
                         .floor() as usize)
                         .clamp(1, max_allowed_cols);
 
                     let outer_card_width = ((net_grid_width
-                        - (cols.saturating_sub(1) as f32 * spacing))
+                        - (cols.saturating_sub(1) as f32 * gap))
                         / cols as f32)
                         .min(max_card_outer);
 
-                    let inner_card_width = (outer_card_width - frame_pad * 2.0).max(220.0);
+                    // 1 px stroke on each side is added by the frame on top of its margin.
+                    let inner_card_width = (outer_card_width - frame_pad * 2.0 - 2.0).max(220.0);
 
                     for chunk in filtered.chunks(cols) {
                         ui.horizontal(|ui| {
@@ -7018,7 +7047,10 @@ impl CutySshApp {
                             );
                             ui.add_space(4.0);
                             ui.label(
-                                RichText::new("Version 0.1.0 (Rust 2024 Edition) • Windows Desktop")
+                                RichText::new(format!(
+                                    "Version {} (Rust 2024 Edition) • Windows Desktop",
+                                    env!("CARGO_PKG_VERSION")
+                                ))
                                     .size(13.0)
                                     .color(Color32::from_rgb(139, 148, 158)),
                             );
