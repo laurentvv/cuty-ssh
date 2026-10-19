@@ -4363,10 +4363,11 @@ impl CutySshApp {
                                                 }
                                             });
                                         });
-                                    });
-                                if ui.rect_contains_pointer(card.response.rect) {
+                                    })
+.response;
+                                if ui.rect_contains_pointer(card.rect) {
                                     ui.painter().rect_stroke(
-                                        card.response.rect,
+                                        card.rect,
                                         egui::CornerRadius::same(10),
                                         Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.6)),
                                         egui::StrokeKind::Inside,
