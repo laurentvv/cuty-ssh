@@ -176,3 +176,41 @@ pub fn primary_button(ui: &mut Ui, icon: &str, text: &str) -> Response {
         .stroke(Stroke::new(1.0, ACCENT)),
     )
 }
+
+/// Tints the Windows 11 title bar to match the toolbar (dark mode, caption/text colors,
+/// rounded corners). Best effort: silently ignored on older Windows builds.
+#[cfg(windows)]
+pub fn tint_title_bar(cc: &eframe::CreationContext<'_>) {
+    use eframe::egui_wgpu::wgpu::rwh::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Graphics::Dwm::{
+        DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+        DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
+    };
+
+    let Ok(handle) = cc.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(win) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = win.hwnd.get() as *mut core::ffi::c_void;
+
+    // COLORREF is 0x00BBGGRR.
+    let colorref =
+        |c: Color32| u32::from(c.r()) | (u32::from(c.g()) << 8) | (u32::from(c.b()) << 16);
+    let set = |attr: u32, value: u32| unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            attr,
+            &value as *const u32 as *const core::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+    };
+    set(DWMWA_USE_IMMERSIVE_DARK_MODE as u32, 1);
+    set(DWMWA_CAPTION_COLOR as u32, colorref(TOOLBAR_BG));
+    set(
+        DWMWA_TEXT_COLOR as u32,
+        colorref(Color32::from_rgb(230, 237, 243)),
+    );
+    set(DWMWA_WINDOW_CORNER_PREFERENCE as u32, 2); // DWMWCP_ROUND
+}
