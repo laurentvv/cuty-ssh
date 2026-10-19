@@ -308,6 +308,8 @@ pub struct CutySshApp {
 impl CutySshApp {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: tokio::runtime::Handle) -> Self {
         theme::apply(&cc.egui_ctx);
+        #[cfg(windows)]
+        theme::tint_title_bar(cc);
         let demo_stage = std::env::var("CUTY_SSH_DEMO_STAGE").ok();
         let config = if demo_stage.is_some() {
             Self::build_english_showcase_config()
@@ -2530,7 +2532,7 @@ impl CutySshApp {
                                                         .stroke(Stroke::new(0.6, Color32::from_rgb(163, 113, 247)))
                                                         .show(ui, |ui| {
                                                             ui.label(
-                                                                RichText::new("🏰 -J")
+                                                                RichText::new("\u{E89C} -J")
                                                                     .monospace()
                                                                     .size(9.0)
                                                                     .strong()
@@ -3704,20 +3706,23 @@ impl CutySshApp {
 
                 ui.add_space(18.0);
 
-                // Top Status & Quick Action Strip
+                // Quick actions: the other tools live in the top toolbar and the palette.
                 ui.horizontal_wrapped(|ui| {
                     ui.add_space(16.0);
                     if ui
                         .add_sized(
-                            [155.0, 36.0],
+                            [170.0, 36.0],
                             egui::Button::new(
                                 RichText::new(tr(
                                     lang,
-                                    "\u{E3D4} Nouvelle Session",
-                                    "\u{E3D4} New Session",
+                                    "\u{E3D4}  Nouvelle session",
+                                    "\u{E3D4}  New Session",
                                 ))
-                                .strong(),
-                            ),
+                                .strong()
+                                .color(Color32::WHITE),
+                            )
+                            .fill(theme::ACCENT_STRONG)
+                            .stroke(Stroke::new(1.0, theme::ACCENT)),
                         )
                         .clicked()
                     {
@@ -3727,15 +3732,12 @@ impl CutySshApp {
                     }
                     if ui
                         .add_sized(
-                            [165.0, 36.0],
-                            egui::Button::new(
-                                RichText::new(tr(
-                                    lang,
-                                    "\u{E2D6} Clés .ppk & Pageant",
-                                    "\u{E2D6} .ppk Keys & Pageant",
-                                ))
-                                .strong(),
-                            ),
+                            [170.0, 36.0],
+                            egui::Button::new(tr(
+                                lang,
+                                "\u{E2D6}  Clés .ppk & Pageant",
+                                "\u{E2D6}  .ppk Keys & Pageant",
+                            )),
                         )
                         .clicked()
                     {
@@ -3744,14 +3746,13 @@ impl CutySshApp {
                     }
                     if ui
                         .add_sized(
-                            [180.0, 36.0],
+                            [190.0, 36.0],
                             egui::Button::new(
                                 RichText::new(tr(
                                     lang,
-                                    "\u{E20C} Charger .ppk → Pageant",
-                                    "\u{E20C} Load .ppk → Pageant",
+                                    "\u{E20C}  Charger .ppk → Pageant",
+                                    "\u{E20C}  Load .ppk → Pageant",
                                 ))
-                                .strong()
                                 .color(Color32::from_rgb(210, 153, 34)),
                             ),
                         )
@@ -3767,84 +3768,12 @@ impl CutySshApp {
                     }
                     if ui
                         .add_sized(
-                            [165.0, 36.0],
-                            egui::Button::new(
-                                RichText::new(tr(
-                                    lang,
-                                    "\u{E24A} Gestion Sessions",
-                                    "\u{E24A} Session Manager",
-                                ))
-                                .strong()
-                                .color(Color32::from_rgb(88, 166, 255)),
-                            ),
-                        )
-                        .on_hover_text(tr(
-                            lang,
-                            "Ouvrir le gestionnaire de sessions (recherche, organisation par dossiers, tags, import/export JSON, actions par lot)",
-                            "Open the session manager (search, folders, tags, JSON import/export, bulk actions)",
-                        ))
-                        .clicked()
-                    {
-                        self.show_session_manager = true;
-                    }
-                    if ui
-                        .add_sized(
-                            [155.0, 36.0],
-                            egui::Button::new(
-                                RichText::new(tr(
-                                    lang,
-                                    "\u{E5D4} Outils Réseau",
-                                    "\u{E5D4} Network Tools",
-                                ))
-                                .strong(),
-                            ),
-                        )
-                        .clicked()
-                    {
-                        self.show_network_tools = true;
-                    }
-                    if ui
-                        .add_sized(
-                            [145.0, 36.0],
-                            egui::Button::new(RichText::new("\u{E47C} Palette (Ctrl+K)").strong()),
-                        )
-                        .clicked()
-                    {
-                        self.show_command_palette = true;
-                    }
-                    if ui
-                        .add_sized(
                             [150.0, 36.0],
-                            egui::Button::new(
-                                RichText::new(tr(
-                                    lang,
-                                    "\u{E0E6} Guide & Aide",
-                                    "\u{E0E6} User Guide",
-                                ))
-                                .strong()
-                                .color(Color32::from_rgb(56, 189, 248)),
-                            ),
-                        )
-                        .on_hover_text(tr(
-                            lang,
-                            "Ouvrir la documentation complète avec copie d'écran (Bastion SSH, Tags, Clés .ppk, SFTP...)",
-                            "Open the complete illustrated documentation (SSH Bastion, Tags, .ppk Keys, SFTP...)",
-                        ))
-                        .clicked()
-                    {
-                        self.show_help = true;
-                    }
-                    if ui
-                        .add_sized(
-                            [140.0, 36.0],
-                            egui::Button::new(
-                                RichText::new(tr(
-                                    lang,
-                                    "\u{E0F2} Ping Serveurs",
-                                    "\u{E0F2} Ping Servers",
-                                ))
-                                .strong(),
-                            ),
+                            egui::Button::new(tr(
+                                lang,
+                                "\u{E0F2}  Ping serveurs",
+                                "\u{E0F2}  Ping Servers",
+                            )),
                         )
                         .clicked()
                     {
@@ -4172,9 +4101,9 @@ impl CutySshApp {
                                 let has_bastion =
                                     s.jump_host_id.is_some() || !s.proxy_jump.trim().is_empty();
 
-                                egui::Frame::NONE
-                                    .fill(Color32::from_rgb(18, 22, 29))
-                                    .corner_radius(egui::CornerRadius::same(8))
+                                let card = egui::Frame::NONE
+                                    .fill(theme::SURFACE)
+                                    .corner_radius(egui::CornerRadius::same(10))
                                     .inner_margin(egui::Margin::same(frame_pad as i8))
                                     .stroke(Stroke::new(1.0, Color32::from_rgb(38, 44, 54)))
                                     .show(ui, |ui| {
@@ -4233,7 +4162,7 @@ impl CutySshApp {
                                                                 ))
                                                                 .show(ui, |ui| {
                                                                     ui.label(
-                                                                        RichText::new("🏰 Bastion")
+                                                                        RichText::new("\u{E89C} Bastion")
                                                                             .size(9.5)
                                                                             .monospace()
                                                                             .strong()
@@ -4406,6 +4335,14 @@ impl CutySshApp {
                                             });
                                         });
                                     });
+                                if ui.rect_contains_pointer(card.response.rect) {
+                                    ui.painter().rect_stroke(
+                                        card.response.rect,
+                                        egui::CornerRadius::same(10),
+                                        Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.6)),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
                             }
                         });
                         ui.add_space(spacing);
@@ -5436,8 +5373,8 @@ impl CutySshApp {
                                 ui.label(
                                     RichText::new(tr(
                                         lang,
-                                        "🏰 Bastion / Jump Host SSH (-J / ProxyJump)",
-                                        "🏰 SSH Bastion / Jump Host (-J / ProxyJump)",
+                                        "\u{E89C} Bastion / Jump Host SSH (-J / ProxyJump)",
+                                        "\u{E89C} SSH Bastion / Jump Host (-J / ProxyJump)",
                                     ))
                                     .strong(),
                                 );
