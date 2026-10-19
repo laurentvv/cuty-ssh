@@ -758,6 +758,13 @@ fn render_single_terminal_pane(
     }
 
     if capture_keyboard && tab.pending_prompt.is_none() && !tab.show_search_bar {
+        // Keys are read straight from the input queue, so a toolbar widget that kept egui
+        // focus after a click would also react to Enter/Space (e.g. reopen its menu).
+        // Hand the focus back to the terminal unless a text field or popup needs it.
+        if !ctx.egui_wants_keyboard_input() && !egui::Popup::is_any_open(ctx) {
+            response.request_focus();
+        }
+
         let app_cursor = tab.terminal.state.application_cursor_keys;
         let bracketed = tab.terminal.state.bracketed_paste;
 
