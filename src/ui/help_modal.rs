@@ -47,8 +47,8 @@ impl HelpTopic {
             ),
             HelpTopic::Bastion => tr(
                 lang,
-                "2. 🏰 Bastion / Jump Host (-J)",
-                "2. 🏰 Bastion / Jump Host (-J)",
+                "2. ⇨ Bastion / Jump Host (-J)",
+                "2. ⇨ Bastion / Jump Host (-J)",
             ),
             HelpTopic::TagsAndManager => tr(
                 lang,
@@ -279,8 +279,8 @@ impl CutySshApp {
             &[
                 tr(
                     lang,
-                    "① Barre d'outils supérieure : Accès direct à 🗂 Sessions, ➕ Session, ⚡ Shell PowerShell, 🔍 Palette (Ctrl+K), 📁 Gestionnaire, 🔑 Clés .ppk, 🛡 Hosts (TOFU), 🛠 Diagnostic, 📜 Audit, ▶ Replay, 📥 Sync (PuTTY + ~/.ssh/config), 📥 KiTTY (import dossier portable), ⚡ Snippets, 📖 Aide et 🌐 Langue (FR/EN).",
-                    "① Top Toolbar: Direct access to 🗂 Sessions, ➕ Session, ⚡ Local Shell, 🔍 Palette (Ctrl+K), 📁 Session Manager, 🔑 .ppk Keys, 🛡 Hosts (TOFU), 🛠 Diagnostics, 📜 Audit, ▶ Replay, 📥 Sync (PuTTY + ~/.ssh/config), 📥 KiTTY (portable folder import), ⚡ Snippets, 📖 Help, and 🌐 Language (FR/EN).",
+                    "① Barre d'outils supérieure : ◧ Sessions (volet latéral), bouton bleu « Nouvelle session », ⚡ Shell PowerShell, 🔍 Ctrl+K (Palette), 📁 Gestionnaire, 🔑 Clés .ppk, menu « Outils ▾ » (Known Hosts TOFU, Diagnostic réseau, Audit, Replay), menu « Import ▾ » (Sync PuTTY + ~/.ssh/config, dossier KiTTY portable) et ⚡ Snippets. À droite : 📡 Broadcast (quand des onglets sont ouverts), enroulement, épingle « toujours au premier plan », 📖 Aide, 🎨 À propos et 🌐 Langue (FR/EN).",
+                    "① Top Toolbar: ◧ Sessions (sidebar), blue 'New Session' button, ⚡ Local Shell, 🔍 Ctrl+K (Palette), 📁 Manager, 🔑 .ppk Keys, 'Tools ▾' menu (Known Hosts TOFU, Network tools, Audit, Replay), 'Import ▾' menu (Sync PuTTY + ~/.ssh/config, portable KiTTY folder) and ⚡ Snippets. On the right: 📡 Broadcast (when tabs are open), roll-up, 'always on top' pin, 📖 Help, 🎨 About and 🌐 Language (FR/EN).",
                 ),
                 tr(
                     lang,
@@ -289,8 +289,13 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
-                    "③ Cockpit central & Cartes de sessions : Chaque carte affiche le protocole (SSH2, TELNET, CONPTY), la pastille d'état réseau, la clé .ppk associée, les badges #tag, le badge 🏰 Bastion, et les boutons 🚀 Connecter / 🔑 → Pageant / ⚙ Modifier.",
-                    "③ Central Cockpit & Session Cards: Each card displays the protocol badge (SSH2, TELNET, CONPTY), live health status dot, attached .ppk key, #tag pills, 🏰 Bastion badge, and 🚀 Connect / 🔑 → Pageant / ⚙ Edit buttons.",
+                    "③ Cockpit central & Cartes de sessions : Chaque carte affiche le protocole (SSH2, TELNET, CONPTY), la pastille d'état réseau, la clé .ppk associée, les badges #tag, le badge violet Bastion, et les boutons 🚀 Connecter / 🔑 → Pageant / ⚙ Modifier. Une bordure bleue met la carte en évidence au survol.",
+                    "③ Central Cockpit & Session Cards: Each card displays the protocol badge (SSH2, TELNET, CONPTY), live health status dot, attached .ppk key, #tag pills, purple Bastion badge, and 🚀 Connect / 🔑 → Pageant / ⚙ Edit buttons. A blue border highlights the card on hover.",
+                ),
+                tr(
+                    lang,
+                    "④ Actions rapides de l'accueil : « Nouvelle session », « Clés .ppk & Pageant », « Charger .ppk → Pageant » et « Ping serveurs ». Tous les autres outils sont dans la barre supérieure et dans la Palette (Ctrl+K).",
+                    "④ Welcome quick actions: 'New Session', '.ppk Keys & Pageant', 'Load .ppk → Pageant' and 'Ping Servers'. Every other tool lives in the top toolbar and the Command Palette (Ctrl+K).",
                 ),
             ],
         );
@@ -299,8 +304,8 @@ impl CutySshApp {
     fn render_help_bastion(&self, ui: &mut egui::Ui, lang: UiLanguage) {
         ui.heading(tr(
             lang,
-            "🏰 2. Configurer et utiliser un Bastion / Jump Host SSH (-J / ProxyJump)",
-            "🏰 2. Configuring and Using an SSH Bastion / Jump Host (-J / ProxyJump)",
+            "⇨ 2. Configurer et utiliser un Bastion / Jump Host SSH (-J / ProxyJump)",
+            "⇨ 2. Configuring and Using an SSH Bastion / Jump Host (-J / ProxyJump)",
         ));
         ui.add_space(6.0);
 
@@ -308,19 +313,19 @@ impl CutySshApp {
             ui,
             tr(
                 lang,
-                "Méthode A — Depuis l'éditeur de session (➕ Session ou icône ⚙)",
-                "Method A — From the Session Editor (➕ Session or ⚙ icon)",
+                "Méthode A — Depuis l'éditeur de session (➕ Nouvelle session ou icône ⚙)",
+                "Method A — From the Session Editor (➕ New Session or ⚙ icon)",
             ),
             &[
                 tr(
                     lang,
-                    "1. Cliquez sur « ➕ Session » dans la barre supérieure, ou sur l'icône « ⚙ » d'une session existante.",
-                    "1. Click '➕ Session' in the top toolbar, or click the '⚙' icon on any existing session.",
+                    "1. Cliquez sur « ➕ Nouvelle session » dans la barre supérieure, ou sur l'icône « ⚙ » d'une session existante.",
+                    "1. Click '➕ New Session' in the top toolbar, or click the '⚙' icon on any existing session.",
                 ),
                 tr(
                     lang,
-                    "2. Dans le premier onglet « 1. Connexion & Clé (.ppk) » (protocole SSH2), descendez jusqu'à l'encadré « 🏰 Bastion / Jump Host SSH (-J / ProxyJump) ».",
-                    "2. In the first tab '1. Connection & Key (.ppk)' (with SSH2 selected), scroll to the section '🏰 Bastion / Jump Host SSH (-J / ProxyJump)'.",
+                    "2. Dans le premier onglet « 1. Connexion & Clé (.ppk) » (protocole SSH2), descendez jusqu'à l'encadré « ⇨ Bastion / Jump Host SSH (-J / ProxyJump) ».",
+                    "2. In the first tab '1. Connection & Key (.ppk)' (with SSH2 selected), scroll to the section '⇨ Bastion / Jump Host SSH (-J / ProxyJump)'.",
                 ),
                 tr(
                     lang,
@@ -334,8 +339,8 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
-                    "5. Une fois configuré, un badge violet « 🏰 Bastion » apparaît automatiquement sur la carte de la session dans le Cockpit !",
-                    "5. Once configured, a purple '🏰 Bastion' badge automatically appears on the session card in the Cockpit!",
+                    "5. Une fois configuré, un badge violet « Bastion » apparaît automatiquement sur la carte de la session dans le Cockpit !",
+                    "5. Once configured, a purple 'Bastion' badge automatically appears on the session card in the Cockpit!",
                 ),
             ],
         );
@@ -345,14 +350,14 @@ impl CutySshApp {
             ui,
             tr(
                 lang,
-                "Méthode B — Import automatique depuis ~/.ssh/config (📥 Sync)",
-                "Method B — Automatic Import from ~/.ssh/config (📥 Sync)",
+                "Méthode B — Import automatique depuis ~/.ssh/config (menu Import ▾)",
+                "Method B — Automatic Import from ~/.ssh/config (Import ▾ menu)",
             ),
             &[
                 tr(
                     lang,
-                    "• Si votre fichier C:\\Users\\<vous>\\.ssh\\config contient une directive « ProxyJump bastion », cliquez simplement sur « 📥 Sync » dans la barre supérieure.",
-                    "• If your C:\\Users\\<you>\\.ssh\\config file contains a 'ProxyJump bastion' directive, simply click '📥 Sync' in the top toolbar.",
+                    "• Si votre fichier C:\\Users\\<vous>\\.ssh\\config contient une directive « ProxyJump bastion », ouvrez le menu « Import ▾ » dans la barre supérieure et choisissez « Sync PuTTY + ssh_config ».",
+                    "• If your C:\\Users\\<you>\\.ssh\\config file contains a 'ProxyJump bastion' directive, open the 'Import ▾' menu in the top toolbar and choose 'Sync PuTTY + ssh_config'.",
                 ),
                 tr(
                     lang,
@@ -505,8 +510,8 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
-                    "• Alerte en cas de changement de clé : Si la clé publique d'un serveur change (attaque Man-in-the-Middle ou réinstallation du serveur), la connexion est bloquée. Ouvrez « 🛡 Hosts » dans la barre supérieure pour vérifier ou révoquer l'ancienne clé.",
-                    "• Key Mismatch Alert: If a server's public key changes (MITM attack or server reinstall), the connection is blocked. Open '🛡 Hosts' in the top toolbar to inspect or revoke the old key.",
+                    "• Alerte en cas de changement de clé : Si la clé publique d'un serveur change (attaque Man-in-the-Middle ou réinstallation du serveur), la connexion est bloquée. Ouvrez « Outils ▾ → 🛡 Known Hosts » dans la barre supérieure pour vérifier ou révoquer l'ancienne clé.",
+                    "• Key Mismatch Alert: If a server's public key changes (MITM attack or server reinstall), the connection is blocked. Open 'Tools ▾ → 🛡 Known Hosts' in the top toolbar to inspect or revoke the old key.",
                 ),
                 tr(
                     lang,
@@ -604,8 +609,8 @@ impl CutySshApp {
             ui,
             tr(
                 lang,
-                "Accessible via le bouton « 🛠 Diagnostic » de la barre supérieure",
-                "Accessible via the '🛠 Diagnostic' button in the top toolbar",
+                "Accessible via le menu « Outils ▾ → 🛠 Diagnostic réseau » de la barre supérieure",
+                "Accessible via the 'Tools ▾ → 🛠 Network tools' menu in the top toolbar",
             ),
             &[
                 tr(
@@ -701,13 +706,13 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
-                    "• Lecteur Replay interactif (▶ Replay) : Rejouez vos sessions avec barre de défilement temporelle, sélecteur de vitesse (0.5x, 1x, 2x, 4x) et recherche de fichier d'enregistrement.",
-                    "• Interactive Replay Player (▶ Replay): Replay recorded sessions with a timeline scrubber, speed multiplier (0.5x, 1x, 2x, 4x), and recording file selector.",
+                    "• Lecteur Replay interactif (Outils ▾ → ▶ Replay) : Rejouez vos sessions avec barre de défilement temporelle, sélecteur de vitesse (0.5x, 1x, 2x, 4x) et recherche de fichier d'enregistrement.",
+                    "• Interactive Replay Player (Tools ▾ → ▶ Replay): Replay recorded sessions with a timeline scrubber, speed multiplier (0.5x, 1x, 2x, 4x), and recording file selector.",
                 ),
                 tr(
                     lang,
-                    "• Journal d'Audit (📜 Audit) : Journalise localement tous les événements de connexion, déconnexion, durées de session, erreurs et déploiements de clés. Recherche en direct, filtres par type d'événement et exports en 1 clic en CSV ou JSON. Zéro secret ou mot de passe stocké.",
-                    "• Audit Trail (📜 Audit): Logs all connect, disconnect, session duration, error, and key deployment events locally. Live search, event type filters, and 1-click CSV/JSON export. Zero secrets or passwords stored.",
+                    "• Journal d'Audit (Outils ▾ → 📜 Audit) : Journalise localement tous les événements de connexion, déconnexion, durées de session, erreurs et déploiements de clés. Recherche en direct, filtres par type d'événement et exports en 1 clic en CSV ou JSON. Zéro secret ou mot de passe stocké.",
+                    "• Audit Trail (Tools ▾ → 📜 Audit): Logs all connect, disconnect, session duration, error, and key deployment events locally. Live search, event type filters, and 1-click CSV/JSON export. Zero secrets or passwords stored.",
                 ),
             ],
         );
@@ -850,7 +855,7 @@ impl CutySshApp {
       </ul>
     </div>
     <div class="card">
-      <h2>2. 🏰 Bastion / Jump Host SSH (<code>-J</code> / <code>ProxyJump</code>)</h2>
+      <h2>2. ⇨ Bastion / Jump Host SSH (<code>-J</code> / <code>ProxyJump</code>)</h2>
       <ul>
         <li>{c2_b1}</li>
         <li>{c2_b2}</li>
@@ -931,13 +936,13 @@ impl CutySshApp {
             ),
             c2_b2 = tr(
                 lang,
-                "Dans l'onglet <em>1. Connexion &amp; Clé</em>, section <strong>🏰 Bastion / Jump Host SSH</strong> : choisissez une session Bastion dans la liste déroulante ou saisissez <code>user@bastion:22</code> dans <em>ProxyJump inline</em>.",
-                "In tab <em>1. Connection &amp; Key</em>, under <strong>🏰 Bastion / Jump Host SSH</strong>: select a saved Bastion session from the dropdown or enter <code>user@bastion:22</code> in <em>Inline ProxyJump</em>."
+                "Dans l'onglet <em>1. Connexion &amp; Clé</em>, section <strong>⇨ Bastion / Jump Host SSH</strong> : choisissez une session Bastion dans la liste déroulante ou saisissez <code>user@bastion:22</code> dans <em>ProxyJump inline</em>.",
+                "In tab <em>1. Connection &amp; Key</em>, under <strong>⇨ Bastion / Jump Host SSH</strong>: select a saved Bastion session from the dropdown or enter <code>user@bastion:22</code> in <em>Inline ProxyJump</em>."
             ),
             c2_b3 = tr(
                 lang,
-                "Le bouton <strong>📥 Sync</strong> importe aussi automatiquement les directives <code>ProxyJump</code> de votre fichier <code>~/.ssh/config</code>.",
-                "The <strong>📥 Sync</strong> button also automatically imports <code>ProxyJump</code> directives from your <code>~/.ssh/config</code> file."
+                "Le menu <strong>Import ▾ → Sync</strong> importe aussi automatiquement les directives <code>ProxyJump</code> de votre fichier <code>~/.ssh/config</code>.",
+                "The <strong>Import ▾ → Sync</strong> menu also automatically imports <code>ProxyJump</code> directives from your <code>~/.ssh/config</code> file."
             ),
             c3_title = tr(lang, "Gestionnaire en lot", "Bulk Session Manager"),
             c3_b1 = tr(
@@ -962,8 +967,8 @@ impl CutySshApp {
             ),
             c5_b1 = tr(
                 lang,
-                "<strong>🛡 Hosts (TOFU)</strong> : vérifie l'empreinte SHA-256 du serveur SSH à chaque connexion et bloque tout changement suspect de clé publique.",
-                "<strong>🛡 Hosts (TOFU)</strong>: verifies the SSH server's SHA-256 fingerprint on every connection and blocks suspicious host key changes."
+                "<strong>Outils ▾ → 🛡 Known Hosts (TOFU)</strong> : vérifie l'empreinte SHA-256 du serveur SSH à chaque connexion et bloque tout changement suspect de clé publique.",
+                "<strong>Tools ▾ → 🛡 Known Hosts (TOFU)</strong>: verifies the SSH server's SHA-256 fingerprint on every connection and blocks suspicious host key changes."
             ),
             c5_b2 = tr(
                 lang,

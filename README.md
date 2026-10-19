@@ -19,7 +19,7 @@
   <img src="assets/cuty_ssh_icon.png" width="88" alt="Cuty-SSH App Icon" style="border-radius: 18px;" />
 </p>
 
-[**Download Latest Release (`v0.4.0`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#interactive-animated-tour--cockpit-preview) · [**Key Features**](#key-features) · [**1-Click `ssh-copy-id`**](#1-click-ssh-copy-id--automatic-password-to-key-migration) · [**Bastion (`-J`)**](#ssh-bastion--jump-host--j--proxyjump) · [**Architecture**](#architecture) · [**Build from Source**](#build-from-source)
+[**Download Latest Release (`v0.4.1`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#interactive-animated-tour--cockpit-preview) · [**Key Features**](#key-features) · [**1-Click `ssh-copy-id`**](#1-click-ssh-copy-id--automatic-password-to-key-migration) · [**Bastion (`-J`)**](#ssh-bastion--jump-host--j--proxyjump) · [**Architecture**](#architecture) · [**Build from Source**](#build-from-source)
 
 </div>
 
@@ -27,7 +27,7 @@
 
 ## Overview
 
-**Cuty-SSH** (`v0.4.0`) is a single-binary, portable, GPU-accelerated (**DirectX 12 / wgpu**) terminal emulator and sysadmin connection cockpit for Windows written in **100% safe, async Rust (`russh` + `egui` + `tokio`)** with **zero external binary dependencies** (no `putty.exe` or `kitty.exe` wrapper).
+**Cuty-SSH** (`v0.4.1`) is a single-binary, portable, GPU-accelerated (**DirectX 12 / wgpu**) terminal emulator and sysadmin connection cockpit for Windows written in **100% safe, async Rust (`russh` + `egui` + `tokio`)** with **zero external binary dependencies** (no `putty.exe` or `kitty.exe` wrapper).
 
 It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **OpenSSH** workflows:
 - Load **PuTTY `.ppk` v2 & v3** private keys natively (including **Argon2id** passphrase encryption) alongside OpenSSH/PEM keys.
@@ -52,7 +52,7 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 
 ## Feature Matrix: Why Cuty-SSH?
 
-| Capability | Classic PuTTY / KiTTY | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.4.0`)** |
+| Capability | Classic PuTTY / KiTTY | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.4.1`)** |
 | :--- | :---: | :---: | :---: |
 | **Pure Rust Async SSH2 Engine (`russh`)** | ❌ C legacy | ❌ External process | ✅ **Built-in (`russh 0.64`)** |
 | **Native PuTTY `.ppk` v2 & v3 (Argon2id) Keys** | ✅ | ❌ Requires conversion | ✅ **Direct load & inspection** |
@@ -62,13 +62,13 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 | **Integrated Streaming SFTP + Explorer Drag & Drop** | ❌ Separate `psftp` | ❌ | ✅ **Built-in side panel + 64 KB streaming** |
 | **Live Remote Telemetry Bar (`Load` / `RAM` / `Disk`)** | ❌ | ❌ | ✅ **Non-intrusive header bar** |
 | **Windows DPAPI Hardware-Bound Secret Encryption** | ❌ Plaintext registry | ❌ | ✅ **`CryptProtectData` + `zeroize`** |
-| **TOFU `known_hosts` SHA-256 Fingerprint Manager** | Registry popup | Text file only | ✅ **Visual `🛡 Hosts` modal + MITM alert** |
+| **TOFU `known_hosts` SHA-256 Fingerprint Manager** | Registry popup | Text file only | ✅ **Visual `Tools ▾ → Known Hosts` modal + MITM alert** |
 | **Split-Screen Terminal (`◫ Split V` / `⊟ Split H`)** | ❌ | ✅ | ✅ **Side-by-side & top-bottom panes** |
 | **Multi-Terminal Keystroke Broadcast (`📡 Broadcast`)** | ❌ | ❌ | ✅ **Simultaneous input with visual badge** |
-| **Session Recording (`🔴 REC`) & Player (`▶ Replay`)** | Text logging only | ❌ | ✅ **Asciinema v2 (`.cast`) + GUI player** |
+| **Session Recording (`🔴 REC`) & Player (`Tools ▾ → Replay`)** | Text logging only | ❌ | ✅ **Asciinema v2 (`.cast`) + GUI player** |
 | **Zero-Trust Edge Presets (ShellHub / Tailscale)** | ❌ | ❌ | ✅ **Native integration & auto-formatting** |
 | **Fleet Health Probing & Bulk `ssh-copy-id`** | ❌ | ❌ | ✅ **Periodic 45s TCP ping + 1-click batch key** |
-| **Audit Log Trail (`📜 Audit`) with CSV/JSON Export** | ❌ | ❌ | ✅ **Local session events + zero-secret audit** |
+| **Audit Log Trail (`Tools ▾ → Audit`) with CSV/JSON Export** | ❌ | ❌ | ✅ **Local session events + zero-secret audit** |
 | **SysAdmin Toolkit (Port Scanner, CIDR, Health Check)** | ❌ | ❌ | ✅ **Built-in `🛠 Network & CIDR`** |
 | **Bilingual UI (`🌐 EN / FR`) + Illustrated User Guide** | ❌ | ❌ | ✅ **Instant switch + HTML export** |
 
@@ -113,9 +113,9 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 3. Either select an existing saved SSH session in the **Bastion Session** dropdown, or type an inline jump specification (`user@bastion.corp:22`) in **Inline ProxyJump**, then click **💾 Save**.
 4. Sessions routed through a Bastion display a purple **`🏰 Bastion` / `🏰 -J`** badge in the Sidebar and Cockpit.
 
-- **TOFU Host Key Verification & `known_hosts` Manager (`🛡 Hosts`)**:
+- **TOFU Host Key Verification & `known_hosts` Manager (`Tools ▾ → 🛡 Known Hosts`)**:
   - Automatic Trust-On-First-Use (TOFU) verification of server SHA-256 public key fingerprints stored in `cuty-ssh-portable/known_hosts.json`.
-  - Strict anti-MITM protection: immediately blocks the connection with a security alert if a server's public key changes, with a dedicated modal (`🛡 Hosts`) to inspect, copy, or revoke fingerprints.
+  - Strict anti-MITM protection: immediately blocks the connection with a security alert if a server's public key changes, with a dedicated modal (`Tools ▾ → Known Hosts`) to inspect, copy, or revoke fingerprints.
 - **Windows DPAPI Encrypted Credentials Vault**:
   - Saved passwords and key passphrases are automatically encrypted at rest using Windows **DPAPI** (`CryptProtectData` / `CryptUnprotectData`, bound to the current Windows user account) with `"dpapi:<base64>"` encoding and `zeroize` in-memory protection.
 - **Live Remote Server Telemetry Bar**:
@@ -144,10 +144,10 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 - **Real-Time Multi-Criteria Search & Session Tags (`#tag`)**:
   - Filter sessions instantaneously as you type by **Name**, **Host / IP**, **Port**, **Username**, **Protocol**, **Folder**, or **`#tag`**.
   - Assign custom tags (`prod`, `docker`, `db`, `dmz`, `linux`, etc.) in the Session Editor or tag/untag multiple sessions in bulk inside the **Session Manager (`📁 Manager`)**.
-- **Automatic `~/.ssh/config` Importer (`📥 Sync`) & PuTTY Registry Sync**:
+- **Automatic `~/.ssh/config` Importer (`Import ▾ → Sync`) & PuTTY Registry Sync**:
   - Parses standard `~/.ssh/config` files (`Host`, `HostName`, `User`, `Port`, `IdentityFile`, `ProxyJump`, `LocalForward`, `RemoteForward`) and imports them with tags and tunnels.
   - Automatic & manual import from `HKCU\Software\SimonTatham\PuTTY\Sessions`.
-  - **`📥 KiTTY` button**: pick a portable KiTTY folder (the one containing `Sessions/`) to import all its sessions; `📥 Sync` re-imports it afterwards.
+  - **`Import ▾ → KiTTY…`**: pick a portable KiTTY folder (the one containing `Sessions/`) to import all its sessions; `Import ▾ → Sync` re-imports it afterwards.
 - **SysAdmin Diagnostic Toolkit (`🛠 Network & CIDR`) & Command Palette (`Ctrl+K`)**:
   - Fuzzy session & command launcher (`Ctrl+K`).
   - Multi-threaded async **TCP Port Scanner & SSH Banner Grabber**.
@@ -173,9 +173,9 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 - **Multi-Terminal Keystroke Broadcast (`📡 Broadcast`)**:
   - In Split View mode (Vertical or Horizontal), toggle `📡 Broadcast` to mirror every typed character simultaneously across all connected sessions.
   - Distinct safety indicators (orange `📡 BROADCAST ON` badge) in each terminal header clearly alert you when broadcast mode is armed.
-- **Session Recording (`🔴 REC`) & Built-in Player (`▶ Replay`)**:
+- **Session Recording (`🔴 REC`) & Built-in Player (`Tools ▾ → Replay`)**:
   - Record any active SSH or local terminal session on-the-fly into standard **Asciinema v2 (`.cast`)** JSON Lines format stored in `cuty-ssh-portable/recordings/`.
-  - Replay recordings anytime with the built-in **`▶ Replay`** modal featuring interactive timeline scrubbing, play/pause controls, and speed multipliers (`0.5x`, `1x`, `2x`, `4x`).
+  - Replay recordings anytime with the built-in **`Tools ▾ → ▶ Replay`** modal featuring interactive timeline scrubbing, play/pause controls, and speed multipliers (`0.5x`, `1x`, `2x`, `4x`).
   - 100% compatible with external tools like `asciinema play` or `agg`.
 - **Zero-Trust & Edge Gateway Presets (ShellHub & Tailscale)**:
   - First-class support for **ShellHub** IoT & edge device access (UUID-based routing through ShellHub Cloud or self-hosted instances) and **Tailscale** MagicDNS mesh IPs.
@@ -186,7 +186,7 @@ Connect to isolated private or DMZ servers transparently through an intermediate
   - `● Online` / `● Offline` filter toggles on the Cockpit show only reachable or only unreachable servers; the same toggles in the Session Manager let you select and bulk-delete dead VMs.
   - Manual `📡 Ping` button in the Cockpit toolbar triggers an immediate fleet-wide check.
   - In **`📁 Manager`**, select multiple hosts and click **`🔑 Deploy Primary Key`** to bulk-install your public key across your fleet in parallel.
-- **Local Session & Audit Log (`📜 Audit`)**:
+- **Local Session & Audit Log (`Tools ▾ → 📜 Audit`)**:
   - Centralized local audit trail recording connect, disconnect, session duration, error, and key deployment events.
   - Full-text search and event filter chips (`CONNECT`, `DISCONNECT`, `ERROR`, `DEPLOY_KEY`).
   - 1-click **CSV** and **JSON** exports for security audits and reporting.
