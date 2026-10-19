@@ -801,28 +801,6 @@ pub fn protocol_badge_style(proto: ProtocolType) -> (&'static str, Color32) {
     }
 }
 
-pub fn configure_visuals(ctx: &Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.window_fill = Color32::from_rgb(18, 22, 29);
-    visuals.panel_fill = Color32::from_rgb(13, 17, 23);
-    visuals.faint_bg_color = Color32::from_rgb(22, 27, 34);
-    visuals.extreme_bg_color = Color32::from_rgb(11, 14, 20);
-    visuals.window_stroke = Stroke::new(1.0, Color32::from_rgb(48, 54, 61));
-    visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(18, 22, 29);
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(38, 44, 54));
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(22, 27, 34);
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(48, 54, 61));
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(33, 40, 52);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(88, 166, 255));
-    visuals.widgets.active.bg_fill = Color32::from_rgb(40, 50, 66);
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(88, 166, 255));
-    visuals.selection.bg_fill = Color32::from_rgb(31, 75, 145);
-    visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(4);
-    visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(4);
-    visuals.widgets.active.corner_radius = egui::CornerRadius::same(4);
-    ctx.set_visuals(visuals);
-}
-
 pub fn encode_key_to_vt(key: Key, modifiers: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
     if modifiers.ctrl && !modifiers.alt {
         match key {

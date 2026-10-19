@@ -3,6 +3,7 @@ pub mod help_modal;
 pub mod known_hosts_modal;
 pub mod replay_modal;
 pub mod terminal_view;
+pub mod theme;
 
 use crate::config::{
     AppConfig, AuditLogEntry, EdgeGatewayPreset, ExpectRule, KnownHostEntry, PortForwardRule,
@@ -20,7 +21,7 @@ use crate::ssh::ppk::{
 };
 use crate::terminal::{TerminalEmulator, TerminalTheme};
 use crate::ui::help_modal::{HelpTopic, tr};
-use crate::ui::terminal_view::{configure_visuals, format_bytes, protocol_badge_style};
+use crate::ui::terminal_view::{format_bytes, protocol_badge_style};
 use arboard::Clipboard;
 use chrono::Local;
 use egui::{
@@ -298,7 +299,7 @@ pub struct CutySshApp {
 
 impl CutySshApp {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: tokio::runtime::Handle) -> Self {
-        configure_visuals(&cc.egui_ctx);
+        theme::apply(&cc.egui_ctx);
         let demo_stage = std::env::var("CUTY_SSH_DEMO_STAGE").ok();
         let config = if demo_stage.is_some() {
             Self::build_english_showcase_config()
@@ -1502,20 +1503,90 @@ impl eframe::App for CutySshApp {
 }
 
 impl CutySshApp {
+    fn sync_external_sessions(&mut self) {
+        let lang = self.config.language;
+        let mut total_imported = 0usize;
+        #[cfg(windows)]
+        if let Ok(n) = self.config.import_from_windows_registry() {
+            total_imported += n;
+        }
+        if let Ok(n) = self.config.import_from_openssh_config(None) {
+            total_imported += n;
+        }
+        if !self.config.kitty_dir.trim().is_empty()
+            && let Ok(n) = self
+                .config
+                .import_from_kitty_dir(Path::new(&self.config.kitty_dir.clone()))
+        {
+            total_imported += n;
+        }
+        self.probe_all_sessions();
+        self.set_toast(if lang == UiLanguage::French {
+            format!(
+                "Synchronisation PuTTY + ~/.ssh/config terminée ({} nouvelle(s) session(s)) !",
+                total_imported
+            )
+        } else {
+            format!(
+                "PuTTY + ~/.ssh/config sync complete ({} new session(s))!",
+                total_imported
+            )
+        });
+    }
+
+    fn import_kitty_folder(&mut self) {
+        let lang = self.config.language;
+        let Some(dir) = rfd::FileDialog::new()
+            .set_title(tr(
+                lang,
+                "Dossier KiTTY portable (contenant Sessions)",
+                "Portable KiTTY folder (containing Sessions)",
+            ))
+            .pick_folder()
+        else {
+            return;
+        };
+        self.config.kitty_dir = dir.to_string_lossy().to_string();
+        let msg = match self.config.import_from_kitty_dir(&dir) {
+            Ok(n) => {
+                self.probe_all_sessions();
+                format!(
+                    "{} {}",
+                    n,
+                    tr(
+                        lang,
+                        "session(s) KiTTY importée(s) !",
+                        "KiTTY session(s) imported!"
+                    )
+                )
+            }
+            Err(e) => format!(
+                "{} {}",
+                tr(lang, "Erreur import KiTTY :", "KiTTY import error:"),
+                e
+            ),
+        };
+        let _ = self.config.save();
+        self.set_toast(msg);
+    }
+
     fn render_top_toolbar(&mut self, ui: &mut Ui, ctx: &Context) {
         let lang = self.config.language;
         egui::Panel::top("top_toolbar")
             .frame(
                 egui::Frame::NONE
-                    .fill(Color32::from_rgb(16, 20, 28))
+                    .fill(theme::TOOLBAR_BG)
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .stroke(Stroke::new(1.0, Color32::from_rgb(38, 46, 62))),
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    // --- GAUCHE : Sessions & Lancement ---
+                    // --- LEFT: sessions & launch ---
                     if ui
-                        .selectable_label(self.show_sidebar, "🗂 Sessions")
+                        .selectable_label(
+                            self.show_sidebar,
+                            theme::icon_label(theme::icons::SIDEBAR, "Sessions"),
+                        )
                         .on_hover_text(tr(
                             lang,
                             "Afficher/Masquer la barre latérale des sessions",
@@ -1526,18 +1597,17 @@ impl CutySshApp {
                         self.show_sidebar = !self.show_sidebar;
                     }
 
-                    if ui
-                        .button(
-                            RichText::new(tr(lang, "➕ Session", "➕ New Session"))
-                                .strong()
-                                .color(Color32::from_rgb(63, 185, 80)),
-                        )
-                        .on_hover_text(tr(
-                            lang,
-                            "Créer et configurer une nouvelle session (SSH, Telnet, ConPTY...)",
-                            "Create and configure a new session (SSH, Telnet, ConPTY...)",
-                        ))
-                        .clicked()
+                    if theme::primary_button(
+                        ui,
+                        theme::icons::PLUS,
+                        tr(lang, "Nouvelle session", "New Session"),
+                    )
+                    .on_hover_text(tr(
+                        lang,
+                        "Créer et configurer une nouvelle session (SSH, Telnet, ConPTY...)",
+                        "Create and configure a new session (SSH, Telnet, ConPTY...)",
+                    ))
+                    .clicked()
                     {
                         self.editing_session = SessionProfile::default();
                         self.is_new_session = true;
@@ -1545,11 +1615,7 @@ impl CutySshApp {
                         self.show_session_editor = true;
                     }
 
-                    if ui
-                        .button(
-                            RichText::new("⚡ Shell")
-                                .color(Color32::from_rgb(220, 185, 80)),
-                        )
+                    if theme::tool_button(ui, theme::icons::LIGHTNING, "Shell")
                         .on_hover_text(tr(
                             lang,
                             "Ouvrir immédiatement un terminal local PowerShell",
@@ -1567,11 +1633,7 @@ impl CutySshApp {
                         self.launch_session(p);
                     }
 
-                    if ui
-                        .button(
-                            RichText::new("🔍 Palette")
-                                .color(Color32::from_rgb(165, 214, 255)),
-                        )
+                    if theme::tool_button(ui, theme::icons::SEARCH, "Ctrl+K")
                         .on_hover_text(tr(
                             lang,
                             "Recherche et lancement rapide de sessions et commandes (Ctrl+K)",
@@ -1585,33 +1647,28 @@ impl CutySshApp {
 
                     ui.separator();
 
-                    // --- CENTRE : Outils & Gestion ---
-                    if ui
-                        .button(
-                            RichText::new(tr(lang, "📁 Gestionnaire", "📁 Manager"))
-                                .color(Color32::from_rgb(88, 166, 255)),
-                        )
-                        .on_hover_text(tr(
-                            lang,
-                            "Gestionnaire avancé de sessions (organisation, dossiers, tags, import/export JSON, actions en lot)",
-                            "Advanced session manager (folders, tags, JSON import/export, bulk actions)",
-                        ))
-                        .clicked()
+                    // --- CENTER: management & tools ---
+                    if theme::tool_button(
+                        ui,
+                        theme::icons::FOLDER,
+                        tr(lang, "Gestionnaire", "Manager"),
+                    )
+                    .on_hover_text(tr(
+                        lang,
+                        "Gestionnaire avancé de sessions (organisation, dossiers, tags, import/export JSON, actions en lot)",
+                        "Advanced session manager (folders, tags, JSON import/export, bulk actions)",
+                    ))
+                    .clicked()
                     {
                         self.show_session_manager = true;
                     }
 
-                    let pageant_label = if self.agent_keys.is_empty() {
-                        tr(lang, "🔑 Clés PPK", "🔑 PPK Keys").to_string()
+                    let keys_label = if self.agent_keys.is_empty() {
+                        tr(lang, "Clés PPK", "PPK Keys").to_string()
                     } else {
-                        format!(
-                            "{} ({})",
-                            tr(lang, "🔑 Clés", "🔑 Keys"),
-                            self.agent_keys.len()
-                        )
+                        format!("{} ({})", tr(lang, "Clés", "Keys"), self.agent_keys.len())
                     };
-                    if ui
-                        .button(RichText::new(pageant_label).color(Color32::from_rgb(88, 166, 255)))
+                    if theme::tool_button(ui, theme::icons::KEY, &keys_label)
                         .on_hover_text(tr(
                             lang,
                             "Gestionnaire de clés PuTTY (.ppk v2/v3), Pageant, conversion et génération",
@@ -1623,150 +1680,108 @@ impl CutySshApp {
                         self.show_key_manager = true;
                     }
 
-                    let kh_label = if self.known_hosts.is_empty() {
-                        "🛡 Hosts".to_string()
-                    } else {
-                        format!("🛡 Hosts ({})", self.known_hosts.len())
-                    };
-                    if ui
-                        .button(RichText::new(kh_label).color(Color32::from_rgb(163, 113, 247)))
-                        .on_hover_text(tr(
-                            lang,
-                            "Gestionnaire Known Hosts TOFU (empreintes SHA-256 des serveurs SSH & import ~/.ssh/config)",
-                            "TOFU Known Hosts manager (SSH server SHA-256 fingerprints & ~/.ssh/config import)",
-                        ))
-                        .clicked()
-                    {
-                        self.known_hosts = crate::config::load_known_hosts();
-                        self.show_known_hosts = true;
-                    }
-
-                    if ui
-                        .button(
-                            RichText::new(tr(lang, "🛠 Diagnostic", "🛠 Network"))
-                                .color(Color32::from_rgb(52, 211, 153)),
-                        )
-                        .on_hover_text(tr(
-                            lang,
-                            "Scanner TCP/SSH, latence ms, bannières et calculateur CIDR",
-                            "TCP/SSH port scanner, ms latency, banners and IPv4 CIDR calculator",
-                        ))
-                        .clicked()
-                    {
-                        self.show_network_tools = true;
-                    }
-
-                    if ui
-                        .button(
-                            RichText::new(tr(lang, "📜 Audit", "📜 Audit"))
-                                .color(Color32::from_rgb(210, 168, 255)),
-                        )
-                        .on_hover_text(tr(
-                            lang,
-                            "Journal d'audit des connexions, déconnexions et durées de sessions avec export CSV/JSON",
-                            "Session connections and duration audit log with CSV/JSON export",
-                        ))
-                        .clicked()
-                    {
-                        self.refresh_audit_entries();
-                        self.show_audit_modal = true;
-                    }
-
-                    if ui
-                        .button(
-                            RichText::new(tr(lang, "▶ Replay", "▶ Replay"))
-                                .color(Color32::from_rgb(248, 81, 73)),
-                        )
-                        .on_hover_text(tr(
-                            lang,
-                            "Lecteur Replay interactif d'enregistrements de sessions (.cast Asciinema)",
-                            "Interactive Asciinema session replay player (.cast)",
-                        ))
-                        .clicked()
-                    {
-                        self.show_replay_modal = true;
-                    }
-
-                    if ui
-                        .button("📥 Sync")
-                        .on_hover_text(tr(
-                            lang,
-                            "Synchroniser les sessions depuis le Registre PuTTY et ~/.ssh/config",
-                            "Synchronize sessions from Windows PuTTY Registry and ~/.ssh/config",
-                        ))
-                        .clicked()
-                    {
-                        let mut total_imported = 0usize;
-                        #[cfg(windows)]
-                        if let Ok(n) = self.config.import_from_windows_registry() {
-                            total_imported += n;
-                        }
-                        if let Ok(n) = self.config.import_from_openssh_config(None) {
-                            total_imported += n;
-                        }
-                        if !self.config.kitty_dir.trim().is_empty()
-                            && let Ok(n) = self
-                                .config
-                                .import_from_kitty_dir(Path::new(&self.config.kitty_dir.clone()))
-                        {
-                            total_imported += n;
-                        }
-                        self.probe_all_sessions();
-                        self.set_toast(if lang == UiLanguage::French {
-                            format!(
-                                "Synchronisation PuTTY + ~/.ssh/config terminée ({} nouvelle(s) session(s)) !",
-                                total_imported
-                            )
-                        } else {
-                            format!(
-                                "PuTTY + ~/.ssh/config sync complete ({} new session(s))!",
-                                total_imported
-                            )
-                        });
-                    }
-
-                    if ui
-                        .button("📥 KiTTY")
-                        .on_hover_text(tr(
-                            lang,
-                            "Importer les sessions d'un dossier KiTTY portable (contenant Sessions)",
-                            "Import sessions from a portable KiTTY folder (containing Sessions)",
-                        ))
-                        .clicked()
-                        && let Some(dir) = rfd::FileDialog::new()
-                            .set_title(tr(
-                                lang,
-                                "Dossier KiTTY portable (contenant Sessions)",
-                                "Portable KiTTY folder (containing Sessions)",
-                            ))
-                            .pick_folder()
-                    {
-                        self.config.kitty_dir = dir.to_string_lossy().to_string();
-                        let msg = match self.config.import_from_kitty_dir(&dir) {
-                            Ok(n) => {
-                                self.probe_all_sessions();
-                                format!(
-                                    "{} {}",
-                                    n,
-                                    tr(
-                                        lang,
-                                        "session(s) KiTTY importée(s) !",
-                                        "KiTTY session(s) imported!"
-                                    )
-                                )
+                    ui.menu_button(
+                        theme::icon_label(
+                            theme::icons::TOOLS,
+                            &format!("{} {}", tr(lang, "Outils", "Tools"), theme::icons::CARET_DOWN),
+                        ),
+                        |ui| {
+                            let kh_label = if self.known_hosts.is_empty() {
+                                "Known Hosts".to_string()
+                            } else {
+                                format!("Known Hosts ({})", self.known_hosts.len())
+                            };
+                            if theme::tool_button(ui, theme::icons::SHIELD, &kh_label)
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Gestionnaire Known Hosts TOFU (empreintes SHA-256 des serveurs SSH & import ~/.ssh/config)",
+                                    "TOFU Known Hosts manager (SSH server SHA-256 fingerprints & ~/.ssh/config import)",
+                                ))
+                                .clicked()
+                            {
+                                self.known_hosts = crate::config::load_known_hosts();
+                                self.show_known_hosts = true;
                             }
-                            Err(e) => format!(
-                                "{} {}",
-                                tr(lang, "Erreur import KiTTY :", "KiTTY import error:"),
-                                e
-                            ),
-                        };
-                        let _ = self.config.save();
-                        self.set_toast(msg);
-                    }
+
+                            if theme::tool_button(
+                                ui,
+                                theme::icons::NETWORK,
+                                tr(lang, "Diagnostic réseau", "Network tools"),
+                            )
+                            .on_hover_text(tr(
+                                lang,
+                                "Scanner TCP/SSH, latence ms, bannières et calculateur CIDR",
+                                "TCP/SSH port scanner, ms latency, banners and IPv4 CIDR calculator",
+                            ))
+                            .clicked()
+                            {
+                                self.show_network_tools = true;
+                            }
+
+                            if theme::tool_button(ui, theme::icons::AUDIT, "Audit")
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Journal d'audit des connexions, déconnexions et durées de sessions avec export CSV/JSON",
+                                    "Session connections and duration audit log with CSV/JSON export",
+                                ))
+                                .clicked()
+                            {
+                                self.refresh_audit_entries();
+                                self.show_audit_modal = true;
+                            }
+
+                            if theme::tool_button(ui, theme::icons::REPLAY, "Replay")
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Lecteur Replay interactif d'enregistrements de sessions (.cast Asciinema)",
+                                    "Interactive Asciinema session replay player (.cast)",
+                                ))
+                                .clicked()
+                            {
+                                self.show_replay_modal = true;
+                            }
+                        },
+                    );
+
+                    ui.menu_button(
+                        theme::icon_label(
+                            theme::icons::DOWNLOAD,
+                            &format!("Import {}", theme::icons::CARET_DOWN),
+                        ),
+                        |ui| {
+                            if theme::tool_button(
+                                ui,
+                                theme::icons::SYNC,
+                                "Sync PuTTY + ssh_config",
+                            )
+                            .on_hover_text(tr(
+                                lang,
+                                "Synchroniser les sessions depuis le Registre PuTTY et ~/.ssh/config",
+                                "Synchronize sessions from Windows PuTTY Registry and ~/.ssh/config",
+                            ))
+                            .clicked()
+                            {
+                                self.sync_external_sessions();
+                            }
+
+                            if theme::tool_button(ui, theme::icons::FOLDER, "KiTTY…")
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Importer les sessions d'un dossier KiTTY portable (contenant Sessions)",
+                                    "Import sessions from a portable KiTTY folder (containing Sessions)",
+                                ))
+                                .clicked()
+                            {
+                                self.import_kitty_folder();
+                            }
+                        },
+                    );
 
                     if ui
-                        .selectable_label(self.config.show_command_bar, "⚡ Snippets")
+                        .selectable_label(
+                            self.config.show_command_bar,
+                            theme::icon_label(theme::icons::SNIPPETS, "Snippets"),
+                        )
                         .on_hover_text(tr(
                             lang,
                             "Afficher/Masquer le bandeau de commandes et scripts rapides (Snippets)",
@@ -1778,35 +1793,13 @@ impl CutySshApp {
                         let _ = self.config.save();
                     }
 
-                    if ui
-                        .selectable_label(
-                            self.show_help,
-                            RichText::new(tr(lang, "📖 Aide", "📖 Help"))
-                                .strong()
-                                .color(Color32::from_rgb(56, 189, 248)),
-                        )
-                        .on_hover_text(tr(
-                            lang,
-                            "Ouvrir le Guide Utilisateur illustré (Bastion SSH, Tags, Clés .ppk, SFTP, Sécurité...)",
-                            "Open the Illustrated User Guide (SSH Bastion, Tags, .ppk Keys, SFTP, Security...)",
-                        ))
-                        .clicked()
-                    {
-                        self.show_help = !self.show_help;
-                    }
-
-                    // --- DROITE : Langue, Contrôles de fenêtre & À propos ---
+                    // --- RIGHT: language, window controls, help & about ---
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let lang_btn_txt = match lang {
-                            UiLanguage::French => "🌐 FR",
-                            UiLanguage::English => "🌐 EN",
+                            UiLanguage::French => "FR",
+                            UiLanguage::English => "EN",
                         };
-                        if ui
-                            .button(
-                                RichText::new(lang_btn_txt)
-                                    .strong()
-                                    .color(Color32::from_rgb(245, 158, 11)),
-                            )
+                        if theme::tool_button(ui, theme::icons::GLOBE, lang_btn_txt)
                             .on_hover_text(tr(
                                 lang,
                                 "Basculer la langue de l'interface en Anglais (English)",
@@ -1825,30 +1818,59 @@ impl CutySshApp {
                             });
                         }
 
-                        if !self.tabs.is_empty() {
-                            let broadcast_text = if self.broadcast_mode {
-                                RichText::new("📡 Broadcast ON")
-                                    .color(Color32::from_rgb(248, 81, 73))
-                                    .strong()
-                            } else {
-                                RichText::new("📡 Broadcast")
-                            };
-                            if ui
-                                .selectable_label(self.broadcast_mode, broadcast_text)
-                                .on_hover_text(tr(
-                                    lang,
-                                    "Envoyer les saisies clavier simultanément à tous les onglets connectés",
-                                    "Send keyboard input simultaneously to all connected tabs",
-                                ))
-                                .clicked()
-                            {
-                                self.broadcast_mode = !self.broadcast_mode;
-                            }
-                            ui.separator();
+                        if ui
+                            .button(theme::icons::PALETTE)
+                            .on_hover_text(tr(
+                                lang,
+                                "À propos de Cuty-SSH, design et identité",
+                                "About Cuty-SSH, design system and visual identity",
+                            ))
+                            .clicked()
+                        {
+                            self.show_about = true;
                         }
 
                         if ui
-                            .selectable_label(self.is_rolled_up, "🔼 Roll-up")
+                            .selectable_label(
+                                self.show_help,
+                                theme::icon_label(theme::icons::BOOK, tr(lang, "Aide", "Help")),
+                            )
+                            .on_hover_text(tr(
+                                lang,
+                                "Ouvrir le Guide Utilisateur illustré (Bastion SSH, Tags, Clés .ppk, SFTP, Sécurité...)",
+                                "Open the Illustrated User Guide (SSH Bastion, Tags, .ppk Keys, SFTP, Security...)",
+                            ))
+                            .clicked()
+                        {
+                            self.show_help = !self.show_help;
+                        }
+
+                        if ui
+                            .selectable_label(self.config.global_always_on_top, theme::icons::PIN)
+                            .on_hover_text(tr(
+                                lang,
+                                "Maintenir la fenêtre toujours au premier plan",
+                                "Keep window always on top",
+                            ))
+                            .clicked()
+                        {
+                            self.config.global_always_on_top = !self.config.global_always_on_top;
+                            let level = if self.config.global_always_on_top {
+                                WindowLevel::AlwaysOnTop
+                            } else {
+                                WindowLevel::Normal
+                            };
+                            ctx.send_viewport_cmd(ViewportCommand::WindowLevel(level));
+                            let _ = self.config.save();
+                        }
+
+                        let rollup_icon = if self.is_rolled_up {
+                            theme::icons::CARET_DOWN
+                        } else {
+                            theme::icons::CARET_UP
+                        };
+                        if ui
+                            .selectable_label(self.is_rolled_up, rollup_icon)
                             .on_hover_text(tr(
                                 lang,
                                 "Enrouler/dérouler la fenêtre en bandeau compact (Roll-up)",
@@ -1872,38 +1894,32 @@ impl CutySshApp {
                             }
                         }
 
-                        if ui
-                            .selectable_label(self.config.global_always_on_top, "📌 Top")
-                            .on_hover_text(tr(
-                                lang,
-                                "Maintenir la fenêtre toujours au premier plan",
-                                "Keep window always on top",
-                            ))
-                            .clicked()
-                        {
-                            self.config.global_always_on_top = !self.config.global_always_on_top;
-                            let level = if self.config.global_always_on_top {
-                                WindowLevel::AlwaysOnTop
+                        if !self.tabs.is_empty() {
+                            ui.separator();
+                            let label = if self.broadcast_mode {
+                                RichText::new(theme::icon_label(
+                                    theme::icons::BROADCAST,
+                                    "Broadcast ON",
+                                ))
+                                .color(theme::DANGER)
+                                .strong()
                             } else {
-                                WindowLevel::Normal
+                                RichText::new(theme::icon_label(
+                                    theme::icons::BROADCAST,
+                                    "Broadcast",
+                                ))
                             };
-                            ctx.send_viewport_cmd(ViewportCommand::WindowLevel(level));
-                            let _ = self.config.save();
-                        }
-
-                        if ui
-                            .button(
-                                RichText::new(tr(lang, "🎨 À propos", "🎨 About"))
-                                    .color(Color32::from_rgb(167, 139, 250)),
-                            )
-                            .on_hover_text(tr(
-                                lang,
-                                "À propos de Cuty-SSH, design et identité",
-                                "About Cuty-SSH, design system and visual identity",
-                            ))
-                            .clicked()
-                        {
-                            self.show_about = true;
+                            if ui
+                                .selectable_label(self.broadcast_mode, label)
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Envoyer les saisies clavier simultanément à tous les onglets connectés",
+                                    "Send keyboard input simultaneously to all connected tabs",
+                                ))
+                                .clicked()
+                            {
+                                self.broadcast_mode = !self.broadcast_mode;
+                            }
                         }
                     });
                 });
