@@ -737,6 +737,14 @@ impl CutySshApp {
             "snippets" => {
                 self.show_commands_editor = true;
             }
+            "tab" => {
+                self.launch_session(SessionProfile {
+                    name: "PowerShell Local".to_string(),
+                    protocol: ProtocolType::LocalShell,
+                    local_shell_cmd: "powershell.exe".to_string(),
+                    ..Default::default()
+                });
+            }
             _ => {}
         }
     }
@@ -1925,18 +1933,14 @@ impl CutySshApp {
 
                         if !self.tabs.is_empty() {
                             ui.separator();
+                            // Icon-only when off: keeps the right-hand group from running into
+                            // the left one at the default 1320 px width.
                             let label = if self.broadcast_mode {
-                                RichText::new(theme::icon_label(
-                                    theme::icons::BROADCAST,
-                                    "Broadcast ON",
-                                ))
-                                .color(theme::DANGER)
-                                .strong()
+                                RichText::new(theme::icon_label(theme::icons::BROADCAST, "ON"))
+                                    .color(theme::DANGER)
+                                    .strong()
                             } else {
-                                RichText::new(theme::icon_label(
-                                    theme::icons::BROADCAST,
-                                    "Broadcast",
-                                ))
+                                RichText::new(theme::icons::BROADCAST)
                             };
                             if ui
                                 .selectable_label(self.broadcast_mode, label)
@@ -2782,11 +2786,12 @@ impl CutySshApp {
             .inner_margin(egui::Margin::symmetric(8, 4))
             .stroke(Stroke::new(1.0, Color32::from_rgb(38, 46, 62)))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.vertical(|ui| {
                     let mut close_idx: Option<usize> = None;
                     let mut duplicate_profile: Option<SessionProfile> = None;
 
                     // 1. GAUCHE : Onglets de sessions
+                    ui.horizontal(|ui| {
                     for (idx, tab) in self.tabs.iter().enumerate() {
                         let is_active = idx == self.active_tab_idx;
                         let status_icon = match tab.state {
@@ -2884,189 +2889,29 @@ impl CutySshApp {
                         self.launch_session(p);
                     }
 
-                    // 2. DROITE : Outils de la session active ancrés à droite
+                    });
+
+                    // 2. Outils de la session active, sur leur propre ligne : ils passent à la
+                    // ligne au lieu de recouvrir les onglets quand la zone centrale est étroite
+                    // (ex. panneau SFTP ouvert). `horizontal_wrapped` ne consomme que la hauteur
+                    // nécessaire, contrairement à un layout right_to_left avec wrap.
                     let can_split = self.tabs.len() >= 2;
                     let mut next_split_mode = self.split_mode;
                     let mut deploy_key_for_active = false;
                     let mut toggle_rec = false;
                     let mut toggle_broadcast = false;
                     if let Some(active_tab) = self.tabs.get_mut(self.active_tab_idx) {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            // 🔴 REC / ⏹ REC
-                            let rec_label = if let Some(rec) = &active_tab.recorder {
-                                let elapsed = rec.elapsed().as_secs();
-                                let m = elapsed / 60;
-                                let s = elapsed % 60;
-                                format!("\u{E46C} REC ({:02}:{:02})", m, s)
-                            } else {
-                                "🔴 REC".to_string()
-                            };
-                            let rec_color = if active_tab.recorder.is_some() {
-                                Color32::from_rgb(248, 81, 73)
-                            } else {
-                                Color32::from_rgb(201, 209, 217)
-                            };
+                        ui.horizontal_wrapped(|ui| {
                             if ui
-                                .button(RichText::new(rec_label).strong().color(rec_color))
+                                .button(tr(lang, "\u{E710} Dupliquer", "\u{E710} Duplicate"))
                                 .on_hover_text(tr(
                                     lang,
-                                    "Démarrer / Arrêter l'enregistrement de la session (Asciinema v2 .cast)",
-                                    "Start / Stop session recording (Asciinema v2 .cast format)",
+                                    "Démarrer une session identique (dupliquer la session)",
+                                    "Launch an identical session in a new tab",
                                 ))
                                 .clicked()
                             {
-                                toggle_rec = true;
-                            }
-
-                            if can_split {
-                                let bcast_text = if self.broadcast_mode {
-                                    RichText::new("\u{E0F2} Broadcast ON").color(Color32::from_rgb(248, 81, 73)).strong()
-                                } else {
-                                    RichText::new("\u{E0F2} Broadcast")
-                                };
-                                if ui
-                                    .selectable_label(self.broadcast_mode, bcast_text)
-                                    .on_hover_text(tr(
-                                        lang,
-                                        "Envoyer la saisie clavier simultanément à tous les terminaux ouverts",
-                                        "Send keyboard input simultaneously to all open terminal panes",
-                                    ))
-                                    .clicked()
-                                {
-                                    toggle_broadcast = true;
-                                }
-                            }
-
-                            if ui
-                                .button(tr(lang, "\u{EC54} Vider", "\u{EC54} Clear"))
-                                .on_hover_text(tr(
-                                    lang,
-                                    "Effacer l'historique du terminal (Clear scrollback)",
-                                    "Clear terminal scrollback history",
-                                ))
-                                .clicked()
-                            {
-                                active_tab.terminal.clear_scrollback();
-                            }
-
-                            if ui
-                                .selectable_label(
-                                    active_tab.show_search_bar,
-                                    tr(lang, "\u{E30C} Chercher", "\u{E30C} Find"),
-                                )
-                                .on_hover_text(tr(
-                                    lang,
-                                    "Rechercher dans l'historique du terminal (Ctrl+F)",
-                                    "Search in terminal history (Ctrl+F)",
-                                ))
-                                .clicked()
-                            {
-                                active_tab.show_search_bar = !active_tab.show_search_bar;
-                            }
-
-                            if ui
-                                .button("\u{EB7A} Script")
-                                .on_hover_text(tr(
-                                    lang,
-                                    "Exécuter un script local sur la session distante",
-                                    "Execute a local script on the remote session",
-                                ))
-                                .clicked()
-                                && let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Scripts", &["sh", "bash", "txt", "ps1", "bat", "*"])
-                                    .pick_file()
-                            {
-                                let _ = active_tab
-                                    .handle
-                                    .cmd_tx
-                                    .send(BackendCommand::RunLocalScript(path));
-                            }
-
-                            if ui
-                                .selectable_label(
-                                    active_tab.profile.read_only,
-                                    tr(lang, "\u{E2FA} Verrou", "\u{E2FA} Lock"),
-                                )
-                                .on_hover_text(tr(
-                                    lang,
-                                    "Protection clavier : bloquer les saisies accidentelles",
-                                    "Keyboard lock: prevent accidental keystrokes",
-                                ))
-                                .clicked()
-                            {
-                                active_tab.profile.read_only = !active_tab.profile.read_only;
-                            }
-
-                            if active_tab.profile.protocol == ProtocolType::Ssh {
-                                let is_pwd_auth = matches!(
-                                    active_tab.profile.ssh_auth,
-                                    SshAuthMethod::Password | SshAuthMethod::KeyboardInteractive
-                                );
-                                let btn_label = if is_pwd_auth {
-                                    tr(
-                                        lang,
-                                        "\u{E2D6}\u{E06C}\u{E560} Copier ma Clé (ssh-copy-id)",
-                                        "\u{E2D6}\u{E06C}\u{E560} Copy My Key (ssh-copy-id)",
-                                    )
-                                } else {
-                                    tr(lang, "\u{E2D6}\u{E06C}\u{E560} ssh-copy-id", "\u{E2D6}\u{E06C}\u{E560} ssh-copy-id")
-                                };
-                                let btn_color = if is_pwd_auth {
-                                    Color32::from_rgb(63, 185, 80)
-                                } else {
-                                    Color32::from_rgb(210, 153, 34)
-                                };
-                                if ui
-                                    .button(RichText::new(btn_label).strong().color(btn_color))
-                                    .on_hover_text(tr(
-                                        lang,
-                                        "Installe votre Clé Publique Principale dans ~/.ssh/authorized_keys sur ce serveur et bascule automatiquement la session sur l'authentification par clé (sans mot de passe)",
-                                        "Installs your Primary Public Key into ~/.ssh/authorized_keys on this server and automatically switches this session to key authentication (passwordless)",
-                                    ))
-                                    .clicked()
-                                {
-                                    deploy_key_for_active = true;
-                                }
-
-                                if ui
-                                    .selectable_label(active_tab.show_sftp_panel, "\u{E256} SFTP")
-                                    .on_hover_text(tr(
-                                        lang,
-                                        "Ouvrir l'explorateur de fichiers SFTP latéral",
-                                        "Open the side SFTP file explorer",
-                                    ))
-                                    .clicked()
-                                {
-                                    active_tab.show_sftp_panel = !active_tab.show_sftp_panel;
-                                    if active_tab.show_sftp_panel {
-                                        let _ = active_tab.handle.cmd_tx.send(
-                                            BackendCommand::SftpListDir(
-                                                active_tab.sftp_current_path.clone(),
-                                            ),
-                                        );
-                                    }
-                                }
-
-                                if ui
-                                    .selectable_label(
-                                        active_tab.show_telemetry_bar,
-                                        tr(lang, "\u{E150} Télémétrie", "\u{E150} Telemetry"),
-                                    )
-                                    .on_hover_text(tr(
-                                        lang,
-                                        "Monitoring serveur en temps réel (CPU, RAM, Disque, Uptime)",
-                                        "Live server telemetry (CPU, RAM, Disk, Uptime)",
-                                    ))
-                                    .clicked()
-                                {
-                                    active_tab.show_telemetry_bar = !active_tab.show_telemetry_bar;
-                                    if active_tab.show_telemetry_bar {
-                                        let _ = active_tab
-                                            .handle
-                                            .cmd_tx
-                                            .send(BackendCommand::RefreshTelemetry);
-                                    }
-                                }
+                                duplicate_profile = Some(active_tab.profile.clone());
                             }
 
                             if can_split {
@@ -3108,16 +2953,181 @@ impl CutySshApp {
                                 }
                             }
 
+                            if active_tab.profile.protocol == ProtocolType::Ssh {
+                                if ui
+                                    .selectable_label(
+                                        active_tab.show_telemetry_bar,
+                                        tr(lang, "\u{E150} Télémétrie", "\u{E150} Telemetry"),
+                                    )
+                                    .on_hover_text(tr(
+                                        lang,
+                                        "Monitoring serveur en temps réel (CPU, RAM, Disque, Uptime)",
+                                        "Live server telemetry (CPU, RAM, Disk, Uptime)",
+                                    ))
+                                    .clicked()
+                                {
+                                    active_tab.show_telemetry_bar = !active_tab.show_telemetry_bar;
+                                    if active_tab.show_telemetry_bar {
+                                        let _ = active_tab
+                                            .handle
+                                            .cmd_tx
+                                            .send(BackendCommand::RefreshTelemetry);
+                                    }
+                                }
+
+                                if ui
+                                    .selectable_label(active_tab.show_sftp_panel, "\u{E256} SFTP")
+                                    .on_hover_text(tr(
+                                        lang,
+                                        "Ouvrir l'explorateur de fichiers SFTP latéral",
+                                        "Open the side SFTP file explorer",
+                                    ))
+                                    .clicked()
+                                {
+                                    active_tab.show_sftp_panel = !active_tab.show_sftp_panel;
+                                    if active_tab.show_sftp_panel {
+                                        let _ = active_tab.handle.cmd_tx.send(
+                                            BackendCommand::SftpListDir(
+                                                active_tab.sftp_current_path.clone(),
+                                            ),
+                                        );
+                                    }
+                                }
+
+                                let is_pwd_auth = matches!(
+                                    active_tab.profile.ssh_auth,
+                                    SshAuthMethod::Password | SshAuthMethod::KeyboardInteractive
+                                );
+                                let btn_label = if is_pwd_auth {
+                                    tr(
+                                        lang,
+                                        "\u{E2D6}\u{E06C}\u{E560} Copier ma Clé (ssh-copy-id)",
+                                        "\u{E2D6}\u{E06C}\u{E560} Copy My Key (ssh-copy-id)",
+                                    )
+                                } else {
+                                    tr(lang, "\u{E2D6}\u{E06C}\u{E560} ssh-copy-id", "\u{E2D6}\u{E06C}\u{E560} ssh-copy-id")
+                                };
+                                let btn_color = if is_pwd_auth {
+                                    Color32::from_rgb(63, 185, 80)
+                                } else {
+                                    Color32::from_rgb(210, 153, 34)
+                                };
+                                if ui
+                                    .button(RichText::new(btn_label).strong().color(btn_color))
+                                    .on_hover_text(tr(
+                                        lang,
+                                        "Installe votre Clé Publique Principale dans ~/.ssh/authorized_keys sur ce serveur et bascule automatiquement la session sur l'authentification par clé (sans mot de passe)",
+                                        "Installs your Primary Public Key into ~/.ssh/authorized_keys on this server and automatically switches this session to key authentication (passwordless)",
+                                    ))
+                                    .clicked()
+                                {
+                                    deploy_key_for_active = true;
+                                }
+                            }
+
                             if ui
-                                .button(tr(lang, "\u{E710} Dupliquer", "\u{E710} Duplicate"))
+                                .selectable_label(
+                                    active_tab.profile.read_only,
+                                    tr(lang, "\u{E2FA} Verrou", "\u{E2FA} Lock"),
+                                )
                                 .on_hover_text(tr(
                                     lang,
-                                    "Démarrer une session identique (dupliquer la session)",
-                                    "Launch an identical session in a new tab",
+                                    "Protection clavier : bloquer les saisies accidentelles",
+                                    "Keyboard lock: prevent accidental keystrokes",
                                 ))
                                 .clicked()
                             {
-                                duplicate_profile = Some(active_tab.profile.clone());
+                                active_tab.profile.read_only = !active_tab.profile.read_only;
+                            }
+
+                            if ui
+                                .button("\u{EB7A} Script")
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Exécuter un script local sur la session distante",
+                                    "Execute a local script on the remote session",
+                                ))
+                                .clicked()
+                                && let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("Scripts", &["sh", "bash", "txt", "ps1", "bat", "*"])
+                                    .pick_file()
+                            {
+                                let _ = active_tab
+                                    .handle
+                                    .cmd_tx
+                                    .send(BackendCommand::RunLocalScript(path));
+                            }
+
+                            if ui
+                                .selectable_label(
+                                    active_tab.show_search_bar,
+                                    tr(lang, "\u{E30C} Chercher", "\u{E30C} Find"),
+                                )
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Rechercher dans l'historique du terminal (Ctrl+F)",
+                                    "Search in terminal history (Ctrl+F)",
+                                ))
+                                .clicked()
+                            {
+                                active_tab.show_search_bar = !active_tab.show_search_bar;
+                            }
+
+                            if ui
+                                .button(tr(lang, "\u{EC54} Vider", "\u{EC54} Clear"))
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Effacer l'historique du terminal (Clear scrollback)",
+                                    "Clear terminal scrollback history",
+                                ))
+                                .clicked()
+                            {
+                                active_tab.terminal.clear_scrollback();
+                            }
+
+                            if can_split {
+                                let bcast_text = if self.broadcast_mode {
+                                    RichText::new("\u{E0F2} Broadcast ON").color(Color32::from_rgb(248, 81, 73)).strong()
+                                } else {
+                                    RichText::new("\u{E0F2} Broadcast")
+                                };
+                                if ui
+                                    .selectable_label(self.broadcast_mode, bcast_text)
+                                    .on_hover_text(tr(
+                                        lang,
+                                        "Envoyer la saisie clavier simultanément à tous les terminaux ouverts",
+                                        "Send keyboard input simultaneously to all open terminal panes",
+                                    ))
+                                    .clicked()
+                                {
+                                    toggle_broadcast = true;
+                                }
+                            }
+
+                            // 🔴 REC / ⏹ REC
+                            let rec_label = if let Some(rec) = &active_tab.recorder {
+                                let elapsed = rec.elapsed().as_secs();
+                                let m = elapsed / 60;
+                                let s = elapsed % 60;
+                                format!("\u{E46C} REC ({:02}:{:02})", m, s)
+                            } else {
+                                "🔴 REC".to_string()
+                            };
+                            let rec_color = if active_tab.recorder.is_some() {
+                                Color32::from_rgb(248, 81, 73)
+                            } else {
+                                Color32::from_rgb(201, 209, 217)
+                            };
+                            if ui
+                                .button(RichText::new(rec_label).strong().color(rec_color))
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Démarrer / Arrêter l'enregistrement de la session (Asciinema v2 .cast)",
+                                    "Start / Stop session recording (Asciinema v2 .cast format)",
+                                ))
+                                .clicked()
+                            {
+                                toggle_rec = true;
                             }
                         });
                     }
