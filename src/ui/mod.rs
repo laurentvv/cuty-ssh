@@ -2821,14 +2821,27 @@ impl CutySshApp {
                                 },
                             ))
                             .show(ui, |ui| {
+                                // Dynamic titles (e.g. a full exe path) would push the right-hand
+                                // tools over the tabs: cap the label and keep the full text on hover.
+                                const MAX_TAB_TITLE: usize = 28;
+                                let short_title: String = if title.chars().count() > MAX_TAB_TITLE {
+                                    let head: String = title.chars().take(MAX_TAB_TITLE).collect();
+                                    format!("{head}\u{2026}")
+                                } else {
+                                    title.to_string()
+                                };
                                 if ui
                                     .selectable_label(
                                         is_active,
                                         format!(
                                             "{} {} {}{}",
-                                            status_icon, tab.profile.icon_badge, title, lock_badge
+                                            status_icon,
+                                            tab.profile.icon_badge,
+                                            short_title,
+                                            lock_badge
                                         ),
                                     )
+                                    .on_hover_text(title)
                                     .clicked()
                                 {
                                     self.active_tab_idx = idx;

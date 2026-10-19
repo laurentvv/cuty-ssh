@@ -636,31 +636,58 @@ fn render_single_terminal_pane(
         let mut run_start_col: usize = 0;
         let mut run_fg: Option<Color32> = None;
 
+        // Opaque cell backgrounds first, then the translucent overlays. The overlays are drawn
+        // as one rect per contiguous span: per-cell rects overlap by the 0.5 px bleed and blend
+        // twice there, which showed up as vertical bars across a selection.
         for (c_idx, cell) in row_cells.iter().enumerate().take(cols) {
-            let x = origin.x + c_idx as f32 * char_width;
-            let cell_rect = Rect::from_min_size(
-                Pos2::new(x, y),
-                Vec2::new(char_width + 0.5, line_height + 0.5),
-            );
-
-            let mut fg = cell.fg.to_color32(theme.fg);
             let mut bg = cell.bg.to_color32(theme.bg);
             if cell.inverse() {
-                std::mem::swap(&mut fg, &mut bg);
+                bg = cell.fg.to_color32(theme.fg);
             }
-
             if bg != theme.bg {
-                painter.rect_filled(cell_rect, 0.0, bg);
-            }
-            if tab.terminal.state.is_cell_selected(abs_r, c_idx) {
-                painter.rect_filled(cell_rect, 0.0, theme.selection_bg);
-            }
-            if row_matches_search {
+                let x = origin.x + c_idx as f32 * char_width;
                 painter.rect_filled(
-                    cell_rect,
+                    Rect::from_min_size(
+                        Pos2::new(x, y),
+                        Vec2::new(char_width + 0.5, line_height + 0.5),
+                    ),
                     0.0,
-                    Color32::from_rgba_premultiplied(210, 153, 34, 90),
+                    bg,
                 );
+            }
+        }
+        let span_rect = |start: usize, end: usize| {
+            Rect::from_min_size(
+                Pos2::new(origin.x + start as f32 * char_width, y),
+                Vec2::new((end - start) as f32 * char_width, line_height + 0.5),
+            )
+        };
+        let mut sel_start: Option<usize> = None;
+        for c_idx in 0..=cols {
+            let selected = c_idx < cols && tab.terminal.state.is_cell_selected(abs_r, c_idx);
+            match (selected, sel_start) {
+                (true, None) => sel_start = Some(c_idx),
+                (false, Some(start)) => {
+                    painter.rect_filled(span_rect(start, c_idx), 0.0, theme.selection_bg);
+                    sel_start = None;
+                }
+                _ => {}
+            }
+        }
+        if row_matches_search {
+            painter.rect_filled(
+                span_rect(0, cols),
+                0.0,
+                Color32::from_rgba_premultiplied(210, 153, 34, 90),
+            );
+        }
+
+        for (c_idx, cell) in row_cells.iter().enumerate().take(cols) {
+            let x = origin.x + c_idx as f32 * char_width;
+
+            let mut fg = cell.fg.to_color32(theme.fg);
+            if cell.inverse() {
+                fg = cell.bg.to_color32(theme.bg);
             }
 
             let ch = if cell.ch == '\0' { ' ' } else { cell.ch };
