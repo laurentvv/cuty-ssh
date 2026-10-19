@@ -6,6 +6,6 @@ Scope: user
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/laurentvv/cuty-ssh/releases/download/v0.4.1/cuty-ssh-v0.4.1-windows-x64.msi
-    InstallerSha256: 20E9D961498222E58605F5CB99E12BE6DF4D73F1563C1EE68841A27F2041DCCC
+    InstallerSha256: 39558C4EA400B9F860D48FE8F46CB55FF1E1D8FDD25A76977C5EF565B643CBF1
 ManifestType: installer
 ManifestVersion: 1.6.0
