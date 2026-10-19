@@ -147,6 +147,7 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 - **Automatic `~/.ssh/config` Importer (`📥 Sync`) & PuTTY Registry Sync**:
   - Parses standard `~/.ssh/config` files (`Host`, `HostName`, `User`, `Port`, `IdentityFile`, `ProxyJump`, `LocalForward`, `RemoteForward`) and imports them with tags and tunnels.
   - Automatic & manual import from `HKCU\Software\SimonTatham\PuTTY\Sessions`.
+  - **`📥 KiTTY` button**: pick a portable KiTTY folder (the one containing `Sessions/`) to import all its sessions; `📥 Sync` re-imports it afterwards.
 - **SysAdmin Diagnostic Toolkit (`🛠 Network & CIDR`) & Command Palette (`Ctrl+K`)**:
   - Fuzzy session & command launcher (`Ctrl+K`).
   - Multi-threaded async **TCP Port Scanner & SSH Banner Grabber**.
@@ -182,6 +183,7 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 - **Background Fleet Health Probing & Bulk `ssh-copy-id`**:
   - Automatic non-blocking TCP ping probes run every 45 seconds across all saved sessions.
   - Live color-coded reachability dots (`🟢 Online`, `🔴 Offline`, `⏳ Timeout`) appear in both the Cockpit cards and the Sidebar session list.
+  - `● Online` / `● Offline` filter toggles on the Cockpit show only reachable or only unreachable servers; the same toggles in the Session Manager let you select and bulk-delete dead VMs.
   - Manual `📡 Ping` button in the Cockpit toolbar triggers an immediate fleet-wide check.
   - In **`📁 Manager`**, select multiple hosts and click **`🔑 Deploy Primary Key`** to bulk-install your public key across your fleet in parallel.
 - **Local Session & Audit Log (`📜 Audit`)**:

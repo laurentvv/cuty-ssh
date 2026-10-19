@@ -148,6 +148,7 @@ Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur interméd
 - **Importateur automatique `~/.ssh/config` (`📥 Sync`) & Synchronisation PuTTY** :
   - Analyse des fichiers `~/.ssh/config` standards (`Host`, `HostName`, `User`, `Port`, `IdentityFile`, `ProxyJump`, `LocalForward`, `RemoteForward`) avec import des tags et des tunnels.
   - Importation automatique ou manuelle depuis le Registre PuTTY (`HKCU\Software\SimonTatham\PuTTY\Sessions`).
+  - **Bouton `📥 KiTTY`** : choisissez un dossier KiTTY portable (celui qui contient `Sessions/`) pour importer toutes ses sessions ; `📥 Sync` le ré-importe ensuite.
 - **Boîte à outils Diagnostic Réseau (`🛠 Diagnostic & CIDR`) & Palette rapide (`Ctrl+K`)** :
   - Lanceur rapide de commandes et de sessions (`Ctrl+K`).
   - Scanner de ports TCP multi-threadé asynchrone & capture de bannières SSH.
@@ -180,6 +181,7 @@ Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur interméd
 - **Sondes de santé automatiques du parc & Déploiement groupé `ssh-copy-id`** :
   - Sondes TCP non-bloquantes toutes les 45 secondes sur l'ensemble de vos serveurs enregistrés.
   - Pastilles colorées en temps réel (`🟢 En ligne`, `🔴 Injoignable`, `⏳ Timeout`) sur les cartes du Cockpit et dans la liste latérale.
+  - Boutons de filtre `● En ligne` / `● Hors ligne` sur le Cockpit pour n'afficher que les serveurs joignables ou injoignables ; les mêmes boutons dans le Gestionnaire permettent de sélectionner et supprimer en masse les VMs disparues.
   - Bouton `📡 Ping` dans la barre d'outils du Cockpit pour forcer un rafraîchissement immédiat de la disponibilité de la flotte.
   - Dans le `📁 Gestionnaire`, sélectionnez plusieurs serveurs et cliquez sur `🔑 Déployer Clé Principale` pour installer votre clé publique en lot sur l'ensemble du parc.
 - **Journal d'Audit local (`📜 Audit`)** :

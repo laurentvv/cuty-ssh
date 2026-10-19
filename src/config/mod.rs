@@ -304,6 +304,9 @@ pub struct AppConfig {
     /// Path to the user's Primary SSH Private Key (`.ppk` or OpenSSH) used for 1-click `ssh-copy-id` key deployment.
     #[serde(default)]
     pub primary_key_path: String,
+    /// Folder of a portable KiTTY/PuTTY install (containing `Sessions/`) imported by 📥 Sync.
+    #[serde(default)]
+    pub kitty_dir: String,
     pub copy_on_select: bool,
     pub right_click_paste: bool,
     pub detect_hyperlinks: bool,
@@ -324,6 +327,7 @@ impl Default for AppConfig {
             winscp_path: r"C:\Program Files (x86)\WinSCP\WinSCP.exe".to_string(),
             default_key_dir: default_ssh_dir(),
             primary_key_path: String::new(),
+            kitty_dir: String::new(),
             copy_on_select: true,
             right_click_paste: true,
             detect_hyperlinks: true,
@@ -733,6 +737,94 @@ impl AppConfig {
             let _ = self.save();
         }
         Ok(imported_count)
+    }
+
+    /// Imports sessions from a portable KiTTY/PuTTY folder (`dir` or `dir/Sessions`),
+    /// where each file is one session in `Key\Value\` format. Existing names are kept.
+    pub fn import_from_kitty_dir(&mut self, dir: &Path) -> anyhow::Result<usize> {
+        let sessions_dir = if dir.join("Sessions").is_dir() {
+            dir.join("Sessions")
+        } else {
+            dir.to_path_buf()
+        };
+        let mut imported = 0;
+        for entry in fs::read_dir(&sessions_dir)?.flatten() {
+            let path = entry.path();
+            let Some(file_name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+                continue;
+            };
+            if !path.is_file() || file_name == "Default%20Settings" {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let kv: BTreeMap<String, String> = content
+                .lines()
+                .filter_map(|l| l.trim().split_once('\\'))
+                .map(|(k, v)| {
+                    (
+                        k.trim().to_string(),
+                        url_decode_session_name(v.trim_end_matches('\\')),
+                    )
+                })
+                .collect();
+            let name = url_decode_session_name(&file_name);
+            let get = |k: &str| kv.get(k).cloned().unwrap_or_default();
+            let (username, host) = split_user_and_host(&get("HostName"), &get("UserName"));
+            if host.is_empty() || self.sessions.iter().any(|s| s.name == name) {
+                continue;
+            }
+            let protocol = match get("Protocol").to_lowercase().as_str() {
+                "telnet" => ProtocolType::Telnet,
+                "raw" => ProtocolType::RawTcp,
+                _ => ProtocolType::Ssh,
+            };
+            let port = get("PortNumber")
+                .parse::<u16>()
+                .unwrap_or_else(|_| protocol.default_port());
+            let ppk = get("PublicKeyFile");
+            let try_agent = get("TryAgent") != "0";
+            let ssh_auth = if !ppk.trim().is_empty() {
+                SshAuthMethod::PrivateKeyFile {
+                    key_path: ppk,
+                    passphrase: String::new(),
+                    cert_path: String::new(),
+                }
+            } else if try_agent {
+                SshAuthMethod::Agent {
+                    use_pageant: true,
+                    use_openssh_agent: true,
+                }
+            } else {
+                SshAuthMethod::Password
+            };
+            let sub = get("Folder").trim().replace('\\', "/");
+            let folder = if sub.is_empty() || sub.eq_ignore_ascii_case("Default") {
+                "KiTTY".to_string()
+            } else {
+                format!("KiTTY/{sub}")
+            };
+            self.sessions.push(SessionProfile {
+                id: Uuid::new_v4(),
+                name,
+                folder,
+                protocol,
+                host,
+                port,
+                username,
+                ssh_auth,
+                try_pageant: try_agent,
+                agent_forwarding: get("AgentFwd") == "1",
+                startup_command: get("RemoteCommand"),
+                ..Default::default()
+            });
+            imported += 1;
+        }
+        if imported > 0 {
+            let _ = self.save();
+        }
+        Ok(imported)
     }
 
     /// Imports an INI session file (`Key\Value\` lines) or directory.
@@ -1758,5 +1850,39 @@ Host app-internal db-internal
         assert_eq!(p.edge_preset, EdgeGatewayPreset::None);
         assert_eq!(p.shellhub_server, "ssh.shellhub.io");
         assert_eq!(p.shellhub_device_id, "");
+    }
+
+    #[test]
+    fn import_from_kitty_dir_reads_sessions_and_skips_duplicates() {
+        let dir = std::env::temp_dir().join(format!("cuty_kitty_{}", Uuid::new_v4()));
+        let sessions = dir.join("Sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            sessions.join("BI-BDD1%20-%20Maria"),
+            "Folder|Default|\nPublicKeyFile|D%3A%5Ck.ppk|\nPortNumber|2222|\nProtocol|ssh|\nHostName|root@10.0.0.1|\n"
+                .replace('|', &'\u{5c}'.to_string()),
+        )
+        .unwrap();
+        fs::write(
+            sessions.join("Default%20Settings"),
+            "HostName|x|\n".replace('|', &'\u{5c}'.to_string()),
+        )
+        .unwrap();
+        let mut cfg = AppConfig {
+            sessions: vec![],
+            ..Default::default()
+        };
+        assert_eq!(cfg.import_from_kitty_dir(&dir).unwrap_or(0), 1);
+        let s = &cfg.sessions[0];
+        assert_eq!(s.name, "BI-BDD1 - Maria");
+        assert_eq!(
+            (s.host.as_str(), s.username.as_str(), s.port),
+            ("10.0.0.1", "root", 2222)
+        );
+        assert!(
+            matches!(&s.ssh_auth, SshAuthMethod::PrivateKeyFile { key_path, .. } if key_path == r"D:\k.ppk")
+        );
+        assert_eq!(cfg.import_from_kitty_dir(&dir).unwrap_or(0), 0);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
