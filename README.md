@@ -192,6 +192,13 @@ Connect to isolated private or DMZ servers transparently through an intermediate
   - 1-click **CSV** and **JSON** exports for security audits and reporting.
   - Strictly compliant with our **Zero Plaintext Secrets** policy (no credentials, passwords, or private keys are ever written to the audit log).
 
+### 7. Resilience, Scripting & Tunnels
+
+- **Auto-reconnect**: tick *Reconnect automatically* in the session editor, or use the `↻ Auto-reconnect` toggle on a tab. A dropped connection retries with back-off (2 s → 30 s, 10 attempts); the status bar shows the countdown, and `↻ Reconnect` forces an immediate retry.
+- **Command line**: `cuty-ssh --session "Prod Web"` opens a saved session at startup (name, unique name fragment or UUID); `cuty-ssh --list` prints the saved sessions.
+- **One-click SOCKS5**: the `SOCKS5` button of an SSH tab starts a local proxy on `127.0.0.1:1080` through the session; a `SOCKS5 (-D)` rule can also be saved in the *Port Forwarding* tab.
+- **Resumable SFTP transfers**: uploads and downloads go to `<name>.cutypart` and are renamed when complete; re-running an interrupted transfer continues from the bytes already transferred.
+
 ---
 
 ## Mouse & Keyboard Shortcuts

@@ -14,7 +14,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use uuid::Uuid;
@@ -67,6 +67,9 @@ pub struct CidrCalculation {
     pub usable_hosts: u64,
 }
 
+/// Disconnect reason emitted when the user asked for the disconnection (never auto-reconnected).
+pub const USER_DISCONNECT_REASON: &str = "Déconnecté par l'utilisateur";
+
 #[derive(Debug)]
 pub enum BackendCommand {
     SendInput(Vec<u8>),
@@ -82,6 +85,8 @@ pub enum BackendCommand {
         key_comment: String,
     },
     RefreshTelemetry,
+    /// Starts (or stops, when already listening) a local SOCKS5 proxy over the session.
+    ToggleSocks(u16),
     SftpListDir(String),
     SftpUpload {
         local_path: PathBuf,
@@ -120,6 +125,8 @@ pub enum BackendEvent {
         already_present: bool,
     },
     TelemetryUpdated(RemoteServerMetrics),
+    /// Port of the active one-click SOCKS5 proxy, `None` when stopped.
+    SocksState(Option<u16>),
     SftpDirListed {
         current_path: String,
         entries: Vec<SftpFileEntry>,
@@ -813,6 +820,8 @@ async fn run_ssh_session(
 
     // Start port forwarding rules (-L / -R)
     let session = Arc::new(session);
+    let mut socks_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut quick_socks: Option<(u16, tokio::task::JoinHandle<()>)> = None;
     for rule in &profile.port_forwards {
         if !rule.enabled {
             continue;
@@ -862,6 +871,22 @@ async fn run_ssh_session(
                         }
                     }
                 });
+            }
+            PortForwardType::Dynamic => {
+                let bind = format!("{}:{}", rule.bind_address, rule.bind_port);
+                match start_socks_proxy(Arc::clone(&session), &bind).await {
+                    Ok(task) => {
+                        socks_tasks.push(task);
+                        let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
+                            "SOCKS5 actif : {bind}"
+                        )));
+                    }
+                    Err(e) => {
+                        let _ = evt_tx.send(BackendEvent::ErrorMessage(format!(
+                            "Échec SOCKS5 {bind} : {e}"
+                        )));
+                    }
+                }
             }
             PortForwardType::Remote => {
                 if let Err(e) = session
@@ -1023,6 +1048,31 @@ async fn run_ssh_session(
                     }
                     Some(BackendCommand::Resize { cols, rows }) => {
                         let _ = channel.window_change(cols as u32, rows as u32, 0, 0).await;
+                    }
+                    Some(BackendCommand::ToggleSocks(port)) => {
+                        if let Some((p, task)) = quick_socks.take() {
+                            task.abort();
+                            let _ = evt_tx.send(BackendEvent::SocksState(None));
+                            let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
+                                "SOCKS5 arrêté (127.0.0.1:{p})"
+                            )));
+                        } else {
+                            let bind = format!("127.0.0.1:{port}");
+                            match start_socks_proxy(Arc::clone(&session), &bind).await {
+                                Ok(task) => {
+                                    quick_socks = Some((port, task));
+                                    let _ = evt_tx.send(BackendEvent::SocksState(Some(port)));
+                                    let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
+                                        "SOCKS5 actif : {bind}"
+                                    )));
+                                }
+                                Err(e) => {
+                                    let _ = evt_tx.send(BackendEvent::ErrorMessage(format!(
+                                        "Échec SOCKS5 {bind} : {e}"
+                                    )));
+                                }
+                            }
+                        }
                     }
                     Some(BackendCommand::RefreshTelemetry) => {
                         let sess_telem = Arc::clone(&session);
@@ -1250,9 +1300,8 @@ async fn run_ssh_session(
                         let _ = session
                             .disconnect(Disconnect::ByApplication, "Closed by user", "fr")
                             .await;
-                        let _ = evt_tx.send(BackendEvent::Disconnected(
-                            "Déconnecté par l'utilisateur".to_string(),
-                        ));
+                        let _ = evt_tx
+                            .send(BackendEvent::Disconnected(USER_DISCONNECT_REASON.to_string()));
                         break;
                     }
                     _ => {}
@@ -1267,6 +1316,99 @@ async fn run_ssh_session(
     }
 
     Ok(())
+}
+
+/// Minimal SOCKS5 server side (RFC 1928): no authentication, CONNECT only.
+/// Returns the requested destination `(host, port)` after answering the greeting.
+async fn socks5_negotiate<S>(s: &mut S) -> Result<(String, u16)>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut head = [0u8; 2];
+    s.read_exact(&mut head).await?;
+    anyhow::ensure!(head[0] == 5, "not a SOCKS5 client");
+    let mut methods = vec![0u8; head[1] as usize];
+    s.read_exact(&mut methods).await?;
+    if !methods.contains(&0) {
+        s.write_all(&[5, 0xFF]).await?;
+        anyhow::bail!("no acceptable SOCKS5 auth method");
+    }
+    s.write_all(&[5, 0]).await?;
+
+    let mut req = [0u8; 4];
+    s.read_exact(&mut req).await?;
+    anyhow::ensure!(req[0] == 5, "bad SOCKS5 request");
+    if req[1] != 1 {
+        s.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+        anyhow::bail!("unsupported SOCKS5 command {}", req[1]);
+    }
+    let host = match req[3] {
+        1 => {
+            let mut a = [0u8; 4];
+            s.read_exact(&mut a).await?;
+            std::net::Ipv4Addr::from(a).to_string()
+        }
+        3 => {
+            let mut len = [0u8; 1];
+            s.read_exact(&mut len).await?;
+            let mut name = vec![0u8; len[0] as usize];
+            s.read_exact(&mut name).await?;
+            String::from_utf8(name).context("invalid SOCKS5 host name")?
+        }
+        4 => {
+            let mut a = [0u8; 16];
+            s.read_exact(&mut a).await?;
+            std::net::Ipv6Addr::from(a).to_string()
+        }
+        other => {
+            s.write_all(&[5, 8, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+            anyhow::bail!("unsupported SOCKS5 address type {other}");
+        }
+    };
+    let mut port = [0u8; 2];
+    s.read_exact(&mut port).await?;
+    Ok((host, u16::from_be_bytes(port)))
+}
+
+/// Binds `bind` and serves SOCKS5 clients through SSH `direct-tcpip` channels.
+async fn start_socks_proxy(
+    session: Arc<client::Handle<SshClientHandler>>,
+    bind: &str,
+) -> Result<tokio::task::JoinHandle<()>> {
+    let listener = TcpListener::bind(bind).await?;
+    Ok(tokio::spawn(async move {
+        while let Ok((mut local, peer)) = listener.accept().await {
+            let session = Arc::clone(&session);
+            tokio::spawn(async move {
+                let Ok((host, port)) = socks5_negotiate(&mut local).await else {
+                    return;
+                };
+                match session
+                    .channel_open_direct_tcpip(
+                        host,
+                        port as u32,
+                        peer.ip().to_string(),
+                        peer.port() as u32,
+                    )
+                    .await
+                {
+                    Ok(channel) => {
+                        if local
+                            .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
+                            .await
+                            .is_ok()
+                        {
+                            let mut stream = channel.into_stream();
+                            let _ = tokio::io::copy_bidirectional(&mut local, &mut stream).await;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = local.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+                    }
+                }
+            });
+        }
+    }))
 }
 
 async fn list_sftp_directory(sftp: &SftpSession, dir: &str) -> Result<Vec<SftpFileEntry>> {
@@ -1289,6 +1431,18 @@ async fn list_sftp_directory(sftp: &SftpSession, dir: &str) -> Result<Vec<SftpFi
     Ok(list)
 }
 
+/// Suffix of the in-progress file of an SFTP transfer (resumable).
+const PART_SUFFIX: &str = ".cutypart";
+
+/// Offset to resume a transfer from: the partial size if it is strictly inside the file.
+fn resume_offset(existing: u64, total: u64) -> u64 {
+    if existing > 0 && existing < total {
+        existing
+    } else {
+        0
+    }
+}
+
 async fn upload_sftp_file(
     sftp: &SftpSession,
     local_path: &Path,
@@ -1302,18 +1456,37 @@ async fn upload_sftp_file(
     let meta = tokio::fs::metadata(local_path).await?;
     let total = meta.len();
     let mut local_file = tokio::fs::File::open(local_path).await?;
-    let mut remote_file = sftp
-        .open_with_flags(
-            remote_path,
+
+    // Data goes to `<name>.cutypart` and is renamed once complete, so an interrupted
+    // transfer can resume from the bytes already on the server.
+    let part_path = format!("{remote_path}{PART_SUFFIX}");
+    let existing = sftp
+        .metadata(&part_path)
+        .await
+        .ok()
+        .and_then(|m| m.size)
+        .unwrap_or(0);
+    let resume_from = resume_offset(existing, total);
+    let mut remote_file = if resume_from > 0 {
+        let mut f = sftp.open_with_flags(&part_path, OpenFlags::WRITE).await?;
+        f.seek(std::io::SeekFrom::Start(resume_from)).await?;
+        local_file
+            .seek(std::io::SeekFrom::Start(resume_from))
+            .await?;
+        f
+    } else {
+        sftp.open_with_flags(
+            &part_path,
             OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
         )
-        .await?;
+        .await?
+    };
 
     let mut buf = vec![0u8; 64 * 1024];
-    let mut transferred: u64 = 0;
+    let mut transferred: u64 = resume_from;
     let _ = evt_tx.send(BackendEvent::SftpProgress {
         filename: filename.clone(),
-        transferred: 0,
+        transferred,
         total,
         is_upload: true,
         done: false,
@@ -1336,6 +1509,11 @@ async fn upload_sftp_file(
     }
     remote_file.flush().await?;
     remote_file.shutdown().await?;
+    drop(remote_file);
+    if sftp.metadata(remote_path).await.is_ok() {
+        let _ = sftp.remove_file(remote_path).await;
+    }
+    sftp.rename(&part_path, remote_path).await?;
     let _ = evt_tx.send(BackendEvent::SftpProgress {
         filename,
         transferred,
@@ -1363,13 +1541,33 @@ async fn download_sftp_file(
         .and_then(|m| m.size)
         .unwrap_or(0);
     let mut remote_file = sftp.open(remote_path).await?;
-    let mut local_file = tokio::fs::File::create(local_path).await?;
+
+    // Same scheme as uploads: write to `<name>.cutypart`, resume it if a previous try was cut.
+    let mut part_name = local_path.as_os_str().to_owned();
+    part_name.push(PART_SUFFIX);
+    let part_path = PathBuf::from(part_name);
+    let existing = tokio::fs::metadata(&part_path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let resume_from = resume_offset(existing, total);
+    let mut local_file = if resume_from > 0 {
+        remote_file
+            .seek(std::io::SeekFrom::Start(resume_from))
+            .await?;
+        tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&part_path)
+            .await?
+    } else {
+        tokio::fs::File::create(&part_path).await?
+    };
 
     let mut buf = vec![0u8; 64 * 1024];
-    let mut transferred: u64 = 0;
+    let mut transferred: u64 = resume_from;
     let _ = evt_tx.send(BackendEvent::SftpProgress {
         filename: filename.clone(),
-        transferred: 0,
+        transferred,
         total,
         is_upload: false,
         done: false,
@@ -1391,6 +1589,11 @@ async fn download_sftp_file(
         });
     }
     local_file.flush().await?;
+    drop(local_file);
+    if tokio::fs::metadata(local_path).await.is_ok() {
+        let _ = tokio::fs::remove_file(local_path).await;
+    }
+    tokio::fs::rename(&part_path, local_path).await?;
     let _ = evt_tx.send(BackendEvent::SftpProgress {
         filename,
         transferred,
@@ -1516,7 +1719,8 @@ async fn run_tcp_or_telnet_session(
                         }
                     }
                     Some(BackendCommand::Disconnect) | None => {
-                        let _ = evt_tx.send(BackendEvent::Disconnected("Déconnecté".to_string()));
+                        let _ = evt_tx
+                            .send(BackendEvent::Disconnected(USER_DISCONNECT_REASON.to_string()));
                         break;
                     }
                     _ => {}
@@ -1948,4 +2152,50 @@ pub fn calculate_ipv4_cidr(input: &str) -> Result<CidrCalculation> {
         last_usable: fmt_ip(last_u32),
         usable_hosts,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resume_offset_only_inside_the_file() {
+        assert_eq!(resume_offset(0, 100), 0);
+        assert_eq!(resume_offset(40, 100), 40);
+        assert_eq!(resume_offset(100, 100), 0);
+        assert_eq!(resume_offset(150, 100), 0);
+    }
+
+    #[tokio::test]
+    async fn socks5_negotiate_parses_domain_connect() {
+        let (mut client, mut server) = tokio::io::duplex(256);
+        let srv = tokio::spawn(async move { socks5_negotiate(&mut server).await });
+        client.write_all(&[5, 1, 0]).await.unwrap();
+        let mut reply = [0u8; 2];
+        client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply, [5, 0]);
+        let host = b"example.org";
+        let mut req = vec![5, 1, 0, 3, host.len() as u8];
+        req.extend_from_slice(host);
+        req.extend_from_slice(&443u16.to_be_bytes());
+        client.write_all(&req).await.unwrap();
+        assert_eq!(
+            srv.await.unwrap().unwrap(),
+            ("example.org".to_string(), 443)
+        );
+    }
+
+    #[tokio::test]
+    async fn socks5_negotiate_rejects_bind_command() {
+        let (mut client, mut server) = tokio::io::duplex(256);
+        let srv = tokio::spawn(async move { socks5_negotiate(&mut server).await });
+        client.write_all(&[5, 1, 0]).await.unwrap();
+        let mut reply = [0u8; 2];
+        client.read_exact(&mut reply).await.unwrap();
+        client
+            .write_all(&[5, 2, 0, 1, 1, 2, 3, 4, 0, 80])
+            .await
+            .unwrap();
+        assert!(srv.await.unwrap().is_err());
+    }
 }

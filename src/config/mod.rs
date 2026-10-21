@@ -79,6 +79,8 @@ pub struct ExpectRule {
 pub enum PortForwardType {
     Local,
     Remote,
+    /// Dynamic SOCKS5 proxy (`-D`): target host/port are ignored.
+    Dynamic,
 }
 
 /// SSH tunnel / port-forwarding rule (`-L` or `-R`).
@@ -149,6 +151,9 @@ pub struct SessionProfile {
     /// ShellHub gateway host address (defaults to `ssh.shellhub.io`).
     #[serde(default)]
     pub shellhub_server: String,
+    /// Reconnect automatically (with back-off) when an established connection drops.
+    #[serde(default)]
+    pub auto_reconnect: bool,
 }
 
 /// Supported Edge or Zero-Trust Gateway architecture presets.
@@ -244,6 +249,7 @@ impl Default for SessionProfile {
             edge_preset: EdgeGatewayPreset::None,
             shellhub_device_id: String::new(),
             shellhub_server: "ssh.shellhub.io".to_string(),
+            auto_reconnect: false,
         }
     }
 }
@@ -499,6 +505,43 @@ impl AppConfig {
             }
         }
         local_path
+    }
+
+    /// Finds a saved session from a CLI key: UUID, exact name, then a unique
+    /// case-insensitive substring of the name (all case-insensitive).
+    pub fn find_session(&self, key: &str) -> Result<&SessionProfile, String> {
+        let key = key.trim();
+        if let Some(s) = self
+            .sessions
+            .iter()
+            .find(|s| s.id.to_string().eq_ignore_ascii_case(key))
+        {
+            return Ok(s);
+        }
+        let lower = key.to_lowercase();
+        if let Some(s) = self
+            .sessions
+            .iter()
+            .find(|s| s.name.to_lowercase() == lower)
+        {
+            return Ok(s);
+        }
+        let matches: Vec<&SessionProfile> = self
+            .sessions
+            .iter()
+            .filter(|s| s.name.to_lowercase().contains(&lower))
+            .collect();
+        match matches.as_slice() {
+            [one] => Ok(one),
+            [] => Err(format!("no saved session matches '{key}'")),
+            many => Err(format!(
+                "'{key}' is ambiguous: {}",
+                many.iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
     }
 
     pub fn load_or_default() -> Self {

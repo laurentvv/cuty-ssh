@@ -12,7 +12,8 @@ use crate::config::{
 };
 use crate::protocols::{
     BackendCommand, BackendEvent, CidrCalculation, HostProbeResult, RemoteServerMetrics,
-    SessionHandle, SftpFileEntry, calculate_ipv4_cidr, probe_tcp_and_banner,
+    SessionHandle, SftpFileEntry, USER_DISCONNECT_REASON, calculate_ipv4_cidr,
+    probe_tcp_and_banner,
 };
 use crate::ssh::ppk::{
     AgentKeyEntry, KeyInspection, export_to_openssh_pem, export_to_ppk_v3, format_openssh_pubkey,
@@ -105,6 +106,22 @@ pub struct SessionTab {
     // Session recording (.cast asciinema v2)
     pub recorder: Option<crate::terminal::recording::SessionRecorder>,
     pub connect_instant: Option<std::time::Instant>,
+
+    // Auto-reconnect
+    pub was_connected: bool,
+    pub reconnect_attempt: u32,
+    pub reconnect_at: Option<std::time::Instant>,
+
+    /// Local port of the one-click SOCKS5 proxy, when running.
+    pub socks_port: Option<u16>,
+}
+
+/// Maximum automatic reconnection attempts before giving up.
+const MAX_RECONNECT_ATTEMPTS: u32 = 10;
+
+/// Exponential back-off: 2, 4, 8, 16, 30, 30... seconds.
+fn reconnect_delay_secs(attempt: u32) -> u64 {
+    (2u64 << attempt.saturating_sub(1).min(4)).min(30)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,6 +256,7 @@ pub struct CutySshApp {
     pub new_pf_target_host: String,
     pub new_pf_target_port: u16,
     pub new_pf_is_remote: bool,
+    pub new_pf_is_dynamic: bool,
 
     // PuTTY (.ppk) & Pageant Key Manager
     pub show_key_manager: bool,
@@ -393,6 +411,7 @@ impl CutySshApp {
             new_pf_target_host: "127.0.0.1".to_string(),
             new_pf_target_port: 80,
             new_pf_is_remote: false,
+            new_pf_is_dynamic: false,
             show_key_manager: false,
             inspected_key: None,
             key_manager_passphrase: String::new(),
@@ -790,6 +809,14 @@ impl CutySshApp {
         }
     }
 
+    /// Opens a saved session from the command line (`--session <name|uuid>`).
+    pub fn open_session_by_key(&mut self, key: &str) {
+        match self.config.find_session(key).cloned() {
+            Ok(profile) => self.launch_session(profile),
+            Err(msg) => self.set_toast(msg),
+        }
+    }
+
     pub fn set_toast(&mut self, msg: impl Into<String>) {
         self.toast_message = Some((msg.into(), std::time::Instant::now()));
     }
@@ -1066,6 +1093,10 @@ impl CutySshApp {
             log_file_path,
             recorder: None,
             connect_instant: None,
+            was_connected: false,
+            reconnect_attempt: 0,
+            reconnect_at: None,
+            socks_port: None,
         };
 
         self.tabs.push(tab);
@@ -1083,6 +1114,58 @@ impl CutySshApp {
                 self.split_mode = SplitMode::None;
             }
         }
+    }
+
+    /// Respawns the backend of tabs whose reconnect timer elapsed.
+    fn process_auto_reconnect(&mut self, ctx: &Context) {
+        let now = std::time::Instant::now();
+        let mut next_wake: Option<std::time::Duration> = None;
+        for idx in 0..self.tabs.len() {
+            let Some(at) = self.tabs[idx].reconnect_at else {
+                continue;
+            };
+            if at > now {
+                let left = at - now;
+                next_wake = Some(next_wake.map_or(left, |w| w.min(left)));
+                continue;
+            }
+            self.reconnect_tab(idx);
+        }
+        // Keep the countdown label fresh, and wake up when a timer elapses.
+        if self.tabs.iter().any(|t| t.reconnect_at.is_some()) {
+            ctx.request_repaint_after(
+                next_wake
+                    .unwrap_or_default()
+                    .min(std::time::Duration::from_millis(500)),
+            );
+        }
+    }
+
+    /// Replaces the dead backend of `idx` with a fresh one for the same profile.
+    pub fn reconnect_tab(&mut self, idx: usize) {
+        let Some(profile) = self.tabs.get(idx).map(|t| t.profile.clone()) else {
+            return;
+        };
+        let jump_profile = profile
+            .jump_host_id
+            .and_then(|jid| self.config.sessions.iter().find(|s| s.id == jid).cloned());
+        let (cols, rows) = {
+            let t = &self.tabs[idx].terminal.state;
+            (t.cols as u16, t.rows as u16)
+        };
+        let handle = SessionHandle::spawn(&self.rt, profile.clone(), jump_profile, cols, rows);
+        let tab = &mut self.tabs[idx];
+        let _ = std::mem::replace(&mut tab.handle, handle)
+            .cmd_tx
+            .send(BackendCommand::Disconnect);
+        tab.reconnect_at = None;
+        tab.state = TabConnectionState::Connecting;
+        tab.status_line = format!(
+            "Reconnexion vers {}:{} (tentative {}/{})...",
+            profile.host, profile.port, tab.reconnect_attempt, MAX_RECONNECT_ATTEMPTS
+        );
+        tab.terminal
+            .feed_str(&format!("\r\n\x1b[1;36m↻ {}\x1b[0m\r\n", tab.status_line));
     }
 
     fn poll_backend_events(&mut self, ctx: &Context) {
@@ -1133,6 +1216,9 @@ impl CutySshApp {
                         auth_used,
                     } => {
                         tab.state = TabConnectionState::Connected;
+                        tab.was_connected = true;
+                        tab.reconnect_attempt = 0;
+                        tab.reconnect_at = None;
                         tab.connect_instant = Some(std::time::Instant::now());
                         tab.host_fingerprint = host_key_fingerprint.clone();
                         tab.auth_summary = auth_used.clone();
@@ -1282,6 +1368,9 @@ impl CutySshApp {
                             already_present,
                         ));
                     }
+                    BackendEvent::SocksState(port) => {
+                        tab.socks_port = port;
+                    }
                     BackendEvent::TelemetryUpdated(metrics) => {
                         tab.telemetry = Some(metrics);
                     }
@@ -1322,6 +1411,29 @@ impl CutySshApp {
                         tab.status_line = reason.clone();
                         tab.terminal
                             .feed_str(&format!("\r\n\x1b[1;33m⚠ {}\x1b[0m\r\n", reason));
+
+                        let dropped = tab.was_connected
+                            && reason != USER_DISCONNECT_REASON
+                            && matches!(
+                                tab.profile.protocol,
+                                ProtocolType::Ssh | ProtocolType::Telnet | ProtocolType::RawTcp
+                            );
+                        tab.was_connected = false;
+                        if tab.profile.auto_reconnect
+                            && (dropped || tab.reconnect_attempt > 0)
+                            && reason != USER_DISCONNECT_REASON
+                            && tab.reconnect_attempt < MAX_RECONNECT_ATTEMPTS
+                        {
+                            tab.reconnect_attempt += 1;
+                            tab.reconnect_at = Some(
+                                std::time::Instant::now()
+                                    + std::time::Duration::from_secs(reconnect_delay_secs(
+                                        tab.reconnect_attempt,
+                                    )),
+                            );
+                        } else {
+                            tab.reconnect_at = None;
+                        }
 
                         let dur_secs = tab.connect_instant.take().map(|i| i.elapsed().as_secs());
                         if let Some(rec) = tab.recorder.take() {
@@ -1487,6 +1599,7 @@ impl eframe::App for CutySshApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_backend_events(&ctx);
+        self.process_auto_reconnect(&ctx);
 
         // Global Ctrl+K shortcut for the Command & Session Palette
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::K)) {
@@ -2095,8 +2208,23 @@ impl CutySshApp {
                                     .color(Color32::from_rgb(210, 153, 34))
                             }
                             TabConnectionState::Disconnected(_) => {
-                                RichText::new(tr(lang, "○ Déconnecté", "○ Disconnected"))
-                                    .color(Color32::from_rgb(248, 81, 73))
+                                if let Some(at) = tab.reconnect_at {
+                                    let secs = at
+                                        .saturating_duration_since(std::time::Instant::now())
+                                        .as_secs()
+                                        + 1;
+                                    RichText::new(format!(
+                                        "{} {}s ({}/{})",
+                                        tr(lang, "↻ Reconnexion dans", "↻ Reconnecting in"),
+                                        secs,
+                                        tab.reconnect_attempt,
+                                        MAX_RECONNECT_ATTEMPTS
+                                    ))
+                                    .color(Color32::from_rgb(210, 153, 34))
+                                } else {
+                                    RichText::new(tr(lang, "○ Déconnecté", "○ Disconnected"))
+                                        .color(Color32::from_rgb(248, 81, 73))
+                                }
                             }
                         };
                         ui.label(dot);
@@ -3045,6 +3173,7 @@ impl CutySshApp {
                     // nécessaire, contrairement à un layout right_to_left avec wrap.
                     let can_split = self.tabs.len() >= 2;
                     let mut next_split_mode = self.split_mode;
+                    let mut reconnect_now = false;
                     let mut deploy_key_for_active = false;
                     let mut toggle_rec = false;
                     let mut toggle_broadcast = false;
@@ -3101,6 +3230,34 @@ impl CutySshApp {
                                 }
                             }
 
+                            if active_tab.profile.protocol != ProtocolType::LocalShell {
+                                if ui
+                                    .selectable_label(
+                                        active_tab.profile.auto_reconnect,
+                                        tr(lang, "↻ Auto-reconnexion", "↻ Auto-reconnect"),
+                                    )
+                                    .on_hover_text(tr(
+                                        lang,
+                                        "Se reconnecter automatiquement si la connexion tombe",
+                                        "Automatically reconnect if the connection drops",
+                                    ))
+                                    .clicked()
+                                {
+                                    active_tab.profile.auto_reconnect =
+                                        !active_tab.profile.auto_reconnect;
+                                    if !active_tab.profile.auto_reconnect {
+                                        active_tab.reconnect_at = None;
+                                    }
+                                }
+                                if matches!(active_tab.state, TabConnectionState::Disconnected(_))
+                                    && ui
+                                        .button(tr(lang, "↻ Reconnecter", "↻ Reconnect"))
+                                        .clicked()
+                                {
+                                    reconnect_now = true;
+                                }
+                            }
+
                             if active_tab.profile.protocol == ProtocolType::Ssh {
                                 if ui
                                     .selectable_label(
@@ -3121,6 +3278,27 @@ impl CutySshApp {
                                             .cmd_tx
                                             .send(BackendCommand::RefreshTelemetry);
                                     }
+                                }
+
+                                if ui
+                                    .selectable_label(active_tab.socks_port.is_some(), "SOCKS5")
+                                    .on_hover_text(match active_tab.socks_port {
+                                        Some(p) => format!(
+                                            "{} 127.0.0.1:{p}",
+                                            tr(lang, "Proxy SOCKS5 actif sur", "SOCKS5 proxy listening on")
+                                        ),
+                                        None => tr(
+                                            lang,
+                                            "Démarrer un proxy SOCKS5 local (127.0.0.1:1080) via cette session",
+                                            "Start a local SOCKS5 proxy (127.0.0.1:1080) through this session",
+                                        )
+                                        .to_string(),
+                                    })
+                                    .clicked()
+                                {
+                                    let _ = active_tab.handle.cmd_tx.send(BackendCommand::ToggleSocks(
+                                        active_tab.socks_port.unwrap_or(1080),
+                                    ));
                                 }
 
                                 if ui
@@ -3280,6 +3458,13 @@ impl CutySshApp {
                         });
                     }
                     self.split_mode = next_split_mode;
+                    if reconnect_now {
+                        let idx = self.active_tab_idx;
+                        if let Some(t) = self.tabs.get_mut(idx) {
+                            t.reconnect_attempt = 0;
+                        }
+                        self.reconnect_tab(idx);
+                    }
 
                     if toggle_broadcast {
                         self.broadcast_mode = !self.broadcast_mode;
@@ -5933,6 +6118,14 @@ impl CutySshApp {
                             ui.label(tr(lang, "Chaîne Anti-Idle :", "Anti-Idle String:"));
                             ui.text_edit_singleline(&mut self.editing_session.anti_idle_string);
                         });
+                        ui.checkbox(
+                            &mut self.editing_session.auto_reconnect,
+                            tr(
+                                lang,
+                                "↻ Reconnexion automatique si la connexion tombe",
+                                "↻ Reconnect automatically if the connection drops",
+                            ),
+                        );
 
                         ui.separator();
                         ui.label(
@@ -6010,6 +6203,7 @@ impl CutySshApp {
                                 &mut self.new_pf_is_remote,
                                 tr(lang, "Distant (-R)", "Remote (-R)"),
                             );
+                            ui.checkbox(&mut self.new_pf_is_dynamic, "SOCKS5 (-D)");
                             ui.label("Bind:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.new_pf_bind_addr)
@@ -6029,7 +6223,9 @@ impl CutySshApp {
                             if ui.button(tr(lang, "\u{E3D4} Ajouter", "\u{E3D4} Add")).clicked() {
                                 self.editing_session.port_forwards.push(PortForwardRule {
                                     enabled: true,
-                                    forward_type: if self.new_pf_is_remote {
+                                    forward_type: if self.new_pf_is_dynamic {
+                                        PortForwardType::Dynamic
+                                    } else if self.new_pf_is_remote {
                                         PortForwardType::Remote
                                     } else {
                                         PortForwardType::Local
@@ -6050,6 +6246,7 @@ impl CutySshApp {
                                 let badge = match pf.forward_type {
                                     PortForwardType::Local => "Local (-L)",
                                     PortForwardType::Remote => "Remote (-R)",
+                                    PortForwardType::Dynamic => "SOCKS5 (-D)",
                                 };
                                 ui.monospace(format!(
                                     "[{}] {}:{} \u{E06C} {}:{}",
