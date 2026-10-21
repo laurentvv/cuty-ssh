@@ -1,11 +1,11 @@
 # TEMPLATE of the winget installer manifest (per-user MSI built with WiX).
 PackageIdentifier: LaurentVolff.Cuty-SSH
-PackageVersion: 0.5.0
+PackageVersion: 0.5.1
 InstallerType: wix
 Scope: user
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/laurentvv/cuty-ssh/releases/download/v0.5.0/cuty-ssh-v0.5.0-windows-x64.msi
-    InstallerSha256: D15F648AC1207F0DAC14CCB87D2263F075F7F8490CD9F11C7C2043F072809813
+    InstallerUrl: https://github.com/laurentvv/cuty-ssh/releases/download/v0.5.1/cuty-ssh-v0.5.1-windows-x64.msi
+    InstallerSha256: 6C328D8A3C65E71CECB9990FC2622504403B39C1F34891181DA19E0B35698E7E
 ManifestType: installer
 ManifestVersion: 1.6.0
