@@ -871,6 +871,35 @@ impl AppConfig {
     }
 
     /// Imports an INI session file (`Key\Value\` lines) or directory.
+    /// Imports Bitvise SSH Client profiles (`.tlp` / `.bscp`). Returns how many sessions were
+    /// added; a profile with the same name, host, port and user is skipped.
+    pub fn import_bitvise_profiles(&mut self, paths: &[PathBuf]) -> anyhow::Result<usize> {
+        let mut added = 0;
+        for path in paths {
+            let bytes = fs::read(path)?;
+            let name = path
+                .file_stem()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Bitvise".to_string());
+            let profile = parse_bitvise_profile(&bytes, &name)
+                .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+            let duplicate = self.sessions.iter().any(|s| {
+                s.name == profile.name
+                    && s.host == profile.host
+                    && s.port == profile.port
+                    && s.username == profile.username
+            });
+            if !duplicate {
+                self.sessions.push(profile);
+                added += 1;
+            }
+        }
+        if added > 0 {
+            let _ = self.save();
+        }
+        Ok(added)
+    }
+
     pub fn import_ini_portable_file(&mut self, path: &Path) -> anyhow::Result<usize> {
         if path.is_dir() {
             let mut count = 0;
@@ -1463,6 +1492,73 @@ pub fn parse_openssh_config_content(content: &str) -> Vec<SessionProfile> {
     profiles
 }
 
+/// Reads a big-endian `u32` length-prefixed string at `*o`.
+fn read_be_string(b: &[u8], o: &mut usize) -> Option<String> {
+    let len = u32::from_be_bytes(b.get(*o..*o + 4)?.try_into().ok()?) as usize;
+    let raw = b.get(*o + 4..(*o + 4).checked_add(len)?)?;
+    *o += 4 + len;
+    Some(String::from_utf8_lossy(raw).to_string())
+}
+
+/// Extracts the connection settings of a Bitvise SSH Client profile (`.tlp` / `.bscp`).
+///
+/// The format is not documented by Bitvise: the layout below was derived by comparing profiles
+/// saved from the user's own installation (9.66) with known host/port/user values. After the
+/// `Tunnelier x.y` banner come eight `u32` + one `u16`, then the host (length-prefixed string),
+/// the SSH port (`u32`), 11 zero bytes and the user name (length-prefixed string; empty when
+/// the profile has none). Everything else (algorithms, forwardings, secrets) is ignored.
+pub fn parse_bitvise_profile(bytes: &[u8], name: &str) -> Result<SessionProfile, String> {
+    let mut o = 0usize;
+    let banner = read_be_string(bytes, &mut o).ok_or("not a Bitvise profile (too short)")?;
+    if !banner.starts_with("Tunnelier ") && !banner.starts_with("Bitvise") {
+        return Err("not a Bitvise profile (unknown header)".to_string());
+    }
+    o += 8 * 4 + 2;
+    let host = read_be_string(bytes, &mut o)
+        .filter(|h| !h.is_empty() && h.len() <= 253 && h.bytes().all(|c| c.is_ascii_graphic()))
+        .ok_or("host not found in this profile layout")?;
+    let port_raw = bytes
+        .get(o..o + 4)
+        .ok_or("port not found")?
+        .try_into()
+        .map(u32::from_be_bytes)
+        .map_err(|_| "port not found".to_string())?;
+    o += 4;
+    let port = u16::try_from(port_raw)
+        .ok()
+        .filter(|p| *p != 0)
+        .unwrap_or(22);
+
+    // The user name is a length-prefixed string a few zero bytes after the port. Lengths are
+    // small, so the first non-zero byte is the low byte of the length word.
+    let mut username = String::new();
+    if let Some(q) = bytes
+        .iter()
+        .enumerate()
+        .skip(o)
+        .take(32)
+        .find_map(|(i, b)| (*b != 0).then_some(i))
+        && q >= o + 3
+    {
+        let len = bytes[q] as usize;
+        if len <= 64
+            && let Some(raw) = bytes.get(q + 1..q + 1 + len)
+            && raw.iter().all(|c| c.is_ascii_graphic())
+        {
+            username = String::from_utf8_lossy(raw).to_string();
+        }
+    }
+
+    Ok(SessionProfile {
+        name: name.to_string(),
+        protocol: ProtocolType::Ssh,
+        host,
+        port,
+        username,
+        ..Default::default()
+    })
+}
+
 fn parse_ssh_config_forward(val: &str, forward_type: PortForwardType) -> Option<PortForwardRule> {
     let parts: Vec<&str> = val.split_whitespace().collect();
     if parts.len() < 2 {
@@ -1893,6 +1989,44 @@ Host app-internal db-internal
         assert_eq!(p.edge_preset, EdgeGatewayPreset::None);
         assert_eq!(p.shellhub_server, "ssh.shellhub.io");
         assert_eq!(p.shellhub_device_id, "");
+    }
+
+    #[test]
+    fn bitvise_profile_host_port_user_are_extracted() {
+        fn be_str(s: &str) -> Vec<u8> {
+            let mut v = (s.len() as u32).to_be_bytes().to_vec();
+            v.extend_from_slice(s.as_bytes());
+            v
+        }
+        let build = |host: &str, port: u32, user: &str| {
+            let mut b = be_str("Tunnelier 9.66");
+            b.extend_from_slice(&[0u8; 8 * 4 + 2]);
+            b.extend(be_str(host));
+            b.extend_from_slice(&port.to_be_bytes());
+            b.extend_from_slice(&[0u8; 11]);
+            b.extend(be_str(user));
+            b.extend_from_slice(&[0u8; 16]);
+            b
+        };
+        let p = parse_bitvise_profile(&build("alpha.example.com", 2222, "alice"), "alpha").unwrap();
+        assert_eq!(
+            (
+                p.name.as_str(),
+                p.host.as_str(),
+                p.port,
+                p.username.as_str()
+            ),
+            ("alpha", "alpha.example.com", 2222, "alice")
+        );
+        let p = parse_bitvise_profile(&build("10.1.2.3", 22, "bob"), "beta").unwrap();
+        assert_eq!(
+            (p.host.as_str(), p.port, p.username.as_str()),
+            ("10.1.2.3", 22, "bob")
+        );
+        let p = parse_bitvise_profile(&build("h", 0, ""), "empty").unwrap();
+        assert_eq!((p.port, p.username.as_str()), (22, ""));
+        assert!(parse_bitvise_profile(b"{\"json\": true}", "x").is_err());
+        assert!(parse_bitvise_profile(&be_str("Tunnelier 9.66"), "x").is_err());
     }
 
     #[test]

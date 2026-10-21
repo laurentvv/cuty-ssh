@@ -62,6 +62,31 @@ pub struct SftpTransferProgress {
     pub is_upload: bool,
 }
 
+/// State of the SFTP "Properties" dialog (chmod, symlink, SHA-256) of one entry.
+#[derive(Debug, Clone)]
+pub struct SftpPropsDialog {
+    pub entry: SftpFileEntry,
+    pub mode: u32,
+    pub mode_text: String,
+    pub link_name: String,
+    pub sha256: Option<String>,
+    pub hashing: bool,
+}
+
+/// State of the SFTP mirror (one-way sync) dialog.
+#[derive(Debug, Clone, Default)]
+pub struct SftpMirrorDialog {
+    pub open: bool,
+    /// `false`: local -> remote, `true`: remote -> local.
+    pub download: bool,
+    pub local_dir: String,
+    pub remote_dir: String,
+    pub delete_extra: bool,
+    pub lines: Vec<String>,
+    pub summary: String,
+    pub busy: bool,
+}
+
 pub struct PendingSecretPrompt {
     pub title: String,
     pub prompt: String,
@@ -95,6 +120,8 @@ pub struct SessionTab {
     pub sftp_sort_dir: SortDirection,
     pub sftp_folders_first: bool,
     pub sftp_progress: Option<SftpTransferProgress>,
+    pub sftp_props: Option<SftpPropsDialog>,
+    pub sftp_mirror: SftpMirrorDialog,
 
     // Terminal search
     pub show_search_bar: bool,
@@ -114,12 +141,30 @@ pub struct SessionTab {
 
     /// Local port of the one-click SOCKS5 proxy, when running.
     pub socks_port: Option<u16>,
+    /// Port used the next time the one-click proxy is started.
+    pub socks_listen_port: u16,
 }
 
 /// Maximum automatic reconnection attempts before giving up.
 const MAX_RECONNECT_ATTEMPTS: u32 = 10;
 
 /// Exponential back-off: 2, 4, 8, 16, 30, 30... seconds.
+/// `-rwxr-xr-x (0755)` style rendering of SFTP permission bits.
+fn format_unix_mode(mode: u32) -> String {
+    let kind = match mode & 0o170000 {
+        0o040000 => 'd',
+        0o120000 => 'l',
+        _ => '-',
+    };
+    let mut out = String::from(kind);
+    for shift in [6u32, 3, 0] {
+        for (bit, ch) in [(4u32, 'r'), (2, 'w'), (1, 'x')] {
+            out.push(if mode & (bit << shift) != 0 { ch } else { '-' });
+        }
+    }
+    format!("{out} ({:04o})", mode & 0o7777)
+}
+
 fn reconnect_delay_secs(attempt: u32) -> u64 {
     (2u64 << attempt.saturating_sub(1).min(4)).min(30)
 }
@@ -756,6 +801,79 @@ impl CutySshApp {
             "snippets" => {
                 self.show_commands_editor = true;
             }
+            "sftp_props" | "sftp_mirror" => {
+                // SSH tab (closed local port) with a fake SFTP listing and one SFTP dialog open.
+                self.launch_session(SessionProfile {
+                    name: "web-prod-01".to_string(),
+                    protocol: ProtocolType::Ssh,
+                    host: "127.0.0.1".to_string(),
+                    port: 9,
+                    username: "deploy".to_string(),
+                    ..Default::default()
+                });
+                if let Some(tab) = self.tabs.last_mut() {
+                    let entry = |name: &str, is_dir: bool, size: u64, perm: u32| SftpFileEntry {
+                        name: name.to_string(),
+                        full_path: format!("/var/www/app/{name}"),
+                        is_dir,
+                        is_symlink: false,
+                        size,
+                        permissions: perm,
+                        mtime: 1_760_000_000,
+                    };
+                    // Detach the real (failing) backend so the demo shows a healthy session.
+                    let (cmd_tx, _cmd_rx) = unbounded_channel();
+                    let (_evt_tx, evt_rx) = unbounded_channel();
+                    tab.handle = SessionHandle { cmd_tx, evt_rx };
+                    tab.state = TabConnectionState::Connected;
+                    tab.status_line = "Connected to web-prod-01".to_string();
+                    tab.auth_summary = "Public key".to_string();
+                    tab.terminal.feed_str(
+                        "Last login: Tue Oct 21 08:12:44 2026 from 10.0.0.12\r\n[deploy@web-prod-01 app]$ ls\r\nreleases  shared  deploy.sh  app.tar.gz  config.yml\r\n[deploy@web-prod-01 app]$ ",
+                    );
+                    tab.show_sftp_panel = true;
+                    tab.sftp_current_path = "/var/www/app".to_string();
+                    tab.sftp_path_input = "/var/www/app".to_string();
+                    tab.sftp_entries = vec![
+                        entry("releases", true, 0, 0o040755),
+                        entry("shared", true, 0, 0o040755),
+                        entry("deploy.sh", false, 2_048, 0o100755),
+                        entry("app.tar.gz", false, 48_300_000, 0o100644),
+                        entry("config.yml", false, 1_204, 0o100640),
+                    ];
+                    tab.sftp_status = "5 items".to_string();
+                    if stage == "sftp_props" {
+                        let e = entry("deploy.sh", false, 2_048, 0o100755);
+                        tab.sftp_props = Some(SftpPropsDialog {
+                            mode: e.permissions & 0o7777,
+                            mode_text: format!("{:04o}", e.permissions & 0o7777),
+                            entry: e,
+                            link_name: String::new(),
+                            sha256: Some(
+                                "9f2c4e1b7a63d8f05b1e94c2a7d03f68b5e1c9a4d27f8036e1b5a9c4d7f20e83"
+                                    .to_string(),
+                            ),
+                            hashing: false,
+                        });
+                    } else {
+                        tab.sftp_mirror = SftpMirrorDialog {
+                            open: true,
+                            download: false,
+                            local_dir: "D:\\builds\\app".to_string(),
+                            remote_dir: "/var/www/app".to_string(),
+                            delete_extra: false,
+                            lines: vec![
+                                "+ app.tar.gz".to_string(),
+                                "+ config.yml".to_string(),
+                                "+ shared/assets/logo.svg".to_string(),
+                                "+ releases/2026-10-21/index.html".to_string(),
+                            ],
+                            summary: "4 planned action(s)".to_string(),
+                            busy: false,
+                        };
+                    }
+                }
+            }
             "reconnect" => {
                 // SSH tab to a closed local port, flagged as a dropped connection with auto-reconnect.
                 self.launch_session(SessionProfile {
@@ -1103,6 +1221,8 @@ impl CutySshApp {
             sftp_sort_dir: SortDirection::Ascending,
             sftp_folders_first: true,
             sftp_progress: None,
+            sftp_props: None,
+            sftp_mirror: SftpMirrorDialog::default(),
             show_search_bar: false,
             search_query: String::new(),
             log_file_path,
@@ -1112,6 +1232,7 @@ impl CutySshApp {
             reconnect_attempt: 0,
             reconnect_at: None,
             socks_port: None,
+            socks_listen_port: 1080,
         };
 
         self.tabs.push(tab);
@@ -1179,8 +1300,10 @@ impl CutySshApp {
             "Reconnexion vers {}:{} (tentative {}/{})...",
             profile.host, profile.port, tab.reconnect_attempt, MAX_RECONNECT_ATTEMPTS
         );
-        tab.terminal
-            .feed_str(&format!("\r\n\x1b[1;36m↻ {}\x1b[0m\r\n", tab.status_line));
+        tab.terminal.feed_str(&format!(
+            "\r\n\x1b[1;36m\u{E094} {}\x1b[0m\r\n",
+            tab.status_line
+        ));
     }
 
     fn poll_backend_events(&mut self, ctx: &Context) {
@@ -1401,6 +1524,32 @@ impl CutySshApp {
                     }
                     BackendEvent::SftpStatus(st) => {
                         tab.sftp_status = st;
+                        tab.sftp_progress = None;
+                        if let Some(p) = tab.sftp_props.as_mut() {
+                            p.hashing = false;
+                        }
+                    }
+                    BackendEvent::SftpHashResult {
+                        remote_path,
+                        sha256,
+                        size,
+                    } => {
+                        tab.sftp_status = format!("SHA-256 {remote_path} ({size} B)");
+                        if let Some(p) = tab.sftp_props.as_mut()
+                            && p.entry.full_path == remote_path
+                        {
+                            p.sha256 = Some(sha256);
+                            p.hashing = false;
+                        }
+                    }
+                    BackendEvent::SftpMirrorReport {
+                        lines,
+                        summary,
+                        dry_run: _,
+                    } => {
+                        tab.sftp_mirror.lines = lines;
+                        tab.sftp_mirror.summary = summary;
+                        tab.sftp_mirror.busy = false;
                         tab.sftp_progress = None;
                     }
                     BackendEvent::SftpProgress {
@@ -1740,6 +1889,38 @@ impl CutySshApp {
         });
     }
 
+    fn import_bitvise_profiles(&mut self) {
+        let lang = self.config.language;
+        let Some(files) = rfd::FileDialog::new()
+            .set_title(tr(
+                lang,
+                "Profils Bitvise SSH Client (.tlp / .bscp)",
+                "Bitvise SSH Client profiles (.tlp / .bscp)",
+            ))
+            .add_filter("Bitvise profile", &["tlp", "bscp"])
+            .pick_files()
+        else {
+            return;
+        };
+        let msg = match self.config.import_bitvise_profiles(&files) {
+            Ok(n) => format!(
+                "{} {}",
+                n,
+                tr(
+                    lang,
+                    "profil(s) Bitvise importé(s) !",
+                    "Bitvise profile(s) imported!"
+                )
+            ),
+            Err(e) => format!(
+                "{} {}",
+                tr(lang, "Erreur import Bitvise :", "Bitvise import error:"),
+                e
+            ),
+        };
+        self.set_toast(msg);
+    }
+
     fn import_kitty_folder(&mut self) {
         let lang = self.config.language;
         let Some(dir) = rfd::FileDialog::new()
@@ -1979,6 +2160,17 @@ impl CutySshApp {
                                 .clicked()
                             {
                                 self.import_kitty_folder();
+                            }
+
+                            if theme::tool_button(ui, theme::icons::FOLDER, "Bitvise…")
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Importer des profils Bitvise SSH Client (.tlp / .bscp) : hôte, port, utilisateur",
+                                    "Import Bitvise SSH Client profiles (.tlp / .bscp): host, port, user",
+                                ))
+                                .clicked()
+                            {
+                                self.import_bitvise_profiles();
                             }
                         },
                     );
@@ -2230,7 +2422,7 @@ impl CutySshApp {
                                         + 1;
                                     RichText::new(format!(
                                         "{} {}s ({}/{})",
-                                        tr(lang, "↻ Reconnexion dans", "↻ Reconnecting in"),
+                                        tr(lang, "\u{E094} Reconnexion dans", "\u{E094} Reconnecting in"),
                                         secs,
                                         tab.reconnect_attempt,
                                         MAX_RECONNECT_ATTEMPTS
@@ -3249,7 +3441,7 @@ impl CutySshApp {
                                 if ui
                                     .selectable_label(
                                         active_tab.profile.auto_reconnect,
-                                        tr(lang, "↻ Auto-reconnexion", "↻ Auto-reconnect"),
+                                        tr(lang, "\u{E094} Auto-reconnexion", "\u{E094} Auto-reconnect"),
                                     )
                                     .on_hover_text(tr(
                                         lang,
@@ -3266,7 +3458,7 @@ impl CutySshApp {
                                 }
                                 if matches!(active_tab.state, TabConnectionState::Disconnected(_))
                                     && ui
-                                        .button(tr(lang, "↻ Reconnecter", "↻ Reconnect"))
+                                        .button(tr(lang, "\u{E094} Reconnecter", "\u{E094} Reconnect"))
                                         .clicked()
                                 {
                                     reconnect_now = true;
@@ -3295,24 +3487,42 @@ impl CutySshApp {
                                     }
                                 }
 
+                                if active_tab.socks_port.is_none() {
+                                    ui.add(
+                                        egui::DragValue::new(&mut active_tab.socks_listen_port)
+                                            .range(1..=65535),
+                                    )
+                                    .on_hover_text(tr(
+                                        lang,
+                                        "Port local du proxy SOCKS5 / HTTP",
+                                        "Local port of the SOCKS5 / HTTP proxy",
+                                    ));
+                                }
                                 if ui
-                                    .selectable_label(active_tab.socks_port.is_some(), "SOCKS5")
+                                    .selectable_label(
+                                        active_tab.socks_port.is_some(),
+                                        "SOCKS5/HTTP",
+                                    )
                                     .on_hover_text(match active_tab.socks_port {
                                         Some(p) => format!(
                                             "{} 127.0.0.1:{p}",
-                                            tr(lang, "Proxy SOCKS5 actif sur", "SOCKS5 proxy listening on")
+                                            tr(
+                                                lang,
+                                                "Proxy SOCKS5 / HTTP CONNECT actif sur",
+                                                "SOCKS5 / HTTP CONNECT proxy listening on"
+                                            )
                                         ),
                                         None => tr(
                                             lang,
-                                            "Démarrer un proxy SOCKS5 local (127.0.0.1:1080) via cette session",
-                                            "Start a local SOCKS5 proxy (127.0.0.1:1080) through this session",
+                                            "Démarrer un proxy local SOCKS5 + HTTP CONNECT (127.0.0.1) via cette session",
+                                            "Start a local SOCKS5 + HTTP CONNECT proxy (127.0.0.1) through this session",
                                         )
                                         .to_string(),
                                     })
                                     .clicked()
                                 {
                                     let _ = active_tab.handle.cmd_tx.send(BackendCommand::ToggleSocks(
-                                        active_tab.socks_port.unwrap_or(1080),
+                                        active_tab.socks_port.unwrap_or(active_tab.socks_listen_port),
                                     ));
                                 }
 
@@ -3736,6 +3946,20 @@ impl CutySshApp {
                             .color(Color32::from_rgb(139, 148, 158)),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .small_button(tr(lang, "\u{E094} Miroir", "\u{E094} Mirror"))
+                            .on_hover_text(tr(
+                                lang,
+                                "Synchroniser un dossier local et le dossier distant (miroir)",
+                                "Mirror a local folder with the remote folder",
+                            ))
+                            .clicked()
+                        {
+                            tab.sftp_mirror.open = true;
+                            if tab.sftp_mirror.remote_dir.is_empty() {
+                                tab.sftp_mirror.remote_dir = tab.sftp_current_path.clone();
+                            }
+                        }
                         let (ff_icon, ff_tip) = if tab.sftp_folders_first {
                             (
                                 tr(lang, "\u{E24A}\u{E08E} Dossiers 1er", "\u{E24A}\u{E08E} Folders 1st"),
@@ -3770,7 +3994,7 @@ impl CutySshApp {
 
                 // Column Header Bar
                 let panel_width = ui.available_width();
-                let show_date = panel_width >= 340.0;
+                let show_date = panel_width >= 365.0;
                 let mut sort_changed = false;
 
                 egui::Frame::NONE
@@ -3826,7 +4050,7 @@ impl CutySshApp {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 // Reserve 46px for action buttons (📥 🗑)
                                 ui.add_sized(
-                                    [46.0, 18.0],
+                                    [68.0, 18.0],
                                     egui::Label::new(
                                         RichText::new("Act.")
                                             .small()
@@ -3943,6 +4167,7 @@ impl CutySshApp {
                 let mut cd_into: Option<String> = None;
                 let mut download_req: Option<(String, String)> = None;
                 let mut delete_req: Option<(String, bool)> = None;
+                let mut props_req: Option<SftpFileEntry> = None;
 
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -3964,8 +4189,34 @@ impl CutySshApp {
                                 if btn.clicked() && entry.is_dir {
                                     cd_into = Some(entry.full_path.clone());
                                 }
+                                btn.context_menu(|ui| {
+                                    if ui
+                                        .button(tr(
+                                            lang,
+                                            "Propriétés / chmod / lien / SHA-256…",
+                                            "Properties / chmod / link / SHA-256…",
+                                        ))
+                                        .clicked()
+                                    {
+                                        props_req = Some(entry.clone());
+                                        ui.close();
+                                    }
+                                });
 
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    // 0. Properties button
+                                    if ui
+                                        .small_button("\u{2026}")
+                                        .on_hover_text(tr(
+                                            lang,
+                                            "Propriétés : chmod, lien symbolique, SHA-256",
+                                            "Properties: chmod, symlink, SHA-256",
+                                        ))
+                                        .clicked()
+                                    {
+                                        props_req = Some(entry.clone());
+                                    }
+
                                     // 1. Delete button
                                     if ui
                                         .small_button("\u{E4A6}")
@@ -4037,6 +4288,17 @@ impl CutySshApp {
                         }
                     });
 
+                if let Some(entry) = props_req {
+                    let mode = entry.permissions & 0o7777;
+                    tab.sftp_props = Some(SftpPropsDialog {
+                        entry,
+                        mode,
+                        mode_text: format!("{mode:04o}"),
+                        link_name: String::new(),
+                        sha256: None,
+                        hashing: false,
+                    });
+                }
                 if let Some(dir) = cd_into {
                     let _ = tab.handle.cmd_tx.send(BackendCommand::SftpListDir(dir));
                 }
@@ -4056,6 +4318,256 @@ impl CutySshApp {
                     });
                 }
             });
+
+        Self::render_sftp_dialogs(&ui.ctx().clone(), lang, tab);
+    }
+
+    /// SFTP "Properties" (chmod / symlink / SHA-256) and "Mirror" windows of a tab.
+    fn render_sftp_dialogs(ctx: &Context, lang: UiLanguage, tab: &mut SessionTab) {
+        let cmd_tx = tab.handle.cmd_tx.clone();
+        let current_dir = tab.sftp_current_path.clone();
+
+        let mut close_props = false;
+        if let Some(props) = tab.sftp_props.as_mut() {
+            let mut open = true;
+            egui::Window::new(tr(lang, "Propriétés SFTP", "SFTP properties"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(RichText::new(&props.entry.full_path).monospace().strong());
+                    let date = if props.entry.mtime > 0 {
+                        chrono::DateTime::from_timestamp(props.entry.mtime as i64, 0)
+                            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    ui.label(
+                        RichText::new(format!(
+                            "{}  {}  {}",
+                            if props.entry.is_dir {
+                                tr(lang, "Dossier", "Folder").to_string()
+                            } else {
+                                format_bytes(props.entry.size)
+                            },
+                            date,
+                            format_unix_mode(props.entry.permissions)
+                        ))
+                        .small()
+                        .color(Color32::from_rgb(139, 148, 158)),
+                    );
+                    ui.separator();
+
+                    ui.label(RichText::new("chmod").strong());
+                    egui::Grid::new("sftp_perm_grid").show(ui, |ui| {
+                        ui.label("");
+                        for h in ["r", "w", "x"] {
+                            ui.label(RichText::new(h).monospace());
+                        }
+                        ui.end_row();
+                        for (shift, name) in [
+                            (6u32, tr(lang, "Propriétaire", "Owner")),
+                            (3, tr(lang, "Groupe", "Group")),
+                            (0, tr(lang, "Autres", "Others")),
+                        ] {
+                            ui.label(name);
+                            for bit in [4u32, 2, 1] {
+                                let mask = bit << shift;
+                                let mut on = props.mode & mask != 0;
+                                if ui.checkbox(&mut on, "").changed() {
+                                    if on {
+                                        props.mode |= mask;
+                                    } else {
+                                        props.mode &= !mask;
+                                    }
+                                    props.mode_text = format!("{:04o}", props.mode);
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(tr(lang, "Octal :", "Octal:"));
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut props.mode_text)
+                                    .desired_width(54.0)
+                                    .font(egui::TextStyle::Monospace),
+                            )
+                            .changed()
+                            && let Ok(m) = u32::from_str_radix(props.mode_text.trim(), 8)
+                        {
+                            props.mode = m & 0o7777;
+                        }
+                        if ui.button(tr(lang, "Appliquer", "Apply")).clicked() {
+                            let _ = cmd_tx.send(BackendCommand::SftpChmod {
+                                remote_path: props.entry.full_path.clone(),
+                                mode: props.mode,
+                            });
+                        }
+                    });
+
+                    ui.separator();
+                    ui.label(
+                        RichText::new(tr(
+                            lang,
+                            "Lien symbolique vers cet élément",
+                            "Symbolic link to this item",
+                        ))
+                        .strong(),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut props.link_name)
+                                .hint_text(tr(lang, "nom-du-lien", "link-name"))
+                                .desired_width(180.0),
+                        );
+                        if ui.button(tr(lang, "Créer", "Create")).clicked()
+                            && !props.link_name.trim().is_empty()
+                        {
+                            let name = props.link_name.trim();
+                            let link_path = if current_dir.ends_with('/') {
+                                format!("{current_dir}{name}")
+                            } else {
+                                format!("{current_dir}/{name}")
+                            };
+                            let _ = cmd_tx.send(BackendCommand::SftpSymlink {
+                                target: props.entry.full_path.clone(),
+                                link_path,
+                            });
+                            props.link_name.clear();
+                        }
+                    });
+
+                    if !props.entry.is_dir {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    !props.hashing,
+                                    egui::Button::new(tr(
+                                        lang,
+                                        "Calculer SHA-256",
+                                        "Compute SHA-256",
+                                    )),
+                                )
+                                .clicked()
+                            {
+                                props.hashing = true;
+                                props.sha256 = None;
+                                let _ = cmd_tx.send(BackendCommand::SftpSha256(
+                                    props.entry.full_path.clone(),
+                                ));
+                            }
+                            if props.hashing {
+                                ui.spinner();
+                            }
+                        });
+                        if let Some(hash) = props.sha256.clone() {
+                            ui.add(
+                                egui::Label::new(RichText::new(&hash).monospace().small())
+                                    .selectable(true)
+                                    .wrap(),
+                            );
+                            if ui.button(tr(lang, "Copier", "Copy")).clicked() {
+                                ui.ctx().copy_text(hash);
+                            }
+                        }
+                    }
+                });
+            close_props = !open;
+        }
+        if close_props {
+            tab.sftp_props = None;
+        }
+
+        if tab.sftp_mirror.open {
+            let m = &mut tab.sftp_mirror;
+            let mut open = true;
+            egui::Window::new(tr(lang, "Miroir SFTP", "SFTP mirror"))
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(460.0)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.radio_value(
+                            &mut m.download,
+                            false,
+                            tr(lang, "Local \u{2192} Distant", "Local \u{2192} Remote"),
+                        );
+                        ui.radio_value(
+                            &mut m.download,
+                            true,
+                            tr(lang, "Distant \u{2192} Local", "Remote \u{2192} Local"),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(tr(lang, "Dossier local :", "Local folder:"));
+                        ui.add(egui::TextEdit::singleline(&mut m.local_dir).desired_width(260.0));
+                        if ui.button(tr(lang, "Parcourir", "Browse")).clicked()
+                            && let Some(dir) = rfd::FileDialog::new().pick_folder()
+                        {
+                            m.local_dir = dir.to_string_lossy().to_string();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(tr(lang, "Dossier distant :", "Remote folder:"));
+                        ui.add(egui::TextEdit::singleline(&mut m.remote_dir).desired_width(260.0));
+                    });
+                    let delete_color = if m.delete_extra {
+                        Color32::from_rgb(248, 81, 73)
+                    } else {
+                        Color32::from_rgb(201, 209, 217)
+                    };
+                    ui.checkbox(
+                        &mut m.delete_extra,
+                        RichText::new(tr(
+                            lang,
+                            "Supprimer sur la destination les fichiers absents de la source",
+                            "Delete files on the destination that are missing from the source",
+                        ))
+                        .color(delete_color),
+                    );
+                    ui.horizontal(|ui| {
+                        let ready = !m.busy
+                            && !m.local_dir.trim().is_empty()
+                            && !m.remote_dir.trim().is_empty();
+                        for (label, dry_run) in [
+                            (tr(lang, "Prévisualiser", "Preview"), true),
+                            (tr(lang, "Synchroniser", "Synchronize"), false),
+                        ] {
+                            if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
+                                m.busy = true;
+                                m.summary.clear();
+                                m.lines.clear();
+                                let _ = cmd_tx.send(BackendCommand::SftpMirror {
+                                    local_dir: PathBuf::from(m.local_dir.trim()),
+                                    remote_dir: m.remote_dir.trim().to_string(),
+                                    upload: !m.download,
+                                    delete_extra: m.delete_extra,
+                                    dry_run,
+                                });
+                            }
+                        }
+                        if m.busy {
+                            ui.spinner();
+                        }
+                        ui.label(&m.summary);
+                    });
+                    egui::ScrollArea::vertical()
+                        .max_height(220.0)
+                        .show(ui, |ui| {
+                            for line in m.lines.iter().take(500) {
+                                ui.label(RichText::new(line).monospace().small());
+                            }
+                            if m.lines.len() > 500 {
+                                ui.label(format!("… +{}", m.lines.len() - 500));
+                            }
+                        });
+                });
+            m.open = open;
+        }
     }
 
     fn render_welcome_dashboard(&mut self, ui: &mut Ui) {
@@ -6137,8 +6649,8 @@ impl CutySshApp {
                             &mut self.editing_session.auto_reconnect,
                             tr(
                                 lang,
-                                "↻ Reconnexion automatique si la connexion tombe",
-                                "↻ Reconnect automatically if the connection drops",
+                                "\u{E094} Reconnexion automatique si la connexion tombe",
+                                "\u{E094} Reconnect automatically if the connection drops",
                             ),
                         );
 

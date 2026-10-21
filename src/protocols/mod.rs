@@ -67,6 +67,8 @@ pub struct CidrCalculation {
     pub usable_hosts: u64,
 }
 
+mod mirror;
+
 /// Disconnect reason emitted when the user asked for the disconnection (never auto-reconnected).
 pub const USER_DISCONNECT_REASON: &str = "Déconnecté par l'utilisateur";
 
@@ -97,6 +99,26 @@ pub enum BackendCommand {
         local_path: PathBuf,
     },
     SftpMkdir(String),
+    /// `chmod`: `mode` holds the permission bits (e.g. `0o755`).
+    SftpChmod {
+        remote_path: String,
+        mode: u32,
+    },
+    /// Creates `link_path` as a symbolic link pointing to `target`.
+    SftpSymlink {
+        target: String,
+        link_path: String,
+    },
+    /// Computes the SHA-256 of a remote file by streaming it over SFTP.
+    SftpSha256(String),
+    /// One-way directory mirror (`upload`: local -> remote, otherwise remote -> local).
+    SftpMirror {
+        local_dir: PathBuf,
+        remote_dir: String,
+        upload: bool,
+        delete_extra: bool,
+        dry_run: bool,
+    },
     SftpDelete {
         remote_path: String,
         is_dir: bool,
@@ -139,6 +161,16 @@ pub enum BackendEvent {
         done: bool,
     },
     SftpStatus(String),
+    SftpHashResult {
+        remote_path: String,
+        sha256: String,
+        size: u64,
+    },
+    SftpMirrorReport {
+        lines: Vec<String>,
+        summary: String,
+        dry_run: bool,
+    },
     Disconnected(String),
 }
 
@@ -458,6 +490,69 @@ fn parse_inline_proxy_jump(spec: &str) -> Option<SessionProfile> {
     })
 }
 
+/// Whether a keyboard-interactive prompt asks for the account password (EN/FR/DE/ES).
+fn is_password_prompt(prompt: &str) -> bool {
+    let p = prompt.to_lowercase();
+    ["password", "mot de passe", "passwort", "contraseña"]
+        .iter()
+        .any(|k| p.contains(k))
+}
+
+/// Runs a keyboard-interactive exchange (PAM, OTP, 2FA...). The stored password answers the
+/// first password-looking prompt only; any other prompt is asked to the user, masked unless
+/// the server allows echo. Returns whether the server accepted the authentication.
+async fn run_keyboard_interactive(
+    session: &mut client::Handle<SshClientHandler>,
+    username: &str,
+    stored_password: &str,
+    cmd_rx: &mut UnboundedReceiver<BackendCommand>,
+    evt_tx: &UnboundedSender<BackendEvent>,
+) -> Result<bool> {
+    let mut password_used = false;
+    let mut cur = session
+        .authenticate_keyboard_interactive_start(username, None)
+        .await?;
+    loop {
+        match cur {
+            client::KeyboardInteractiveAuthResponse::Success => return Ok(true),
+            client::KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
+            client::KeyboardInteractiveAuthResponse::InfoRequest {
+                name,
+                instructions,
+                prompts,
+            } => {
+                let mut answers = Vec::with_capacity(prompts.len());
+                for p in prompts {
+                    let ans = if !password_used
+                        && !stored_password.is_empty()
+                        && is_password_prompt(&p.prompt)
+                    {
+                        password_used = true;
+                        stored_password.to_string()
+                    } else {
+                        wait_for_secret_input(
+                            cmd_rx,
+                            evt_tx,
+                            if name.is_empty() {
+                                "Authentification Interactive"
+                            } else {
+                                &name
+                            },
+                            &format!("{}\n{}", instructions, p.prompt),
+                            !p.echo,
+                        )
+                        .await?
+                    };
+                    answers.push(ans);
+                }
+                cur = session
+                    .authenticate_keyboard_interactive_respond(answers)
+                    .await?;
+            }
+        }
+    }
+}
+
 async fn authenticate_ssh_handle(
     session: &mut client::Handle<SshClientHandler>,
     profile: &SessionProfile,
@@ -603,52 +698,11 @@ async fn authenticate_ssh_handle(
             }
             SshAuthMethod::Agent { .. } => {}
             SshAuthMethod::KeyboardInteractive => {
-                if let Ok(resp) = session
-                    .authenticate_keyboard_interactive_start(&username, None)
-                    .await
+                if let Ok(true) =
+                    run_keyboard_interactive(session, &username, &profile.password, cmd_rx, evt_tx)
+                        .await
                 {
-                    let mut cur = resp;
-                    loop {
-                        match cur {
-                            client::KeyboardInteractiveAuthResponse::Success => {
-                                authenticated_via =
-                                    Some("Keyboard-Interactive (PAM/2FA)".to_string());
-                                break;
-                            }
-                            client::KeyboardInteractiveAuthResponse::Failure { .. } => break,
-                            client::KeyboardInteractiveAuthResponse::InfoRequest {
-                                name,
-                                instructions,
-                                prompts,
-                            } => {
-                                let mut answers = Vec::new();
-                                for p in prompts {
-                                    let ans = if !profile.password.is_empty()
-                                        && p.prompt.to_lowercase().contains("password")
-                                    {
-                                        profile.password.clone()
-                                    } else {
-                                        wait_for_secret_input(
-                                            cmd_rx,
-                                            evt_tx,
-                                            if name.is_empty() {
-                                                "Authentification Interactive"
-                                            } else {
-                                                &name
-                                            },
-                                            &format!("{}\n{}", instructions, p.prompt),
-                                            true,
-                                        )
-                                        .await?
-                                    };
-                                    answers.push(ans);
-                                }
-                                cur = session
-                                    .authenticate_keyboard_interactive_respond(answers)
-                                    .await?;
-                            }
-                        }
-                    }
+                    authenticated_via = Some("Keyboard-Interactive (PAM/2FA)".to_string());
                 }
             }
             SshAuthMethod::Password => {}
@@ -669,12 +723,23 @@ async fn authenticate_ssh_handle(
             .await?;
         }
         let res = session.authenticate_password(&username, &pwd).await?;
+        let kbdint_offered = matches!(
+            &res,
+            client::AuthResult::Failure { remaining_methods, .. }
+                if remaining_methods.contains(&russh::MethodKind::KeyboardInteractive)
+        );
         if res.success() {
             authenticated_via = Some(if !profile.password.is_empty() {
                 "Mot de passe automatique".to_string()
             } else {
                 "Mot de passe SSH".to_string()
             });
+        } else if kbdint_offered
+            && run_keyboard_interactive(session, &username, &pwd, cmd_rx, evt_tx).await?
+        {
+            // Many PAM servers refuse `password` but accept the same secret (and a 2FA code)
+            // through keyboard-interactive.
+            authenticated_via = Some("Keyboard-Interactive (PAM/2FA)".to_string());
         } else {
             let retry_pwd = wait_for_secret_input(
                 cmd_rx,
@@ -1244,6 +1309,129 @@ async fn run_ssh_session(
                             }
                         });
                     }
+                    Some(BackendCommand::SftpChmod { remote_path, mode }) => {
+                        let sftp_ref = Arc::clone(&sftp_session);
+                        let evt_c = evt_tx.clone();
+                        tokio::spawn(async move {
+                            let guard = sftp_ref.lock().await;
+                            let Some(sftp) = guard.as_ref() else { return };
+                            let attrs = russh_sftp::protocol::FileAttributes {
+                                permissions: Some(mode & 0o7777),
+                                ..Default::default()
+                            };
+                            match sftp.set_metadata(remote_path.clone(), attrs).await {
+                                Ok(()) => {
+                                    let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                                        "chmod {:04o} {}",
+                                        mode & 0o7777,
+                                        remote_path
+                                    )));
+                                    refresh_parent_listing(sftp, &remote_path, &evt_c).await;
+                                }
+                                Err(e) => {
+                                    let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                                        "Erreur chmod : {e}"
+                                    )));
+                                }
+                            }
+                        });
+                    }
+                    Some(BackendCommand::SftpSymlink { target, link_path }) => {
+                        let sftp_ref = Arc::clone(&sftp_session);
+                        let evt_c = evt_tx.clone();
+                        tokio::spawn(async move {
+                            let guard = sftp_ref.lock().await;
+                            let Some(sftp) = guard.as_ref() else { return };
+                            // OpenSSH's sftp-server reads the first SSH_FXP_SYMLINK field as the
+                            // link *target* (the RFC draft names it the other way round).
+                            match sftp.symlink(target.clone(), link_path.clone()).await {
+                                Ok(()) => {
+                                    let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                                        "Lien créé : {link_path} -> {target}"
+                                    )));
+                                    refresh_parent_listing(sftp, &link_path, &evt_c).await;
+                                }
+                                Err(e) => {
+                                    let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                                        "Erreur lien symbolique : {e}"
+                                    )));
+                                }
+                            }
+                        });
+                    }
+                    Some(BackendCommand::SftpSha256(remote_path)) => {
+                        let sftp_ref = Arc::clone(&sftp_session);
+                        let evt_c = evt_tx.clone();
+                        tokio::spawn(async move {
+                            let guard = sftp_ref.lock().await;
+                            let Some(sftp) = guard.as_ref() else { return };
+                            match sha256_remote_file(sftp, &remote_path).await {
+                                Ok((sha256, size)) => {
+                                    let _ = evt_c.send(BackendEvent::SftpHashResult {
+                                        remote_path,
+                                        sha256,
+                                        size,
+                                    });
+                                }
+                                Err(e) => {
+                                    let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                                        "Erreur SHA-256 : {e}"
+                                    )));
+                                }
+                            }
+                        });
+                    }
+                    Some(BackendCommand::SftpMirror {
+                        local_dir,
+                        remote_dir,
+                        upload,
+                        delete_extra,
+                        dry_run,
+                    }) => {
+                        let sftp_ref = Arc::clone(&sftp_session);
+                        let evt_c = evt_tx.clone();
+                        tokio::spawn(async move {
+                            let guard = sftp_ref.lock().await;
+                            let Some(sftp) = guard.as_ref() else { return };
+                            match mirror::run_mirror(
+                                sftp,
+                                &local_dir,
+                                &remote_dir,
+                                upload,
+                                delete_extra,
+                                dry_run,
+                                &evt_c,
+                            )
+                            .await
+                            {
+                                Ok(sum) => {
+                                    let summary = if dry_run {
+                                        format!("{} action(s) prévue(s)", sum.lines.len())
+                                    } else {
+                                        format!(
+                                            "{} copié(s), {} supprimé(s), {} erreur(s)",
+                                            sum.copied, sum.deleted, sum.errors
+                                        )
+                                    };
+                                    let _ = evt_c.send(BackendEvent::SftpMirrorReport {
+                                        lines: sum.lines,
+                                        summary,
+                                        dry_run,
+                                    });
+                                    if !dry_run {
+                                        refresh_dir_listing(sftp, &remote_dir, &evt_c).await;
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = evt_c.send(BackendEvent::SftpMirrorReport {
+                                        lines: Vec::new(),
+                                        summary: format!("Erreur miroir : {e:#}"),
+                                        dry_run,
+                                    });
+                                }
+                            }
+                        });
+                    }
                     Some(BackendCommand::SftpMkdir(remote_dir)) => {
                         let sftp_ref = Arc::clone(&sftp_session);
                         let evt_c = evt_tx.clone();
@@ -1370,7 +1558,47 @@ where
     Ok((host, u16::from_be_bytes(port)))
 }
 
-/// Binds `bind` and serves SOCKS5 clients through SSH `direct-tcpip` channels.
+/// Parses an HTTP `CONNECT host:port` request head. Only CONNECT is supported.
+fn parse_http_connect(head: &str) -> Option<(String, u16)> {
+    let line = head.lines().next()?;
+    let mut parts = line.split_whitespace();
+    if !parts.next()?.eq_ignore_ascii_case("CONNECT") {
+        return None;
+    }
+    let authority = parts.next()?;
+    let (host, port) = authority.rsplit_once(':')?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty() {
+        return None;
+    }
+    Some((host.to_string(), port.parse().ok()?))
+}
+
+/// Reads an HTTP proxy request head (up to the blank line, 8 KiB max) and returns the
+/// requested `CONNECT` destination. Other methods get a `405` and an error.
+async fn http_connect_negotiate<S>(s: &mut S) -> Result<(String, u16)>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut head = Vec::with_capacity(256);
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        anyhow::ensure!(head.len() < 8192, "HTTP proxy request too large");
+        s.read_exact(&mut byte).await?;
+        head.push(byte[0]);
+    }
+    match parse_http_connect(&String::from_utf8_lossy(&head)) {
+        Some(dest) => Ok(dest),
+        None => {
+            s.write_all(b"HTTP/1.1 405 Method Not Allowed\r\nAllow: CONNECT\r\n\r\n")
+                .await?;
+            anyhow::bail!("only HTTP CONNECT is supported");
+        }
+    }
+}
+
+/// Binds `bind` and serves SOCKS5 and HTTP CONNECT clients (detected from the first byte)
+/// through SSH `direct-tcpip` channels.
 async fn start_socks_proxy(
     session: Arc<client::Handle<SshClientHandler>>,
     bind: &str,
@@ -1380,7 +1608,17 @@ async fn start_socks_proxy(
         while let Ok((mut local, peer)) = listener.accept().await {
             let session = Arc::clone(&session);
             tokio::spawn(async move {
-                let Ok((host, port)) = socks5_negotiate(&mut local).await else {
+                let mut first = [0u8; 1];
+                if local.peek(&mut first).await.unwrap_or(0) == 0 {
+                    return;
+                }
+                let http = first[0] != 5;
+                let negotiated = if http {
+                    http_connect_negotiate(&mut local).await
+                } else {
+                    socks5_negotiate(&mut local).await
+                };
+                let Ok((host, port)) = negotiated else {
                     return;
                 };
                 match session
@@ -1393,17 +1631,23 @@ async fn start_socks_proxy(
                     .await
                 {
                     Ok(channel) => {
-                        if local
-                            .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
-                            .await
-                            .is_ok()
-                        {
+                        let ok_reply: &[u8] = if http {
+                            b"HTTP/1.1 200 Connection Established\r\n\r\n"
+                        } else {
+                            &[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+                        };
+                        if local.write_all(ok_reply).await.is_ok() {
                             let mut stream = channel.into_stream();
                             let _ = tokio::io::copy_bidirectional(&mut local, &mut stream).await;
                         }
                     }
                     Err(_) => {
-                        let _ = local.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+                        let fail_reply: &[u8] = if http {
+                            b"HTTP/1.1 502 Bad Gateway\r\n\r\n"
+                        } else {
+                            &[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]
+                        };
+                        let _ = local.write_all(fail_reply).await;
                     }
                 }
             });
@@ -1440,6 +1684,50 @@ fn resume_offset(existing: u64, total: u64) -> u64 {
         existing
     } else {
         0
+    }
+}
+
+/// Streams a remote file through SHA-256. Returns `(hex digest, size)`.
+async fn sha256_remote_file(sftp: &SftpSession, remote_path: &str) -> Result<(String, u64)> {
+    use sha2::{Digest, Sha256};
+    let mut file = sftp.open(remote_path).await?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut size = 0u64;
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        size += n as u64;
+    }
+    Ok((hex::encode(hasher.finalize()), size))
+}
+
+/// Re-lists `dir` and publishes it to the UI (errors ignored: purely a refresh).
+async fn refresh_dir_listing(
+    sftp: &SftpSession,
+    dir: &str,
+    evt_tx: &UnboundedSender<BackendEvent>,
+) {
+    if let Ok(entries) = list_sftp_directory(sftp, dir).await {
+        let _ = evt_tx.send(BackendEvent::SftpDirListed {
+            current_path: dir.to_string(),
+            entries,
+        });
+    }
+}
+
+/// Re-lists the folder containing `path`.
+async fn refresh_parent_listing(
+    sftp: &SftpSession,
+    path: &str,
+    evt_tx: &UnboundedSender<BackendEvent>,
+) {
+    if let Some((parent, _)) = path.rsplit_once('/') {
+        let dir = if parent.is_empty() { "/" } else { parent };
+        refresh_dir_listing(sftp, dir, evt_tx).await;
     }
 }
 
@@ -2185,6 +2473,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn http_connect_request_line_is_parsed() {
+        assert_eq!(
+            parse_http_connect("CONNECT example.org:443 HTTP/1.1\r\nHost: x\r\n\r\n"),
+            Some(("example.org".to_string(), 443))
+        );
+        assert_eq!(
+            parse_http_connect("connect [::1]:8080 HTTP/1.1\r\n\r\n"),
+            Some(("::1".to_string(), 8080))
+        );
+        assert_eq!(parse_http_connect("GET http://a/ HTTP/1.1\r\n\r\n"), None);
+        assert_eq!(parse_http_connect("CONNECT nohost HTTP/1.1\r\n\r\n"), None);
+    }
+
+    #[tokio::test]
+    async fn http_connect_negotiate_reads_head_and_rejects_get() {
+        let (mut client, mut server) = tokio::io::duplex(512);
+        let srv = tokio::spawn(async move { http_connect_negotiate(&mut server).await });
+        client
+            .write_all(b"CONNECT db.internal:5432 HTTP/1.1\r\nHost: db.internal:5432\r\n\r\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            srv.await.unwrap().unwrap(),
+            ("db.internal".to_string(), 5432)
+        );
+
+        let (mut client, mut server) = tokio::io::duplex(512);
+        let srv = tokio::spawn(async move { http_connect_negotiate(&mut server).await });
+        client.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
+        assert!(srv.await.unwrap().is_err());
+        let mut reply = [0u8; 12];
+        client.read_exact(&mut reply).await.unwrap();
+        assert!(reply.starts_with(b"HTTP/1.1 405"));
+    }
+
     #[tokio::test]
     async fn socks5_negotiate_rejects_bind_command() {
         let (mut client, mut server) = tokio::io::duplex(256);
@@ -2197,5 +2521,20 @@ mod tests {
             .await
             .unwrap();
         assert!(srv.await.unwrap().is_err());
+    }
+}
+
+#[cfg(test)]
+mod kbdint_tests {
+    use super::is_password_prompt;
+
+    #[test]
+    fn password_prompts_are_detected_in_several_languages() {
+        for p in ["Password: ", "Mot de passe :", "Passwort:", "Contraseña:"] {
+            assert!(is_password_prompt(p), "{p}");
+        }
+        for p in ["Verification code: ", "One-time token:", "Code OTP"] {
+            assert!(!is_password_prompt(p), "{p}");
+        }
     }
 }

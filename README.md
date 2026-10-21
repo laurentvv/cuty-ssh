@@ -196,8 +196,15 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 
 - **Auto-reconnect**: tick *Reconnect automatically* in the session editor, or use the `↻ Auto-reconnect` toggle on a tab. A dropped connection retries with back-off (2 s → 30 s, 10 attempts); the status bar shows the countdown, and `↻ Reconnect` forces an immediate retry.
 - **Command line**: `cuty-ssh --session "Prod Web"` opens a saved session at startup (name, unique name fragment or UUID); `cuty-ssh --list` prints the saved sessions.
-- **One-click SOCKS5**: the `SOCKS5` button of an SSH tab starts a local proxy on `127.0.0.1:1080` through the session; a `SOCKS5 (-D)` rule can also be saved in the *Port Forwarding* tab.
+- **One-click SOCKS5 / HTTP proxy**: the `SOCKS5/HTTP` button of an SSH tab starts a local proxy (port editable, default `1080`) that accepts both SOCKS5 and HTTP `CONNECT` clients through the session; a `SOCKS5 (-D)` rule can also be saved in the *Port Forwarding* tab.
+- **Keyboard-interactive fallback**: when a server refuses `password` but offers keyboard-interactive (PAM / 2FA), Cuty-SSH continues with it automatically.
+- **SFTP properties & mirror**: `…` on a remote entry opens chmod (rwx grid + octal), symlink creation and SHA-256; `Mirror` previews and runs a one-way local/remote sync.
+- **Bitvise import**: `Import > Bitvise…` reads `.tlp` / `.bscp` profiles (host, port, user).
 - **Resumable SFTP transfers**: uploads and downloads go to `<name>.cutypart` and are renamed when complete; re-running an interrupted transfer continues from the bytes already transferred.
+
+| SFTP properties (chmod, symlink, SHA-256) | SFTP mirror (preview, then sync) | Auto-reconnect |
+|---|---|---|
+| ![SFTP properties](assets/screenshot_sftp_properties.png) | ![SFTP mirror](assets/screenshot_sftp_mirror.png) | ![Auto-reconnect](assets/screenshot_auto_reconnect.png) |
 
 ---
 
