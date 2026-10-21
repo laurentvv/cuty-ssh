@@ -2865,30 +2865,137 @@ impl CutySshApp {
                             });
                     }
 
-                    // Bouton rapide '+' pour ouvrir un shell local
-                    if ui
-                        .button(
-                            RichText::new("\u{E3D4}")
-                                .size(11.0)
-                                .color(Color32::from_rgb(139, 148, 158)),
-                        )
-                        .on_hover_text(tr(
-                            lang,
-                            "Ouvrir un nouveau terminal PowerShell local",
-                            "Open a new local PowerShell terminal",
-                        ))
-                        .clicked()
-                    {
-                        let p = SessionProfile {
-                            name: "PowerShell Local".to_string(),
-                            protocol: ProtocolType::LocalShell,
-                            local_shell_cmd: "powershell.exe".to_string(),
-                            icon_badge: "⚡".to_string(),
-                            ..Default::default()
-                        };
-                        self.launch_session(p);
-                    }
+                    // Bouton '+' : menu des sessions disponibles (avec filtre) pour ouvrir un
+                    // nouvel onglet, plus un raccourci vers un shell PowerShell local.
+                    let mut session_to_open: Option<SessionProfile> = None;
+                    let plus = ui.menu_button(
+                        RichText::new("\u{E3D4}")
+                            .size(12.0)
+                            .color(Color32::from_rgb(139, 148, 158)),
+                        |ui| {
+                            ui.set_min_width(330.0);
+                            let filter_id = egui::Id::unique("tab_plus_menu_filter");
+                            let mut query: String =
+                                ui.data_mut(|d| d.get_temp(filter_id).unwrap_or_default());
+                            ui.horizontal(|ui| {
+                                ui.label("\u{E30C}");
+                                let resp = ui.add(
+                                    egui::TextEdit::singleline(&mut query)
+                                        .hint_text(tr(
+                                            lang,
+                                            "Filtrer (nom, hôte, #tag, dossier)...",
+                                            "Filter (name, host, #tag, folder)...",
+                                        ))
+                                        .desired_width(f32::INFINITY),
+                                );
+                                if !resp.has_focus() && !ui.input(|i| i.pointer.any_down()) {
+                                    resp.request_focus();
+                                }
+                            });
+                            let q = query.trim().to_lowercase();
+                            ui.data_mut(|d| d.insert_temp(filter_id, query));
+                            ui.separator();
 
+                            if q.is_empty()
+                                && ui
+                                    .button(tr(
+                                        lang,
+                                        "\u{E2DE}  Shell PowerShell local",
+                                        "\u{E2DE}  Local PowerShell shell",
+                                    ))
+                                    .clicked()
+                            {
+                                session_to_open = Some(SessionProfile {
+                                    name: "PowerShell Local".to_string(),
+                                    protocol: ProtocolType::LocalShell,
+                                    local_shell_cmd: "powershell.exe".to_string(),
+                                    icon_badge: "⚡".to_string(),
+                                    ..Default::default()
+                                });
+                                ui.close();
+                            }
+
+                            let mut matches: Vec<&SessionProfile> = self
+                                .config
+                                .sessions
+                                .iter()
+                                .filter(|s| {
+                                    q.is_empty()
+                                        || s.name.to_lowercase().contains(&q)
+                                        || s.host.to_lowercase().contains(&q)
+                                        || s.username.to_lowercase().contains(&q)
+                                        || s.folder.to_lowercase().contains(&q)
+                                        || s.tags
+                                            .iter()
+                                            .any(|t| format!("#{}", t.to_lowercase()).contains(&q))
+                                })
+                                .collect();
+                            matches.sort_by(|a, b| {
+                                a.folder
+                                    .to_lowercase()
+                                    .cmp(&b.folder.to_lowercase())
+                                    .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                            });
+
+                            if matches.is_empty() {
+                                ui.label(
+                                    RichText::new(tr(lang, "Aucune session", "No matching session"))
+                                        .color(Color32::from_rgb(139, 148, 158)),
+                                );
+                            }
+                            egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                                let mut last_folder: Option<&str> = None;
+                                for s in &matches {
+                                    if last_folder != Some(s.folder.as_str()) {
+                                        last_folder = Some(s.folder.as_str());
+                                        ui.label(
+                                            RichText::new(format!("\u{E24A} {}", s.folder))
+                                                .small()
+                                                .color(Color32::from_rgb(139, 148, 158)),
+                                        );
+                                    }
+                                    let (proto_tag, proto_color) = protocol_badge_style(s.protocol);
+                                    let target = if s.protocol == ProtocolType::LocalShell {
+                                        s.local_shell_cmd.clone()
+                                    } else {
+                                        format!("{}:{}", s.host, s.port)
+                                    };
+                                    let clicked = ui
+                                        .horizontal(|ui| {
+                                            let clicked = ui
+                                                .button(format!("{} {}", s.icon_badge, s.name))
+                                                .clicked();
+                                            ui.label(
+                                                RichText::new(proto_tag)
+                                                    .small()
+                                                    .monospace()
+                                                    .color(proto_color),
+                                            );
+                                            ui.label(
+                                                RichText::new(target)
+                                                    .small()
+                                                    .monospace()
+                                                    .color(Color32::from_rgb(139, 148, 158)),
+                                            );
+                                            clicked
+                                        })
+                                        .inner;
+                                    if clicked {
+                                        session_to_open = Some((*s).clone());
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        },
+                    );
+                    plus.response.on_hover_text(tr(
+                        lang,
+                        "Ouvrir une session dans un nouvel onglet",
+                        "Open a session in a new tab",
+                    ));
+                    if let Some(profile) = session_to_open {
+                        self.launch_session(profile);
+                    }
                     });
 
                     // 2. Outils de la session active, sur leur propre ligne : ils passent à la
