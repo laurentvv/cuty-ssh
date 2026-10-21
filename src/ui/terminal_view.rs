@@ -254,6 +254,9 @@ impl CutySshApp {
     }
 }
 
+/// Mouse-wheel multiplier for scrollback (egui's default wheel step felt too slow).
+const WHEEL_SPEED: f32 = 2.5;
+
 #[derive(Clone, Copy)]
 struct TerminalPaneOpts {
     copy_on_select: bool,
@@ -538,7 +541,7 @@ fn render_single_terminal_pane(
     if response.hovered() {
         let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y);
         if scroll_delta.abs() > 1.0 && !tab.terminal.state.using_alt_screen {
-            let lines_delta = (scroll_delta / line_height).round() as isize;
+            let lines_delta = (scroll_delta / line_height * WHEEL_SPEED).round() as isize;
             let max_sb = tab.terminal.state.scrollback.len() as isize;
             let cur = tab.terminal.state.scroll_offset as isize;
             tab.terminal.state.scroll_offset = (cur + lines_delta).clamp(0, max_sb) as usize;
