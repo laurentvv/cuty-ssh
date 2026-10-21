@@ -458,6 +458,69 @@ fn parse_inline_proxy_jump(spec: &str) -> Option<SessionProfile> {
     })
 }
 
+/// Whether a keyboard-interactive prompt asks for the account password (EN/FR/DE/ES).
+fn is_password_prompt(prompt: &str) -> bool {
+    let p = prompt.to_lowercase();
+    ["password", "mot de passe", "passwort", "contraseña"]
+        .iter()
+        .any(|k| p.contains(k))
+}
+
+/// Runs a keyboard-interactive exchange (PAM, OTP, 2FA...). The stored password answers the
+/// first password-looking prompt only; any other prompt is asked to the user, masked unless
+/// the server allows echo. Returns whether the server accepted the authentication.
+async fn run_keyboard_interactive(
+    session: &mut client::Handle<SshClientHandler>,
+    username: &str,
+    stored_password: &str,
+    cmd_rx: &mut UnboundedReceiver<BackendCommand>,
+    evt_tx: &UnboundedSender<BackendEvent>,
+) -> Result<bool> {
+    let mut password_used = false;
+    let mut cur = session
+        .authenticate_keyboard_interactive_start(username, None)
+        .await?;
+    loop {
+        match cur {
+            client::KeyboardInteractiveAuthResponse::Success => return Ok(true),
+            client::KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
+            client::KeyboardInteractiveAuthResponse::InfoRequest {
+                name,
+                instructions,
+                prompts,
+            } => {
+                let mut answers = Vec::with_capacity(prompts.len());
+                for p in prompts {
+                    let ans = if !password_used
+                        && !stored_password.is_empty()
+                        && is_password_prompt(&p.prompt)
+                    {
+                        password_used = true;
+                        stored_password.to_string()
+                    } else {
+                        wait_for_secret_input(
+                            cmd_rx,
+                            evt_tx,
+                            if name.is_empty() {
+                                "Authentification Interactive"
+                            } else {
+                                &name
+                            },
+                            &format!("{}\n{}", instructions, p.prompt),
+                            !p.echo,
+                        )
+                        .await?
+                    };
+                    answers.push(ans);
+                }
+                cur = session
+                    .authenticate_keyboard_interactive_respond(answers)
+                    .await?;
+            }
+        }
+    }
+}
+
 async fn authenticate_ssh_handle(
     session: &mut client::Handle<SshClientHandler>,
     profile: &SessionProfile,
@@ -603,52 +666,11 @@ async fn authenticate_ssh_handle(
             }
             SshAuthMethod::Agent { .. } => {}
             SshAuthMethod::KeyboardInteractive => {
-                if let Ok(resp) = session
-                    .authenticate_keyboard_interactive_start(&username, None)
-                    .await
+                if let Ok(true) =
+                    run_keyboard_interactive(session, &username, &profile.password, cmd_rx, evt_tx)
+                        .await
                 {
-                    let mut cur = resp;
-                    loop {
-                        match cur {
-                            client::KeyboardInteractiveAuthResponse::Success => {
-                                authenticated_via =
-                                    Some("Keyboard-Interactive (PAM/2FA)".to_string());
-                                break;
-                            }
-                            client::KeyboardInteractiveAuthResponse::Failure { .. } => break,
-                            client::KeyboardInteractiveAuthResponse::InfoRequest {
-                                name,
-                                instructions,
-                                prompts,
-                            } => {
-                                let mut answers = Vec::new();
-                                for p in prompts {
-                                    let ans = if !profile.password.is_empty()
-                                        && p.prompt.to_lowercase().contains("password")
-                                    {
-                                        profile.password.clone()
-                                    } else {
-                                        wait_for_secret_input(
-                                            cmd_rx,
-                                            evt_tx,
-                                            if name.is_empty() {
-                                                "Authentification Interactive"
-                                            } else {
-                                                &name
-                                            },
-                                            &format!("{}\n{}", instructions, p.prompt),
-                                            true,
-                                        )
-                                        .await?
-                                    };
-                                    answers.push(ans);
-                                }
-                                cur = session
-                                    .authenticate_keyboard_interactive_respond(answers)
-                                    .await?;
-                            }
-                        }
-                    }
+                    authenticated_via = Some("Keyboard-Interactive (PAM/2FA)".to_string());
                 }
             }
             SshAuthMethod::Password => {}
@@ -669,12 +691,23 @@ async fn authenticate_ssh_handle(
             .await?;
         }
         let res = session.authenticate_password(&username, &pwd).await?;
+        let kbdint_offered = matches!(
+            &res,
+            client::AuthResult::Failure { remaining_methods, .. }
+                if remaining_methods.contains(&russh::MethodKind::KeyboardInteractive)
+        );
         if res.success() {
             authenticated_via = Some(if !profile.password.is_empty() {
                 "Mot de passe automatique".to_string()
             } else {
                 "Mot de passe SSH".to_string()
             });
+        } else if kbdint_offered
+            && run_keyboard_interactive(session, &username, &pwd, cmd_rx, evt_tx).await?
+        {
+            // Many PAM servers refuse `password` but accept the same secret (and a 2FA code)
+            // through keyboard-interactive.
+            authenticated_via = Some("Keyboard-Interactive (PAM/2FA)".to_string());
         } else {
             let retry_pwd = wait_for_secret_input(
                 cmd_rx,
@@ -2197,5 +2230,20 @@ mod tests {
             .await
             .unwrap();
         assert!(srv.await.unwrap().is_err());
+    }
+}
+
+#[cfg(test)]
+mod kbdint_tests {
+    use super::is_password_prompt;
+
+    #[test]
+    fn password_prompts_are_detected_in_several_languages() {
+        for p in ["Password: ", "Mot de passe :", "Passwort:", "Contraseña:"] {
+            assert!(is_password_prompt(p), "{p}");
+        }
+        for p in ["Verification code: ", "One-time token:", "Code OTP"] {
+            assert!(!is_password_prompt(p), "{p}");
+        }
     }
 }
