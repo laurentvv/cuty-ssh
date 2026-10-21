@@ -1811,6 +1811,38 @@ impl CutySshApp {
         });
     }
 
+    fn import_bitvise_profiles(&mut self) {
+        let lang = self.config.language;
+        let Some(files) = rfd::FileDialog::new()
+            .set_title(tr(
+                lang,
+                "Profils Bitvise SSH Client (.tlp / .bscp)",
+                "Bitvise SSH Client profiles (.tlp / .bscp)",
+            ))
+            .add_filter("Bitvise profile", &["tlp", "bscp"])
+            .pick_files()
+        else {
+            return;
+        };
+        let msg = match self.config.import_bitvise_profiles(&files) {
+            Ok(n) => format!(
+                "{} {}",
+                n,
+                tr(
+                    lang,
+                    "profil(s) Bitvise importé(s) !",
+                    "Bitvise profile(s) imported!"
+                )
+            ),
+            Err(e) => format!(
+                "{} {}",
+                tr(lang, "Erreur import Bitvise :", "Bitvise import error:"),
+                e
+            ),
+        };
+        self.set_toast(msg);
+    }
+
     fn import_kitty_folder(&mut self) {
         let lang = self.config.language;
         let Some(dir) = rfd::FileDialog::new()
@@ -2050,6 +2082,17 @@ impl CutySshApp {
                                 .clicked()
                             {
                                 self.import_kitty_folder();
+                            }
+
+                            if theme::tool_button(ui, theme::icons::FOLDER, "Bitvise…")
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Importer des profils Bitvise SSH Client (.tlp / .bscp) : hôte, port, utilisateur",
+                                    "Import Bitvise SSH Client profiles (.tlp / .bscp): host, port, user",
+                                ))
+                                .clicked()
+                            {
+                                self.import_bitvise_profiles();
                             }
                         },
                     );
