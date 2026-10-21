@@ -1902,22 +1902,34 @@ impl CutySshApp {
         else {
             return;
         };
-        let msg = match self.config.import_bitvise_profiles(&files) {
-            Ok(n) => format!(
-                "{} {}",
-                n,
-                tr(
-                    lang,
-                    "profil(s) Bitvise importé(s) !",
-                    "Bitvise profile(s) imported!"
-                )
-            ),
-            Err(e) => format!(
-                "{} {}",
-                tr(lang, "Erreur import Bitvise :", "Bitvise import error:"),
-                e
-            ),
-        };
+        let report = self.config.import_bitvise_profiles(&files);
+        if report.added > 0 {
+            let _ = self.config.save();
+        }
+        let mut msg = format!(
+            "{} {}",
+            report.added,
+            tr(
+                lang,
+                "profil(s) Bitvise importé(s)",
+                "Bitvise profile(s) imported"
+            )
+        );
+        if report.duplicates > 0 {
+            msg.push_str(&format!(
+                ", {} {}",
+                report.duplicates,
+                tr(lang, "déjà présent(s)", "already present")
+            ));
+        }
+        if !report.errors.is_empty() {
+            msg.push_str(&format!(
+                ", {} {} ({})",
+                report.errors.len(),
+                tr(lang, "ignoré(s)", "skipped"),
+                report.errors[0]
+            ));
+        }
         self.set_toast(msg);
     }
 

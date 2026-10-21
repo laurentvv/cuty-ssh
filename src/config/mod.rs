@@ -871,33 +871,66 @@ impl AppConfig {
     }
 
     /// Imports an INI session file (`Key\Value\` lines) or directory.
-    /// Imports Bitvise SSH Client profiles (`.tlp` / `.bscp`). Returns how many sessions were
-    /// added; a profile with the same name, host, port and user is skipped.
-    pub fn import_bitvise_profiles(&mut self, paths: &[PathBuf]) -> anyhow::Result<usize> {
-        let mut added = 0;
+    /// Imports Bitvise SSH Client profiles (`.tlp` / `.bscp`). Folders are scanned (one level)
+    /// for such files. A file that cannot be read or parsed is reported and skipped, it never
+    /// stops the rest of the batch; a profile with the same name, host, port and user is skipped.
+    pub fn import_bitvise_profiles(&mut self, paths: &[PathBuf]) -> BitviseImportReport {
+        let mut report = BitviseImportReport::default();
+        let mut files: Vec<PathBuf> = Vec::new();
         for path in paths {
-            let bytes = fs::read(path)?;
+            if path.is_dir() {
+                if let Ok(rd) = fs::read_dir(path) {
+                    let mut found: Vec<PathBuf> = rd
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|p| {
+                            p.extension().is_some_and(|x| {
+                                x.eq_ignore_ascii_case("tlp") || x.eq_ignore_ascii_case("bscp")
+                            })
+                        })
+                        .collect();
+                    found.sort();
+                    files.extend(found);
+                }
+            } else {
+                files.push(path.clone());
+            }
+        }
+        for path in files {
+            let label = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let bytes = match fs::read(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    report.errors.push(format!("{label}: {e}"));
+                    continue;
+                }
+            };
             let name = path
                 .file_stem()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Bitvise".to_string());
-            let profile = parse_bitvise_profile(&bytes, &name)
-                .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-            let duplicate = self.sessions.iter().any(|s| {
-                s.name == profile.name
-                    && s.host == profile.host
-                    && s.port == profile.port
-                    && s.username == profile.username
-            });
-            if !duplicate {
-                self.sessions.push(profile);
-                added += 1;
+            match parse_bitvise_profile(&bytes, &name) {
+                Err(e) => report.errors.push(format!("{label}: {e}")),
+                Ok(profile) => {
+                    let duplicate = self.sessions.iter().any(|s| {
+                        s.name == profile.name
+                            && s.host == profile.host
+                            && s.port == profile.port
+                            && s.username == profile.username
+                    });
+                    if duplicate {
+                        report.duplicates += 1;
+                    } else {
+                        self.sessions.push(profile);
+                        report.added += 1;
+                    }
+                }
             }
         }
-        if added > 0 {
-            let _ = self.save();
-        }
-        Ok(added)
+        report
     }
 
     pub fn import_ini_portable_file(&mut self, path: &Path) -> anyhow::Result<usize> {
@@ -1492,6 +1525,15 @@ pub fn parse_openssh_config_content(content: &str) -> Vec<SessionProfile> {
     profiles
 }
 
+/// Outcome of a Bitvise profile batch import.
+#[derive(Debug, Default, Clone)]
+pub struct BitviseImportReport {
+    pub added: usize,
+    pub duplicates: usize,
+    /// `file name: reason` for every file that could not be imported.
+    pub errors: Vec<String>,
+}
+
 /// Reads a big-endian `u32` length-prefixed string at `*o`.
 fn read_be_string(b: &[u8], o: &mut usize) -> Option<String> {
     let len = u32::from_be_bytes(b.get(*o..*o + 4)?.try_into().ok()?) as usize;
@@ -1989,6 +2031,44 @@ Host app-internal db-internal
         assert_eq!(p.edge_preset, EdgeGatewayPreset::None);
         assert_eq!(p.shellhub_server, "ssh.shellhub.io");
         assert_eq!(p.shellhub_device_id, "");
+    }
+
+    #[test]
+    fn bitvise_batch_import_skips_bad_files_and_duplicates() {
+        fn be_str(s: &str) -> Vec<u8> {
+            let mut v = (s.len() as u32).to_be_bytes().to_vec();
+            v.extend_from_slice(s.as_bytes());
+            v
+        }
+        let build = |host: &str, port: u32, user: &str| {
+            let mut b = be_str("Tunnelier 9.66");
+            b.extend_from_slice(&[0u8; 8 * 4 + 2]);
+            b.extend(be_str(host));
+            b.extend_from_slice(&port.to_be_bytes());
+            b.extend_from_slice(&[0u8; 11]);
+            b.extend(be_str(user));
+            b.extend_from_slice(&[0u8; 16]);
+            b
+        };
+        let dir = std::env::temp_dir().join(format!("cuty_bitvise_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.tlp"), build("a.example.com", 22, "alice")).unwrap();
+        fs::write(dir.join("b.bscp"), build("b.example.com", 2222, "bob")).unwrap();
+        fs::write(dir.join("bad.tlp"), b"not a profile").unwrap();
+        fs::write(dir.join("ignored.txt"), b"x").unwrap();
+
+        let mut cfg = AppConfig::default();
+        cfg.sessions.clear();
+        // Folder + an explicit duplicate of one of its files.
+        let first = cfg.import_bitvise_profiles(&[dir.clone(), dir.join("a.tlp")]);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(
+            (first.added, first.duplicates, first.errors.len()),
+            (2, 1, 1)
+        );
+        assert!(first.errors[0].starts_with("bad.tlp"));
+        assert_eq!(cfg.sessions.len(), 2);
     }
 
     #[test]
