@@ -371,12 +371,10 @@ fn render_single_terminal_pane(
                         .on_hover_text(format!("Kernel: {}\nUptime: {}", m.kernel, m.uptime));
                         ui.separator();
 
-                        ui.label(
-                            RichText::new(format!("\u{E2DE} Load: {}", m.load_avg))
-                                .monospace()
-                                .small()
-                                .color(Color32::from_rgb(201, 209, 217)),
-                        );
+                        ui.label(telemetry_text(
+                            &format!("\u{E2DE} Load  {}", m.load_avg),
+                            TELEMETRY_VALUE,
+                        ));
                         ui.separator();
 
                         if m.mem_total_mb > 0 {
@@ -389,18 +387,16 @@ fn render_single_terminal_pane(
                             } else {
                                 Color32::from_rgb(248, 81, 73)
                             };
-                            ui.label(RichText::new("\u{E74E} RAM:").small());
-                            ui.add(
-                                egui::ProgressBar::new(mem_frac)
-                                    .desired_width(115.0)
-                                    .fill(mem_col)
-                                    .text(format!(
-                                        "{}/{} MB ({:.0}%)",
-                                        m.mem_used_mb,
-                                        m.mem_total_mb,
-                                        mem_frac * 100.0
-                                    )),
+                            ui.label(telemetry_text("\u{E74E} RAM", TELEMETRY_LABEL));
+                            metric_bar(ui, mem_frac, mem_col);
+                            ui.label(
+                                telemetry_text(&format!("{:.0}%", mem_frac * 100.0), mem_col)
+                                    .strong(),
                             );
+                            ui.label(telemetry_text(
+                                &format!("{} / {} MB", m.mem_used_mb, m.mem_total_mb),
+                                TELEMETRY_VALUE,
+                            ));
                             ui.separator();
                         }
 
@@ -413,24 +409,23 @@ fn render_single_terminal_pane(
                             } else {
                                 Color32::from_rgb(248, 81, 73)
                             };
+                            ui.label(telemetry_text(
+                                tr(lang, "\u{E248} Disque /", "\u{E248} Disk /"),
+                                TELEMETRY_LABEL,
+                            ));
+                            metric_bar(ui, disk_frac, disk_col);
                             ui.label(
-                                RichText::new(tr(lang, "\u{E248} Disque /:", "\u{E248} Disk /:"))
-                                    .small(),
+                                telemetry_text(&format!("{:.0}%", m.disk_used_pct), disk_col)
+                                    .strong(),
                             );
-                            ui.add(
-                                egui::ProgressBar::new(disk_frac)
-                                    .desired_width(110.0)
-                                    .fill(disk_col)
-                                    .text(format!("{:.0}% ({})", m.disk_used_pct, m.disk_summary)),
-                            );
+                            ui.label(telemetry_text(&m.disk_summary, TELEMETRY_VALUE));
                             ui.separator();
                         }
 
-                        ui.label(
-                            RichText::new(format!("\u{E492} {}", m.uptime))
-                                .small()
-                                .color(Color32::from_rgb(139, 148, 158)),
-                        );
+                        ui.label(telemetry_text(
+                            &format!("\u{E492} {}", m.uptime),
+                            TELEMETRY_LABEL,
+                        ));
                     } else {
                         ui.label(
                             RichText::new(tr(
@@ -840,6 +835,37 @@ fn render_single_terminal_pane(
     }
 
     (clicked_pane, bytes_to_send)
+}
+
+const TELEMETRY_LABEL: Color32 = Color32::from_rgb(160, 170, 184);
+const TELEMETRY_VALUE: Color32 = Color32::from_rgb(230, 237, 243);
+
+/// Telemetry text: 12.5 px (the old `.small()` text was hard to read) with an explicit color.
+fn telemetry_text(text: &str, color: Color32) -> RichText {
+    RichText::new(text).size(12.5).color(color)
+}
+
+/// Thin rounded gauge. Values are printed next to it (not over the fill), and a minimum
+/// fill width keeps tiny percentages visible without turning the bar into a dot.
+fn metric_bar(ui: &mut egui::Ui, frac: f32, color: Color32) {
+    const WIDTH: f32 = 110.0;
+    const HEIGHT: f32 = 10.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(WIDTH, 16.0), Sense::hover());
+    let bar = Rect::from_center_size(rect.center(), Vec2::new(WIDTH, HEIGHT));
+    let painter = ui.painter();
+    painter.rect_filled(bar, 3.0, Color32::from_rgb(38, 46, 62));
+    let fill_w = (bar.width() * frac.clamp(0.0, 1.0)).clamp(4.0, bar.width());
+    painter.rect_filled(
+        Rect::from_min_size(bar.min, Vec2::new(fill_w, bar.height())),
+        3.0,
+        color,
+    );
+    painter.rect_stroke(
+        bar,
+        3.0,
+        Stroke::new(1.0, Color32::from_rgb(64, 76, 98)),
+        egui::StrokeKind::Inside,
+    );
 }
 
 pub fn protocol_badge_style(proto: ProtocolType) -> (&'static str, Color32) {

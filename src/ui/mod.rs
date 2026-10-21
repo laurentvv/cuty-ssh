@@ -737,6 +737,31 @@ impl CutySshApp {
             "snippets" => {
                 self.show_commands_editor = true;
             }
+            "telemetry" => {
+                // SSH tab to a closed local port, with fake server metrics to check the strip.
+                self.launch_session(SessionProfile {
+                    name: "BI-BDD1".to_string(),
+                    protocol: ProtocolType::Ssh,
+                    host: "127.0.0.1".to_string(),
+                    port: 9,
+                    username: "root".to_string(),
+                    ..Default::default()
+                });
+                if let Some(tab) = self.tabs.last_mut() {
+                    tab.show_telemetry_bar = true;
+                    tab.telemetry = Some(RemoteServerMetrics {
+                        hostname: "BI-BDD1".to_string(),
+                        kernel: "5.14.0".to_string(),
+                        uptime: "up 3 years, 32 weeks, 2 days, 12 hours, 39 minutes".to_string(),
+                        load_avg: "0.08 0.02 0.01".to_string(),
+                        cpu_load_1m: 0.08,
+                        mem_used_mb: 3446,
+                        mem_total_mb: 15672,
+                        disk_used_pct: 6.0,
+                        disk_summary: "4,8G/91G".to_string(),
+                    });
+                }
+            }
             "tab" => {
                 self.launch_session(SessionProfile {
                     name: "PowerShell Local".to_string(),
@@ -744,6 +769,22 @@ impl CutySshApp {
                     local_shell_cmd: "powershell.exe".to_string(),
                     ..Default::default()
                 });
+            }
+            "prompt" => {
+                self.launch_session(SessionProfile {
+                    name: "PowerShell Local".to_string(),
+                    protocol: ProtocolType::LocalShell,
+                    local_shell_cmd: "powershell.exe".to_string(),
+                    ..Default::default()
+                });
+                if let Some(tab) = self.tabs.last_mut() {
+                    tab.pending_prompt = Some(PendingSecretPrompt {
+                        title: "Passphrase de clé PuTTY (.ppk)".to_string(),
+                        prompt: "Demo passphrase prompt".to_string(),
+                        is_passphrase: true,
+                        input_value: String::new(),
+                    });
+                }
             }
             _ => {}
         }
@@ -6281,9 +6322,12 @@ impl CutySshApp {
                         .password(prompt.is_passphrase)
                         .desired_width(320.0),
                 );
-                resp.request_focus();
+                // `lost_focus()` is evaluated live from the focus state: it must be read before
+                // `request_focus()` hands the focus back, otherwise Enter is never detected.
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     submit = true;
+                } else {
+                    resp.request_focus();
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
