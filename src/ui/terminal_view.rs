@@ -501,6 +501,36 @@ fn render_single_terminal_pane(
         response.request_focus();
     }
 
+    // Drag-selecting past the top/bottom edge scrolls the scrollback so a long selection can
+    // be extended; speed grows with the distance between the pointer and the edge.
+    if response.dragged_by(egui::PointerButton::Primary)
+        && !tab.terminal.state.using_alt_screen
+        && let Some(pos) = ctx.input(|i| i.pointer.latest_pos())
+    {
+        let overshoot = if pos.y < rect.top() {
+            rect.top() - pos.y
+        } else if pos.y > rect.bottom() {
+            -(pos.y - rect.bottom())
+        } else {
+            0.0
+        };
+        let accum_id = response.id.with("autoscroll_accum");
+        if overshoot == 0.0 {
+            ctx.data_mut(|d| d.insert_temp(accum_id, 0.0_f32));
+        } else {
+            let lines_per_sec = (6.0 + overshoot.abs() / line_height * 10.0).min(80.0);
+            let dt = ctx.input(|i| i.stable_dt).min(0.1);
+            let acc = ctx.data_mut(|d| *d.get_temp_mut_or_default::<f32>(accum_id))
+                + lines_per_sec * dt * overshoot.signum();
+            let whole = acc.trunc();
+            ctx.data_mut(|d| d.insert_temp(accum_id, acc - whole));
+            let max_sb = tab.terminal.state.scrollback.len() as isize;
+            let cur = tab.terminal.state.scroll_offset as isize;
+            tab.terminal.state.scroll_offset = (cur + whole as isize).clamp(0, max_sb) as usize;
+            ctx.request_repaint();
+        }
+    }
+
     let origin = rect.min + Vec2::new(6.0, 4.0);
     let vis_start = tab.terminal.state.visible_start_abs_row();
 
@@ -515,11 +545,12 @@ fn render_single_terminal_pane(
         }
     }
 
+    let last_row = tab.terminal.state.rows.saturating_sub(1);
     let pos_to_cell = |pos: Pos2| -> (usize, usize) {
         let rel_x = (pos.x - origin.x).max(0.0);
         let rel_y = (pos.y - origin.y).max(0.0);
         let c = (rel_x / char_width).floor() as usize;
-        let r = (rel_y / line_height).floor() as usize;
+        let r = ((rel_y / line_height).floor() as usize).min(last_row);
         (vis_start + r, c)
     };
 
