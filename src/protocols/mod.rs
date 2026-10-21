@@ -1558,7 +1558,47 @@ where
     Ok((host, u16::from_be_bytes(port)))
 }
 
-/// Binds `bind` and serves SOCKS5 clients through SSH `direct-tcpip` channels.
+/// Parses an HTTP `CONNECT host:port` request head. Only CONNECT is supported.
+fn parse_http_connect(head: &str) -> Option<(String, u16)> {
+    let line = head.lines().next()?;
+    let mut parts = line.split_whitespace();
+    if !parts.next()?.eq_ignore_ascii_case("CONNECT") {
+        return None;
+    }
+    let authority = parts.next()?;
+    let (host, port) = authority.rsplit_once(':')?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty() {
+        return None;
+    }
+    Some((host.to_string(), port.parse().ok()?))
+}
+
+/// Reads an HTTP proxy request head (up to the blank line, 8 KiB max) and returns the
+/// requested `CONNECT` destination. Other methods get a `405` and an error.
+async fn http_connect_negotiate<S>(s: &mut S) -> Result<(String, u16)>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut head = Vec::with_capacity(256);
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        anyhow::ensure!(head.len() < 8192, "HTTP proxy request too large");
+        s.read_exact(&mut byte).await?;
+        head.push(byte[0]);
+    }
+    match parse_http_connect(&String::from_utf8_lossy(&head)) {
+        Some(dest) => Ok(dest),
+        None => {
+            s.write_all(b"HTTP/1.1 405 Method Not Allowed\r\nAllow: CONNECT\r\n\r\n")
+                .await?;
+            anyhow::bail!("only HTTP CONNECT is supported");
+        }
+    }
+}
+
+/// Binds `bind` and serves SOCKS5 and HTTP CONNECT clients (detected from the first byte)
+/// through SSH `direct-tcpip` channels.
 async fn start_socks_proxy(
     session: Arc<client::Handle<SshClientHandler>>,
     bind: &str,
@@ -1568,7 +1608,17 @@ async fn start_socks_proxy(
         while let Ok((mut local, peer)) = listener.accept().await {
             let session = Arc::clone(&session);
             tokio::spawn(async move {
-                let Ok((host, port)) = socks5_negotiate(&mut local).await else {
+                let mut first = [0u8; 1];
+                if local.peek(&mut first).await.unwrap_or(0) == 0 {
+                    return;
+                }
+                let http = first[0] != 5;
+                let negotiated = if http {
+                    http_connect_negotiate(&mut local).await
+                } else {
+                    socks5_negotiate(&mut local).await
+                };
+                let Ok((host, port)) = negotiated else {
                     return;
                 };
                 match session
@@ -1581,17 +1631,23 @@ async fn start_socks_proxy(
                     .await
                 {
                     Ok(channel) => {
-                        if local
-                            .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
-                            .await
-                            .is_ok()
-                        {
+                        let ok_reply: &[u8] = if http {
+                            b"HTTP/1.1 200 Connection Established\r\n\r\n"
+                        } else {
+                            &[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+                        };
+                        if local.write_all(ok_reply).await.is_ok() {
                             let mut stream = channel.into_stream();
                             let _ = tokio::io::copy_bidirectional(&mut local, &mut stream).await;
                         }
                     }
                     Err(_) => {
-                        let _ = local.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+                        let fail_reply: &[u8] = if http {
+                            b"HTTP/1.1 502 Bad Gateway\r\n\r\n"
+                        } else {
+                            &[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]
+                        };
+                        let _ = local.write_all(fail_reply).await;
                     }
                 }
             });
@@ -2415,6 +2471,42 @@ mod tests {
             srv.await.unwrap().unwrap(),
             ("example.org".to_string(), 443)
         );
+    }
+
+    #[test]
+    fn http_connect_request_line_is_parsed() {
+        assert_eq!(
+            parse_http_connect("CONNECT example.org:443 HTTP/1.1\r\nHost: x\r\n\r\n"),
+            Some(("example.org".to_string(), 443))
+        );
+        assert_eq!(
+            parse_http_connect("connect [::1]:8080 HTTP/1.1\r\n\r\n"),
+            Some(("::1".to_string(), 8080))
+        );
+        assert_eq!(parse_http_connect("GET http://a/ HTTP/1.1\r\n\r\n"), None);
+        assert_eq!(parse_http_connect("CONNECT nohost HTTP/1.1\r\n\r\n"), None);
+    }
+
+    #[tokio::test]
+    async fn http_connect_negotiate_reads_head_and_rejects_get() {
+        let (mut client, mut server) = tokio::io::duplex(512);
+        let srv = tokio::spawn(async move { http_connect_negotiate(&mut server).await });
+        client
+            .write_all(b"CONNECT db.internal:5432 HTTP/1.1\r\nHost: db.internal:5432\r\n\r\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            srv.await.unwrap().unwrap(),
+            ("db.internal".to_string(), 5432)
+        );
+
+        let (mut client, mut server) = tokio::io::duplex(512);
+        let srv = tokio::spawn(async move { http_connect_negotiate(&mut server).await });
+        client.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
+        assert!(srv.await.unwrap().is_err());
+        let mut reply = [0u8; 12];
+        client.read_exact(&mut reply).await.unwrap();
+        assert!(reply.starts_with(b"HTTP/1.1 405"));
     }
 
     #[tokio::test]

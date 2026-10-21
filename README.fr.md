@@ -194,7 +194,7 @@ Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur interméd
 
 - **Reconnexion automatique** : cochez *Reconnexion automatique* dans l'éditeur de session, ou utilisez le bouton `↻ Auto-reconnexion` d'un onglet. Une connexion perdue est retentée avec un délai croissant (2 s → 30 s, 10 essais) ; la barre d'état affiche le compte à rebours et `↻ Reconnecter` force un essai immédiat.
 - **Ligne de commande** : `cuty-ssh --session "Prod Web"` ouvre une session enregistrée au démarrage (nom, fragment de nom unique ou UUID) ; `cuty-ssh --list` liste les sessions.
-- **SOCKS5 en un clic** : le bouton `SOCKS5` d'un onglet SSH démarre un proxy local sur `127.0.0.1:1080` via la session ; une règle `SOCKS5 (-D)` peut aussi être enregistrée dans l'onglet *Redirection de ports*.
+- **Proxy SOCKS5 / HTTP en un clic** : le bouton `SOCKS5/HTTP` d'un onglet SSH démarre un proxy local (port modifiable, `1080` par défaut) qui accepte les clients SOCKS5 et HTTP `CONNECT` via la session ; une règle `SOCKS5 (-D)` peut aussi être enregistrée dans l'onglet *Redirection de ports*.
 - **Repli keyboard-interactive** : si le serveur refuse `password` mais propose keyboard-interactive (PAM / 2FA), Cuty-SSH poursuit automatiquement avec cette méthode.
 - **Propriétés SFTP & miroir** : `…` sur un élément distant ouvre chmod (grille rwx + octal), création de lien symbolique et SHA-256 ; `Miroir` prévisualise et lance une synchronisation à sens unique local/distant.
 - **Import Bitvise** : `Import > Bitvise…` lit les profils `.tlp` / `.bscp` (hôte, port, utilisateur).

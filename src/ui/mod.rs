@@ -141,6 +141,8 @@ pub struct SessionTab {
 
     /// Local port of the one-click SOCKS5 proxy, when running.
     pub socks_port: Option<u16>,
+    /// Port used the next time the one-click proxy is started.
+    pub socks_listen_port: u16,
 }
 
 /// Maximum automatic reconnection attempts before giving up.
@@ -1157,6 +1159,7 @@ impl CutySshApp {
             reconnect_attempt: 0,
             reconnect_at: None,
             socks_port: None,
+            socks_listen_port: 1080,
         };
 
         self.tabs.push(tab);
@@ -3409,24 +3412,42 @@ impl CutySshApp {
                                     }
                                 }
 
+                                if active_tab.socks_port.is_none() {
+                                    ui.add(
+                                        egui::DragValue::new(&mut active_tab.socks_listen_port)
+                                            .range(1..=65535),
+                                    )
+                                    .on_hover_text(tr(
+                                        lang,
+                                        "Port local du proxy SOCKS5 / HTTP",
+                                        "Local port of the SOCKS5 / HTTP proxy",
+                                    ));
+                                }
                                 if ui
-                                    .selectable_label(active_tab.socks_port.is_some(), "SOCKS5")
+                                    .selectable_label(
+                                        active_tab.socks_port.is_some(),
+                                        "SOCKS5/HTTP",
+                                    )
                                     .on_hover_text(match active_tab.socks_port {
                                         Some(p) => format!(
                                             "{} 127.0.0.1:{p}",
-                                            tr(lang, "Proxy SOCKS5 actif sur", "SOCKS5 proxy listening on")
+                                            tr(
+                                                lang,
+                                                "Proxy SOCKS5 / HTTP CONNECT actif sur",
+                                                "SOCKS5 / HTTP CONNECT proxy listening on"
+                                            )
                                         ),
                                         None => tr(
                                             lang,
-                                            "Démarrer un proxy SOCKS5 local (127.0.0.1:1080) via cette session",
-                                            "Start a local SOCKS5 proxy (127.0.0.1:1080) through this session",
+                                            "Démarrer un proxy local SOCKS5 + HTTP CONNECT (127.0.0.1) via cette session",
+                                            "Start a local SOCKS5 + HTTP CONNECT proxy (127.0.0.1) through this session",
                                         )
                                         .to_string(),
                                     })
                                     .clicked()
                                 {
                                     let _ = active_tab.handle.cmd_tx.send(BackendCommand::ToggleSocks(
-                                        active_tab.socks_port.unwrap_or(1080),
+                                        active_tab.socks_port.unwrap_or(active_tab.socks_listen_port),
                                     ));
                                 }
 
