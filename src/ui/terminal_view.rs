@@ -852,6 +852,11 @@ fn render_single_terminal_pane(
                     egui::Event::Text(text) => {
                         bytes_to_send.extend_from_slice(text.as_bytes());
                     }
+                    // egui-winit turns Ctrl+C / Ctrl+X into Copy / Cut events and never emits the
+                    // key press, so the control characters must be rebuilt here.
+                    egui::Event::Copy | egui::Event::Cut => {
+                        bytes_to_send.push(clipboard_event_control_byte(event));
+                    }
                     egui::Event::Key {
                         key,
                         pressed: true,
@@ -908,6 +913,15 @@ pub fn protocol_badge_style(proto: ProtocolType) -> (&'static str, Color32) {
         ProtocolType::Telnet => ("TELNET", Color32::from_rgb(210, 153, 34)),
         ProtocolType::RawTcp => ("RAW TCP", Color32::from_rgb(163, 113, 247)),
         ProtocolType::LocalShell => ("CONPTY", Color32::from_rgb(63, 185, 80)),
+    }
+}
+
+/// Control byte sent for the clipboard shortcuts egui swallows: Ctrl+C = ETX (interrupt),
+/// Ctrl+X = CAN. Selection copying is done by `copy_on_select`, not by Ctrl+C.
+fn clipboard_event_control_byte(event: &egui::Event) -> u8 {
+    match event {
+        egui::Event::Cut => 0x18,
+        _ => 0x03,
     }
 }
 
@@ -984,5 +998,16 @@ pub fn format_bytes(size: u64) -> String {
         format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.2} GB", size as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ctrl_c_and_ctrl_x_become_control_bytes() {
+        assert_eq!(clipboard_event_control_byte(&egui::Event::Copy), 0x03);
+        assert_eq!(clipboard_event_control_byte(&egui::Event::Cut), 0x18);
     }
 }
