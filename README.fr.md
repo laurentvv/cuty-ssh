@@ -19,7 +19,7 @@
   <img src="assets/cuty_ssh_icon.png" width="88" alt="Icône Cuty-SSH" style="border-radius: 18px;" />
 </p>
 
-[**Télécharger la dernière version (`v0.6.1`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇬🇧 English Version**](README.md) · [**Visite animée**](#visite-guide-anime--aperu-du-cockpit) · [**Fonctionnalités**](#fonctionnalits-cls) · [**`ssh-copy-id` en 1 clic**](#dploiement-de-cl-ssh-copy-id-en-1-clic--migration-automatique-mot-de-passe--cl) · [**Bastion (`-J`)**](#bastion-ssh--hte-de-rebond--j--proxyjump) · [**Architecture**](#architecture) · [**Compiler depuis les sources**](#compiler-depuis-les-sources)
+[**Télécharger la dernière version (`v0.6.2`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇬🇧 English Version**](README.md) · [**Visite animée**](#visite-guide-anime--aperu-du-cockpit) · [**Fonctionnalités**](#fonctionnalits-cls) · [**`ssh-copy-id` en 1 clic**](#dploiement-de-cl-ssh-copy-id-en-1-clic--migration-automatique-mot-de-passe--cl) · [**Bastion (`-J`)**](#bastion-ssh--hte-de-rebond--j--proxyjump) · [**Architecture**](#architecture) · [**Compiler depuis les sources**](#compiler-depuis-les-sources)
 
 </div>
 
@@ -27,7 +27,7 @@
 
 ## Vue d'ensemble
 
-**Cuty-SSH** (`v0.6.1`) est un émulateur de terminal et cockpit d'administration système tout-en-un pour Windows, mono-binaire, portable et accéléré par GPU (**DirectX 12 / wgpu**), écrit en **Rust 100% sûr et asynchrone (`russh` + `egui` + `tokio`)**, sans **aucune dépendance binaire externe** (aucun emballage de `putty.exe` ou `kitty.exe`).
+**Cuty-SSH** (`v0.6.2`) est un émulateur de terminal et cockpit d'administration système tout-en-un pour Windows, mono-binaire, portable et accéléré par GPU (**DirectX 12 / wgpu**), écrit en **Rust 100% sûr et asynchrone (`russh` + `egui` + `tokio`)**, sans **aucune dépendance binaire externe** (aucun emballage de `putty.exe` ou `kitty.exe`).
 
 Il réconcilie l'écosystème classique **PuTTY / KiTTY** avec les méthodes de travail modernes **OpenSSH** :
 - Chargement natif des clés privées **PuTTY `.ppk` v2 et v3** (incluant le chiffrement par mot de passe **Argon2id**) en plus des formats OpenSSH et PEM.
@@ -53,7 +53,7 @@ Il réconcilie l'écosystème classique **PuTTY / KiTTY** avec les méthodes de 
 
 ## Tableau comparatif : Pourquoi Cuty-SSH ?
 
-| Fonctionnalité | PuTTY / KiTTY classique | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.6.1`)** |
+| Fonctionnalité | PuTTY / KiTTY classique | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.6.2`)** |
 | :--- | :---: | :---: | :---: |
 | **Moteur SSH2 pur Rust asynchrone (`russh`)** | ❌ Code C historique | ❌ Processus externe | ✅ **Intégré (`russh 0.64`)** |
 | **Clés PuTTY `.ppk` v2 & v3 (Argon2id) natives** | ✅ | ❌ Conversion requise | ✅ **Lecture & inspection directes** |
@@ -224,7 +224,7 @@ Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur interméd
 ## Téléchargement & Démarrage rapide
 
 ### Option 1 — Installateur Windows (.msi) & WinGet (Recommandé)
-- **Téléchargement direct** : Téléchargez et exécutez [**`cuty-ssh-v0.6.1-windows-x64.msi`**](https://github.com/laurentvv/cuty-ssh/releases/download/v0.6.1/cuty-ssh-v0.6.1-windows-x64.msi).
+- **Téléchargement direct** : Téléchargez et exécutez [**`cuty-ssh-v0.6.2-windows-x64.msi`**](https://github.com/laurentvv/cuty-ssh/releases/download/v0.6.2/cuty-ssh-v0.6.2-windows-x64.msi).
   - S'installe proprement dans `%LOCALAPPDATA%\Programs\Cuty-SSH` sans demande d'élévation administrateur (sans popup UAC).
   - Crée automatiquement un raccourci dans le Menu Démarrer avec l'icône de l'application.
   - Désinstallation propre en 1 clic depuis les Paramètres Windows / Applications installées.
@@ -234,7 +234,7 @@ Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur interméd
   ```
 
 ### Option 2 — Binaire autonome portable
-1. Téléchargez **`cuty-ssh.exe`** (ou **`cuty-ssh-v0.6.1-windows-x64.zip`**) depuis la page des [**Releases GitHub**](https://github.com/laurentvv/cuty-ssh/releases/latest).
+1. Téléchargez **`cuty-ssh.exe`** (ou **`cuty-ssh-v0.6.2-windows-x64.zip`**) depuis la page des [**Releases GitHub**](https://github.com/laurentvv/cuty-ssh/releases/latest).
 2. Déposez `cuty-ssh.exe` dans le dossier de votre choix et lancez-le — aucune installation requise.
 3. Cuty-SSH crée automatiquement un dossier local **`cuty-ssh-portable/`** à côté de l'exécutable :
    - `config.json` (profils de session chiffrés DPAPI, dossiers, tags, snippets, langue et thème)
