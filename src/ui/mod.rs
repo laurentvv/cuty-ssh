@@ -745,6 +745,22 @@ impl CutySshApp {
                     ..Default::default()
                 });
             }
+            "prompt" => {
+                self.launch_session(SessionProfile {
+                    name: "PowerShell Local".to_string(),
+                    protocol: ProtocolType::LocalShell,
+                    local_shell_cmd: "powershell.exe".to_string(),
+                    ..Default::default()
+                });
+                if let Some(tab) = self.tabs.last_mut() {
+                    tab.pending_prompt = Some(PendingSecretPrompt {
+                        title: "Passphrase de clé PuTTY (.ppk)".to_string(),
+                        prompt: "Demo passphrase prompt".to_string(),
+                        is_passphrase: true,
+                        input_value: String::new(),
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -6174,9 +6190,12 @@ impl CutySshApp {
                         .password(prompt.is_passphrase)
                         .desired_width(320.0),
                 );
-                resp.request_focus();
+                // `lost_focus()` is evaluated live from the focus state: it must be read before
+                // `request_focus()` hands the focus back, otherwise Enter is never detected.
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     submit = true;
+                } else {
+                    resp.request_focus();
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
