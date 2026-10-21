@@ -801,6 +801,79 @@ impl CutySshApp {
             "snippets" => {
                 self.show_commands_editor = true;
             }
+            "sftp_props" | "sftp_mirror" => {
+                // SSH tab (closed local port) with a fake SFTP listing and one SFTP dialog open.
+                self.launch_session(SessionProfile {
+                    name: "web-prod-01".to_string(),
+                    protocol: ProtocolType::Ssh,
+                    host: "127.0.0.1".to_string(),
+                    port: 9,
+                    username: "deploy".to_string(),
+                    ..Default::default()
+                });
+                if let Some(tab) = self.tabs.last_mut() {
+                    let entry = |name: &str, is_dir: bool, size: u64, perm: u32| SftpFileEntry {
+                        name: name.to_string(),
+                        full_path: format!("/var/www/app/{name}"),
+                        is_dir,
+                        is_symlink: false,
+                        size,
+                        permissions: perm,
+                        mtime: 1_760_000_000,
+                    };
+                    // Detach the real (failing) backend so the demo shows a healthy session.
+                    let (cmd_tx, _cmd_rx) = unbounded_channel();
+                    let (_evt_tx, evt_rx) = unbounded_channel();
+                    tab.handle = SessionHandle { cmd_tx, evt_rx };
+                    tab.state = TabConnectionState::Connected;
+                    tab.status_line = "Connected to web-prod-01".to_string();
+                    tab.auth_summary = "Public key".to_string();
+                    tab.terminal.feed_str(
+                        "Last login: Tue Oct 21 08:12:44 2026 from 10.0.0.12\r\n[deploy@web-prod-01 app]$ ls\r\nreleases  shared  deploy.sh  app.tar.gz  config.yml\r\n[deploy@web-prod-01 app]$ ",
+                    );
+                    tab.show_sftp_panel = true;
+                    tab.sftp_current_path = "/var/www/app".to_string();
+                    tab.sftp_path_input = "/var/www/app".to_string();
+                    tab.sftp_entries = vec![
+                        entry("releases", true, 0, 0o040755),
+                        entry("shared", true, 0, 0o040755),
+                        entry("deploy.sh", false, 2_048, 0o100755),
+                        entry("app.tar.gz", false, 48_300_000, 0o100644),
+                        entry("config.yml", false, 1_204, 0o100640),
+                    ];
+                    tab.sftp_status = "5 items".to_string();
+                    if stage == "sftp_props" {
+                        let e = entry("deploy.sh", false, 2_048, 0o100755);
+                        tab.sftp_props = Some(SftpPropsDialog {
+                            mode: e.permissions & 0o7777,
+                            mode_text: format!("{:04o}", e.permissions & 0o7777),
+                            entry: e,
+                            link_name: String::new(),
+                            sha256: Some(
+                                "9f2c4e1b7a63d8f05b1e94c2a7d03f68b5e1c9a4d27f8036e1b5a9c4d7f20e83"
+                                    .to_string(),
+                            ),
+                            hashing: false,
+                        });
+                    } else {
+                        tab.sftp_mirror = SftpMirrorDialog {
+                            open: true,
+                            download: false,
+                            local_dir: "D:\\builds\\app".to_string(),
+                            remote_dir: "/var/www/app".to_string(),
+                            delete_extra: false,
+                            lines: vec![
+                                "+ app.tar.gz".to_string(),
+                                "+ config.yml".to_string(),
+                                "+ shared/assets/logo.svg".to_string(),
+                                "+ releases/2026-10-21/index.html".to_string(),
+                            ],
+                            summary: "4 planned action(s)".to_string(),
+                            busy: false,
+                        };
+                    }
+                }
+            }
             "reconnect" => {
                 // SSH tab to a closed local port, flagged as a dropped connection with auto-reconnect.
                 self.launch_session(SessionProfile {
@@ -1227,8 +1300,10 @@ impl CutySshApp {
             "Reconnexion vers {}:{} (tentative {}/{})...",
             profile.host, profile.port, tab.reconnect_attempt, MAX_RECONNECT_ATTEMPTS
         );
-        tab.terminal
-            .feed_str(&format!("\r\n\x1b[1;36m↻ {}\x1b[0m\r\n", tab.status_line));
+        tab.terminal.feed_str(&format!(
+            "\r\n\x1b[1;36m\u{E094} {}\x1b[0m\r\n",
+            tab.status_line
+        ));
     }
 
     fn poll_backend_events(&mut self, ctx: &Context) {
@@ -2347,7 +2422,7 @@ impl CutySshApp {
                                         + 1;
                                     RichText::new(format!(
                                         "{} {}s ({}/{})",
-                                        tr(lang, "↻ Reconnexion dans", "↻ Reconnecting in"),
+                                        tr(lang, "\u{E094} Reconnexion dans", "\u{E094} Reconnecting in"),
                                         secs,
                                         tab.reconnect_attempt,
                                         MAX_RECONNECT_ATTEMPTS
@@ -3366,7 +3441,7 @@ impl CutySshApp {
                                 if ui
                                     .selectable_label(
                                         active_tab.profile.auto_reconnect,
-                                        tr(lang, "↻ Auto-reconnexion", "↻ Auto-reconnect"),
+                                        tr(lang, "\u{E094} Auto-reconnexion", "\u{E094} Auto-reconnect"),
                                     )
                                     .on_hover_text(tr(
                                         lang,
@@ -3383,7 +3458,7 @@ impl CutySshApp {
                                 }
                                 if matches!(active_tab.state, TabConnectionState::Disconnected(_))
                                     && ui
-                                        .button(tr(lang, "↻ Reconnecter", "↻ Reconnect"))
+                                        .button(tr(lang, "\u{E094} Reconnecter", "\u{E094} Reconnect"))
                                         .clicked()
                                 {
                                     reconnect_now = true;
@@ -3872,7 +3947,7 @@ impl CutySshApp {
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .small_button(tr(lang, "\u{21C5} Miroir", "\u{21C5} Mirror"))
+                            .small_button(tr(lang, "\u{E094} Miroir", "\u{E094} Mirror"))
                             .on_hover_text(tr(
                                 lang,
                                 "Synchroniser un dossier local et le dossier distant (miroir)",
@@ -3919,7 +3994,7 @@ impl CutySshApp {
 
                 // Column Header Bar
                 let panel_width = ui.available_width();
-                let show_date = panel_width >= 340.0;
+                let show_date = panel_width >= 365.0;
                 let mut sort_changed = false;
 
                 egui::Frame::NONE
@@ -4390,17 +4465,14 @@ impl CutySshApp {
                             }
                         });
                         if let Some(hash) = props.sha256.clone() {
-                            ui.horizontal(|ui| {
-                                let mut shown = hash.clone();
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut shown)
-                                        .font(egui::TextStyle::Monospace)
-                                        .desired_width(430.0),
-                                );
-                                if ui.button(tr(lang, "Copier", "Copy")).clicked() {
-                                    ui.ctx().copy_text(hash);
-                                }
-                            });
+                            ui.add(
+                                egui::Label::new(RichText::new(&hash).monospace().small())
+                                    .selectable(true)
+                                    .wrap(),
+                            );
+                            if ui.button(tr(lang, "Copier", "Copy")).clicked() {
+                                ui.ctx().copy_text(hash);
+                            }
                         }
                     }
                 });
@@ -4419,11 +4491,15 @@ impl CutySshApp {
                 .default_width(460.0)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut m.download, false, "Local \u{2192} Distant / Remote");
+                        ui.radio_value(
+                            &mut m.download,
+                            false,
+                            tr(lang, "Local \u{2192} Distant", "Local \u{2192} Remote"),
+                        );
                         ui.radio_value(
                             &mut m.download,
                             true,
-                            "Distant \u{2192} Local / Remote \u{2192} Local",
+                            tr(lang, "Distant \u{2192} Local", "Remote \u{2192} Local"),
                         );
                     });
                     ui.horizontal(|ui| {
@@ -6573,8 +6649,8 @@ impl CutySshApp {
                             &mut self.editing_session.auto_reconnect,
                             tr(
                                 lang,
-                                "↻ Reconnexion automatique si la connexion tombe",
-                                "↻ Reconnect automatically if the connection drops",
+                                "\u{E094} Reconnexion automatique si la connexion tombe",
+                                "\u{E094} Reconnect automatically if the connection drops",
                             ),
                         );
 

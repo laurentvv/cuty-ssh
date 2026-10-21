@@ -560,6 +560,32 @@ impl CutySshApp {
                 ),
             ],
         );
+
+        Self::help_card(
+            ui,
+            tr(
+                lang,
+                "Propriétés, reprise de transfert & miroir",
+                "Properties, Resumable Transfers & Mirror",
+            ),
+            &[
+                tr(
+                    lang,
+                    "• Propriétés (bouton « … » d'une ligne ou clic droit sur le nom) : grille de permissions rwx + champ octal avec « Appliquer » (chmod), création d'un lien symbolique vers l'élément, et « Calculer SHA-256 » pour un fichier (calculé en flux, avec bouton Copier).",
+                    "• Properties ('…' button of a row or right-click on the name): rwx permission grid + octal field with 'Apply' (chmod), symbolic link creation pointing to the item, and 'Compute SHA-256' for a file (streamed, with a Copy button).",
+                ),
+                tr(
+                    lang,
+                    "• Reprise de transfert : chaque envoi ou téléchargement écrit dans un fichier « .cutypart » renommé à la fin ; relancer un transfert interrompu repart de l'octet déjà transféré.",
+                    "• Resumable transfers: every upload or download writes to a '.cutypart' file renamed on completion; re-running an interrupted transfer continues from the bytes already transferred.",
+                ),
+                tr(
+                    lang,
+                    "• Miroir (« \u{E094} Miroir ») : synchronisation à sens unique Local → Distant ou Distant → Local (taille + date). « Prévisualiser » liste les actions (+ copie, - suppression) sans rien modifier ; « Synchroniser » les exécute. L'option de suppression retire sur la destination les fichiers absents de la source : prévisualisez d'abord.",
+                    "• Mirror ('\u{E094} Mirror'): one-way Local → Remote or Remote → Local sync (size + date). 'Preview' lists the actions (+ copy, - delete) without changing anything; 'Synchronize' runs them. The delete option removes files on the destination that are missing from the source: preview first.",
+                ),
+            ],
+        );
     }
 
     fn render_help_split(&self, ui: &mut egui::Ui, lang: UiLanguage) {
@@ -627,6 +653,42 @@ impl CutySshApp {
                     lang,
                     "• Générateur de commandes CLI : Génère et copie en 1 clic les commandes équivalentes pour OpenSSH (ssh -i ... -J ...), PuTTY, SFTP et SCP.",
                     "• CLI Command Generator: Generates and copies in 1 click equivalent command lines for OpenSSH (ssh -i ... -J ...), PuTTY, SFTP, and SCP.",
+                ),
+            ],
+        );
+
+        Self::help_card(
+            ui,
+            tr(
+                lang,
+                "Résilience, tunnels & ligne de commande",
+                "Resilience, Tunnels & Command Line",
+            ),
+            &[
+                tr(
+                    lang,
+                    "• Reconnexion automatique : case dans l'éditeur de session ou bouton « \u{E094} Auto-reconnexion » de l'onglet. Après une coupure, nouvel essai avec délai croissant (2 s → 30 s, 10 essais) ; la barre d'état affiche le compte à rebours et « \u{E094} Reconnecter » force un essai immédiat.",
+                    "• Auto-reconnect: checkbox in the session editor or the '\u{E094} Auto-reconnect' tab button. After a drop, retries with back-off (2 s → 30 s, 10 attempts); the status bar shows the countdown and '\u{E094} Reconnect' forces an immediate retry.",
+                ),
+                tr(
+                    lang,
+                    "• Proxy SOCKS5 / HTTP en un clic : le bouton « SOCKS5/HTTP » d'un onglet SSH ouvre un proxy local (port modifiable, 1080 par défaut) qui accepte SOCKS5 et HTTP CONNECT à travers la session. Une règle « SOCKS5 (-D) » peut aussi être enregistrée dans l'onglet Redirection de ports.",
+                    "• One-click SOCKS5 / HTTP proxy: the 'SOCKS5/HTTP' button of an SSH tab opens a local proxy (editable port, 1080 by default) accepting SOCKS5 and HTTP CONNECT through the session. A 'SOCKS5 (-D)' rule can also be saved in the Port Forwarding tab.",
+                ),
+                tr(
+                    lang,
+                    "• Ligne de commande : « cuty-ssh --session \"Prod Web\" » ouvre une session enregistrée au démarrage (nom, fragment de nom unique ou UUID) ; « cuty-ssh --list » affiche les sessions.",
+                    "• Command line: 'cuty-ssh --session \"Prod Web\"' opens a saved session at startup (name, unique name fragment or UUID); 'cuty-ssh --list' prints the sessions.",
+                ),
+                tr(
+                    lang,
+                    "• Authentification : si le serveur refuse le mot de passe mais propose keyboard-interactive (PAM, 2FA), Cuty-SSH poursuit automatiquement avec cette méthode et demande les codes manquants.",
+                    "• Authentication: if the server refuses the password but offers keyboard-interactive (PAM, 2FA), Cuty-SSH continues automatically with it and asks for any missing codes.",
+                ),
+                tr(
+                    lang,
+                    "• Import Bitvise : « Import ▾ → Bitvise… » lit des profils .tlp / .bscp (hôte, port, utilisateur).",
+                    "• Bitvise import: 'Import ▾ → Bitvise…' reads .tlp / .bscp profiles (host, port, user).",
                 ),
             ],
         );
@@ -888,6 +950,7 @@ impl CutySshApp {
       <ul>
         <li>{c6_b1}</li>
         <li>{c6_b2}</li>
+        <li>{c6_b3}</li>
       </ul>
     </div>
     <div class="card">
@@ -903,6 +966,15 @@ impl CutySshApp {
         <li>{c8_b1}</li>
         <li>{c8_b2}</li>
         <li>{c8_b3}</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>9. 🔁 {c9_title}</h2>
+      <ul>
+        <li>{c9_b1}</li>
+        <li>{c9_b2}</li>
+        <li>{c9_b3}</li>
+        <li>{c9_b4}</li>
       </ul>
     </div>
   </div>
@@ -984,6 +1056,36 @@ impl CutySshApp {
                 lang,
                 "<strong>◫ Split V / ⊟ Split H &amp; 📡 Broadcast</strong> : affichez deux terminaux en écran scindé et diffusez vos frappes simultanément sur toute la flotte.",
                 "<strong>◫ Split V / ⊟ Split H &amp; 📡 Broadcast</strong>: view two terminals split-screen and broadcast keystrokes simultaneously across your fleet."
+            ),
+            c6_b3 = tr(
+                lang,
+                "<strong>… Propriétés / ⇅ Miroir</strong> : chmod, lien symbolique, SHA-256, miroir Local ↔ Distant avec prévisualisation, et reprise automatique des transferts interrompus (<code>.cutypart</code>).",
+                "<strong>… Properties / ⇅ Mirror</strong>: chmod, symlink, SHA-256, Local ↔ Remote mirror with preview, and automatic resume of interrupted transfers (<code>.cutypart</code>)."
+            ),
+            c9_title = tr(
+                lang,
+                "Résilience, Tunnels &amp; Ligne de commande",
+                "Resilience, Tunnels &amp; Command Line"
+            ),
+            c9_b1 = tr(
+                lang,
+                "<strong>↻ Auto-reconnexion</strong> : nouvel essai avec délai croissant après une coupure, compte à rebours dans la barre d'état, bouton <strong>↻ Reconnecter</strong>.",
+                "<strong>↻ Auto-reconnect</strong>: back-off retries after a drop, countdown in the status bar, <strong>↻ Reconnect</strong> button."
+            ),
+            c9_b2 = tr(
+                lang,
+                "<strong>SOCKS5/HTTP</strong> : proxy local en un clic (SOCKS5 + HTTP CONNECT, port modifiable) à travers la session SSH.",
+                "<strong>SOCKS5/HTTP</strong>: one-click local proxy (SOCKS5 + HTTP CONNECT, editable port) through the SSH session."
+            ),
+            c9_b3 = tr(
+                lang,
+                "<code>cuty-ssh --session \"Nom\"</code> ouvre une session au démarrage ; <code>cuty-ssh --list</code> liste les sessions.",
+                "<code>cuty-ssh --session \"Name\"</code> opens a session at startup; <code>cuty-ssh --list</code> lists sessions."
+            ),
+            c9_b4 = tr(
+                lang,
+                "Repli automatique sur <strong>keyboard-interactive</strong> (PAM / 2FA) et import de profils <strong>Bitvise</strong> (<code>Import ▾ → Bitvise…</code>).",
+                "Automatic <strong>keyboard-interactive</strong> fallback (PAM / 2FA) and <strong>Bitvise</strong> profile import (<code>Import ▾ → Bitvise…</code>)."
             ),
             c7_title = tr(
                 lang,

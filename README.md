@@ -202,6 +202,10 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 - **Bitvise import**: `Import > Bitvise…` reads `.tlp` / `.bscp` profiles (host, port, user).
 - **Resumable SFTP transfers**: uploads and downloads go to `<name>.cutypart` and are renamed when complete; re-running an interrupted transfer continues from the bytes already transferred.
 
+| SFTP properties (chmod, symlink, SHA-256) | SFTP mirror (preview, then sync) | Auto-reconnect |
+|---|---|---|
+| ![SFTP properties](assets/screenshot_sftp_properties.png) | ![SFTP mirror](assets/screenshot_sftp_mirror.png) | ![Auto-reconnect](assets/screenshot_auto_reconnect.png) |
+
 ---
 
 ## Mouse & Keyboard Shortcuts

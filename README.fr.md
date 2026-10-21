@@ -200,6 +200,10 @@ Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur interméd
 - **Import Bitvise** : `Import > Bitvise…` lit les profils `.tlp` / `.bscp` (hôte, port, utilisateur).
 - **Transferts SFTP reprenables** : envois et téléchargements écrivent dans `<nom>.cutypart`, renommé à la fin ; relancer un transfert interrompu reprend à l'octet déjà transféré.
 
+| Propriétés SFTP (chmod, lien, SHA-256) | Miroir SFTP (aperçu puis synchro) | Reconnexion automatique |
+|---|---|---|
+| ![Propriétés SFTP](assets/screenshot_sftp_properties.png) | ![Miroir SFTP](assets/screenshot_sftp_mirror.png) | ![Reconnexion automatique](assets/screenshot_auto_reconnect.png) |
+
 ---
 
 ## Raccourcis clavier & souris
