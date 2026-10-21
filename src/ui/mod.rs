@@ -756,6 +756,21 @@ impl CutySshApp {
             "snippets" => {
                 self.show_commands_editor = true;
             }
+            "reconnect" => {
+                // SSH tab to a closed local port, flagged as a dropped connection with auto-reconnect.
+                self.launch_session(SessionProfile {
+                    name: "BI-BDD1".to_string(),
+                    protocol: ProtocolType::Ssh,
+                    host: "127.0.0.1".to_string(),
+                    port: 9,
+                    username: "root".to_string(),
+                    auto_reconnect: true,
+                    ..Default::default()
+                });
+                if let Some(tab) = self.tabs.last_mut() {
+                    tab.was_connected = true;
+                }
+            }
             "telemetry" => {
                 // SSH tab to a closed local port, with fake server metrics to check the strip.
                 self.launch_session(SessionProfile {
