@@ -52,10 +52,22 @@ fn main() -> eframe::Result {
         );
         println!("Usage: cuty-ssh.exe [OPTIONS]\n");
         println!("Options:");
+        println!("  -s, --session <NAME|UUID>  Open a saved session at startup");
+        println!("      --list                 List saved sessions and exit");
         println!("  -V, --version   Print version information");
         println!("  -h, --help      Print help information");
         return Ok(());
     }
+
+    if args.iter().any(|a| a == "--list") {
+        #[cfg(windows)]
+        attach_parent_console();
+        for s in config::AppConfig::load_or_default().sessions {
+            println!("{}  {}  {}@{}:{}", s.id, s.name, s.username, s.host, s.port);
+        }
+        return Ok(());
+    }
+    let startup_session = parse_session_arg(&args);
 
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -105,13 +117,31 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
             tracing::info!("Initializing CutySshApp inside eframe closure...");
-            Ok(Box::new(CutySshApp::new(cc, handle)))
+            let mut app = CutySshApp::new(cc, handle);
+            if let Some(key) = &startup_session {
+                app.open_session_by_key(key);
+            }
+            Ok(Box::new(app))
         }),
     ) {
         eprintln!("eframe error: {e}");
         let _ = std::fs::write("cuty-ssh-crash.log", format!("eframe error: {e}"));
     }
     Ok(())
+}
+
+/// Returns the value of `-s <key>`, `--session <key>` or `--session=<key>`.
+fn parse_session_arg(args: &[String]) -> Option<String> {
+    let mut it = args.iter().skip(1);
+    while let Some(a) = it.next() {
+        if a == "-s" || a == "--session" {
+            return it.next().cloned();
+        }
+        if let Some(v) = a.strip_prefix("--session=") {
+            return Some(v.to_string());
+        }
+    }
+    None
 }
 
 fn load_app_icon() -> Option<egui::IconData> {
@@ -152,6 +182,33 @@ mod tests {
 
         let openssh_pem = export_to_openssh_pem(&decoded).unwrap();
         assert!(openssh_pem.contains("BEGIN OPENSSH PRIVATE KEY"));
+    }
+
+    #[test]
+    fn test_cli_session_arg_and_lookup() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            super::parse_session_arg(&a(&["x", "-s", "Prod"])),
+            Some("Prod".into())
+        );
+        assert_eq!(
+            super::parse_session_arg(&a(&["x", "--session=db 1"])),
+            Some("db 1".into())
+        );
+        assert_eq!(super::parse_session_arg(&a(&["x"])), None);
+
+        let mut cfg = AppConfig::default();
+        cfg.sessions.clear();
+        for name in ["Prod Web", "Prod DB", "Staging"] {
+            cfg.sessions.push(crate::config::SessionProfile {
+                name: name.into(),
+                ..Default::default()
+            });
+        }
+        assert_eq!(cfg.find_session("staging").unwrap().name, "Staging");
+        assert_eq!(cfg.find_session("prod db").unwrap().name, "Prod DB");
+        assert!(cfg.find_session("prod").unwrap_err().contains("ambiguous"));
+        assert!(cfg.find_session("nope").is_err());
     }
 
     #[test]

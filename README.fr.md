@@ -190,6 +190,13 @@ Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur interméd
   - Exportation en 1 clic en **CSV** ou **JSON** pour les rapports de conformité et de sécurité.
   - Conforme à notre politique stricte **Zéro Secret en clair** (aucun mot de passe ni clé privée n'est enregistré dans l'audit).
 
+### 7. Résilience, scripts & tunnels
+
+- **Reconnexion automatique** : cochez *Reconnexion automatique* dans l'éditeur de session, ou utilisez le bouton `↻ Auto-reconnexion` d'un onglet. Une connexion perdue est retentée avec un délai croissant (2 s → 30 s, 10 essais) ; la barre d'état affiche le compte à rebours et `↻ Reconnecter` force un essai immédiat.
+- **Ligne de commande** : `cuty-ssh --session "Prod Web"` ouvre une session enregistrée au démarrage (nom, fragment de nom unique ou UUID) ; `cuty-ssh --list` liste les sessions.
+- **SOCKS5 en un clic** : le bouton `SOCKS5` d'un onglet SSH démarre un proxy local sur `127.0.0.1:1080` via la session ; une règle `SOCKS5 (-D)` peut aussi être enregistrée dans l'onglet *Redirection de ports*.
+- **Transferts SFTP reprenables** : envois et téléchargements écrivent dans `<nom>.cutypart`, renommé à la fin ; relancer un transfert interrompu reprend à l'octet déjà transféré.
+
 ---
 
 ## Raccourcis clavier & souris
