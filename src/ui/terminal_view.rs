@@ -819,7 +819,10 @@ fn render_single_terminal_pane(
         // button or menu and the next Enter would activate it. The terminal therefore holds the
         // egui focus and locks Tab / arrows / Escape, unless a text field or a popup needs it.
         // (`egui_wants_keyboard_input` is true for ANY focused widget, so it cannot be used here.)
-        if !ctx.text_edit_focused() && !egui::Popup::is_any_open(ctx) {
+        // Keys typed in a text field (the `+` menu filter, the sidebar filter...) or navigating
+        // an open menu belong to that widget and must not also reach the remote shell.
+        let forward_keys = !ctx.text_edit_focused() && !egui::Popup::is_any_open(ctx);
+        if forward_keys {
             response.request_focus();
             ctx.memory_mut(|m| {
                 m.set_focus_lock_filter(
@@ -838,6 +841,9 @@ fn render_single_terminal_pane(
         let bracketed = tab.terminal.state.bracketed_paste;
 
         ctx.input(|input| {
+            if !forward_keys {
+                return;
+            }
             for event in &input.events {
                 match event {
                     egui::Event::Paste(text) => {
