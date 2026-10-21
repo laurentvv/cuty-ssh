@@ -67,6 +67,8 @@ pub struct CidrCalculation {
     pub usable_hosts: u64,
 }
 
+mod mirror;
+
 /// Disconnect reason emitted when the user asked for the disconnection (never auto-reconnected).
 pub const USER_DISCONNECT_REASON: &str = "Déconnecté par l'utilisateur";
 
@@ -97,6 +99,26 @@ pub enum BackendCommand {
         local_path: PathBuf,
     },
     SftpMkdir(String),
+    /// `chmod`: `mode` holds the permission bits (e.g. `0o755`).
+    SftpChmod {
+        remote_path: String,
+        mode: u32,
+    },
+    /// Creates `link_path` as a symbolic link pointing to `target`.
+    SftpSymlink {
+        target: String,
+        link_path: String,
+    },
+    /// Computes the SHA-256 of a remote file by streaming it over SFTP.
+    SftpSha256(String),
+    /// One-way directory mirror (`upload`: local -> remote, otherwise remote -> local).
+    SftpMirror {
+        local_dir: PathBuf,
+        remote_dir: String,
+        upload: bool,
+        delete_extra: bool,
+        dry_run: bool,
+    },
     SftpDelete {
         remote_path: String,
         is_dir: bool,
@@ -139,6 +161,16 @@ pub enum BackendEvent {
         done: bool,
     },
     SftpStatus(String),
+    SftpHashResult {
+        remote_path: String,
+        sha256: String,
+        size: u64,
+    },
+    SftpMirrorReport {
+        lines: Vec<String>,
+        summary: String,
+        dry_run: bool,
+    },
     Disconnected(String),
 }
 
@@ -1277,6 +1309,129 @@ async fn run_ssh_session(
                             }
                         });
                     }
+                    Some(BackendCommand::SftpChmod { remote_path, mode }) => {
+                        let sftp_ref = Arc::clone(&sftp_session);
+                        let evt_c = evt_tx.clone();
+                        tokio::spawn(async move {
+                            let guard = sftp_ref.lock().await;
+                            let Some(sftp) = guard.as_ref() else { return };
+                            let attrs = russh_sftp::protocol::FileAttributes {
+                                permissions: Some(mode & 0o7777),
+                                ..Default::default()
+                            };
+                            match sftp.set_metadata(remote_path.clone(), attrs).await {
+                                Ok(()) => {
+                                    let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                                        "chmod {:04o} {}",
+                                        mode & 0o7777,
+                                        remote_path
+                                    )));
+                                    refresh_parent_listing(sftp, &remote_path, &evt_c).await;
+                                }
+                                Err(e) => {
+                                    let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                                        "Erreur chmod : {e}"
+                                    )));
+                                }
+                            }
+                        });
+                    }
+                    Some(BackendCommand::SftpSymlink { target, link_path }) => {
+                        let sftp_ref = Arc::clone(&sftp_session);
+                        let evt_c = evt_tx.clone();
+                        tokio::spawn(async move {
+                            let guard = sftp_ref.lock().await;
+                            let Some(sftp) = guard.as_ref() else { return };
+                            // OpenSSH's sftp-server reads the first SSH_FXP_SYMLINK field as the
+                            // link *target* (the RFC draft names it the other way round).
+                            match sftp.symlink(target.clone(), link_path.clone()).await {
+                                Ok(()) => {
+                                    let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                                        "Lien créé : {link_path} -> {target}"
+                                    )));
+                                    refresh_parent_listing(sftp, &link_path, &evt_c).await;
+                                }
+                                Err(e) => {
+                                    let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                                        "Erreur lien symbolique : {e}"
+                                    )));
+                                }
+                            }
+                        });
+                    }
+                    Some(BackendCommand::SftpSha256(remote_path)) => {
+                        let sftp_ref = Arc::clone(&sftp_session);
+                        let evt_c = evt_tx.clone();
+                        tokio::spawn(async move {
+                            let guard = sftp_ref.lock().await;
+                            let Some(sftp) = guard.as_ref() else { return };
+                            match sha256_remote_file(sftp, &remote_path).await {
+                                Ok((sha256, size)) => {
+                                    let _ = evt_c.send(BackendEvent::SftpHashResult {
+                                        remote_path,
+                                        sha256,
+                                        size,
+                                    });
+                                }
+                                Err(e) => {
+                                    let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                                        "Erreur SHA-256 : {e}"
+                                    )));
+                                }
+                            }
+                        });
+                    }
+                    Some(BackendCommand::SftpMirror {
+                        local_dir,
+                        remote_dir,
+                        upload,
+                        delete_extra,
+                        dry_run,
+                    }) => {
+                        let sftp_ref = Arc::clone(&sftp_session);
+                        let evt_c = evt_tx.clone();
+                        tokio::spawn(async move {
+                            let guard = sftp_ref.lock().await;
+                            let Some(sftp) = guard.as_ref() else { return };
+                            match mirror::run_mirror(
+                                sftp,
+                                &local_dir,
+                                &remote_dir,
+                                upload,
+                                delete_extra,
+                                dry_run,
+                                &evt_c,
+                            )
+                            .await
+                            {
+                                Ok(sum) => {
+                                    let summary = if dry_run {
+                                        format!("{} action(s) prévue(s)", sum.lines.len())
+                                    } else {
+                                        format!(
+                                            "{} copié(s), {} supprimé(s), {} erreur(s)",
+                                            sum.copied, sum.deleted, sum.errors
+                                        )
+                                    };
+                                    let _ = evt_c.send(BackendEvent::SftpMirrorReport {
+                                        lines: sum.lines,
+                                        summary,
+                                        dry_run,
+                                    });
+                                    if !dry_run {
+                                        refresh_dir_listing(sftp, &remote_dir, &evt_c).await;
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = evt_c.send(BackendEvent::SftpMirrorReport {
+                                        lines: Vec::new(),
+                                        summary: format!("Erreur miroir : {e:#}"),
+                                        dry_run,
+                                    });
+                                }
+                            }
+                        });
+                    }
                     Some(BackendCommand::SftpMkdir(remote_dir)) => {
                         let sftp_ref = Arc::clone(&sftp_session);
                         let evt_c = evt_tx.clone();
@@ -1473,6 +1628,50 @@ fn resume_offset(existing: u64, total: u64) -> u64 {
         existing
     } else {
         0
+    }
+}
+
+/// Streams a remote file through SHA-256. Returns `(hex digest, size)`.
+async fn sha256_remote_file(sftp: &SftpSession, remote_path: &str) -> Result<(String, u64)> {
+    use sha2::{Digest, Sha256};
+    let mut file = sftp.open(remote_path).await?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut size = 0u64;
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        size += n as u64;
+    }
+    Ok((hex::encode(hasher.finalize()), size))
+}
+
+/// Re-lists `dir` and publishes it to the UI (errors ignored: purely a refresh).
+async fn refresh_dir_listing(
+    sftp: &SftpSession,
+    dir: &str,
+    evt_tx: &UnboundedSender<BackendEvent>,
+) {
+    if let Ok(entries) = list_sftp_directory(sftp, dir).await {
+        let _ = evt_tx.send(BackendEvent::SftpDirListed {
+            current_path: dir.to_string(),
+            entries,
+        });
+    }
+}
+
+/// Re-lists the folder containing `path`.
+async fn refresh_parent_listing(
+    sftp: &SftpSession,
+    path: &str,
+    evt_tx: &UnboundedSender<BackendEvent>,
+) {
+    if let Some((parent, _)) = path.rsplit_once('/') {
+        let dir = if parent.is_empty() { "/" } else { parent };
+        refresh_dir_listing(sftp, dir, evt_tx).await;
     }
 }
 
