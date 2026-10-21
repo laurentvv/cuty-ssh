@@ -785,11 +785,24 @@ fn render_single_terminal_pane(
     }
 
     if capture_keyboard && tab.pending_prompt.is_none() && !tab.show_search_bar {
-        // Keys are read straight from the input queue, so a toolbar widget that kept egui
-        // focus after a click would also react to Enter/Space (e.g. reopen its menu).
-        // Hand the focus back to the terminal unless a text field or popup needs it.
-        if !ctx.egui_wants_keyboard_input() && !egui::Popup::is_any_open(ctx) {
+        // Keys are read straight from the input queue, so egui must not also use them for its
+        // own keyboard navigation: Tab (shell completion!) would move the focus to a toolbar
+        // button or menu and the next Enter would activate it. The terminal therefore holds the
+        // egui focus and locks Tab / arrows / Escape, unless a text field or a popup needs it.
+        // (`egui_wants_keyboard_input` is true for ANY focused widget, so it cannot be used here.)
+        if !ctx.text_edit_focused() && !egui::Popup::is_any_open(ctx) {
             response.request_focus();
+            ctx.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        tab: true,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        escape: true,
+                    },
+                );
+            });
         }
 
         let app_cursor = tab.terminal.state.application_cursor_keys;
