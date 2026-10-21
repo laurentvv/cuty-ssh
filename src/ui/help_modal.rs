@@ -113,8 +113,8 @@ impl CutySshApp {
 
         let win_title = tr(
             lang,
-            "📖 Guide Utilisateur & Documentation Illustrée — Cuty-SSH v0.5",
-            "📖 Illustrated User Guide & Documentation — Cuty-SSH v0.5",
+            "📖 Guide Utilisateur & Documentation Illustrée — Cuty-SSH v0.6",
+            "📖 Illustrated User Guide & Documentation — Cuty-SSH v0.6",
         );
 
         egui::Window::new(win_title)
@@ -812,8 +812,8 @@ impl CutySshApp {
 
         let title = tr(
             lang,
-            "Guide Utilisateur Illustré — Cuty-SSH v0.3",
-            "Illustrated User Guide — Cuty-SSH v0.3",
+            "Guide Utilisateur Illustré — Cuty-SSH v0.6",
+            "Illustrated User Guide — Cuty-SSH v0.6",
         );
         let subtitle = tr(
             lang,
