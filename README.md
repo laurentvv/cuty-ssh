@@ -19,7 +19,7 @@
   <img src="assets/cuty_ssh_icon.png" width="88" alt="Cuty-SSH App Icon" style="border-radius: 18px;" />
 </p>
 
-[**Download Latest Release (`v0.5.1`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#interactive-animated-tour--cockpit-preview) · [**Key Features**](#key-features) · [**1-Click `ssh-copy-id`**](#1-click-ssh-copy-id--automatic-password-to-key-migration) · [**Bastion (`-J`)**](#ssh-bastion--jump-host--j--proxyjump) · [**Architecture**](#architecture) · [**Build from Source**](#build-from-source)
+[**Download Latest Release (`v0.6.0`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#interactive-animated-tour--cockpit-preview) · [**Key Features**](#key-features) · [**1-Click `ssh-copy-id`**](#1-click-ssh-copy-id--automatic-password-to-key-migration) · [**Bastion (`-J`)**](#ssh-bastion--jump-host--j--proxyjump) · [**Architecture**](#architecture) · [**Build from Source**](#build-from-source)
 
 </div>
 
@@ -27,7 +27,7 @@
 
 ## Overview
 
-**Cuty-SSH** (`v0.5.1`) is a single-binary, portable, GPU-accelerated (**DirectX 12 / wgpu**) terminal emulator and sysadmin connection cockpit for Windows written in **100% safe, async Rust (`russh` + `egui` + `tokio`)** with **zero external binary dependencies** (no `putty.exe` or `kitty.exe` wrapper).
+**Cuty-SSH** (`v0.6.0`) is a single-binary, portable, GPU-accelerated (**DirectX 12 / wgpu**) terminal emulator and sysadmin connection cockpit for Windows written in **100% safe, async Rust (`russh` + `egui` + `tokio`)** with **zero external binary dependencies** (no `putty.exe` or `kitty.exe` wrapper).
 
 It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **OpenSSH** workflows:
 - Load **PuTTY `.ppk` v2 & v3** private keys natively (including **Argon2id** passphrase encryption) alongside OpenSSH/PEM keys.
@@ -52,7 +52,7 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 
 ## Feature Matrix: Why Cuty-SSH?
 
-| Capability | Classic PuTTY / KiTTY | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.5.1`)** |
+| Capability | Classic PuTTY / KiTTY | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.6.0`)** |
 | :--- | :---: | :---: | :---: |
 | **Pure Rust Async SSH2 Engine (`russh`)** | ❌ C legacy | ❌ External process | ✅ **Built-in (`russh 0.64`)** |
 | **Native PuTTY `.ppk` v2 & v3 (Argon2id) Keys** | ✅ | ❌ Requires conversion | ✅ **Direct load & inspection** |
@@ -226,7 +226,7 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 ## Download & Quick Start
 
 ### Option 1 — Windows Installer (.msi) & WinGet (Recommended)
-- **Direct Download**: Download and run [**`cuty-ssh-v0.5.1-windows-x64.msi`**](https://github.com/laurentvv/cuty-ssh/releases/download/v0.5.1/cuty-ssh-v0.5.1-windows-x64.msi).
+- **Direct Download**: Download and run [**`cuty-ssh-v0.6.0-windows-x64.msi`**](https://github.com/laurentvv/cuty-ssh/releases/download/v0.6.0/cuty-ssh-v0.6.0-windows-x64.msi).
   - Installs cleanly to `%LOCALAPPDATA%\Programs\Cuty-SSH` without administrator/UAC prompts.
   - Automatically adds a **Cuty-SSH** Start Menu shortcut with application icon.
   - Clean 1-click uninstall from Windows Settings / Installed apps.
@@ -236,7 +236,7 @@ Connect to isolated private or DMZ servers transparently through an intermediate
   ```
 
 ### Option 2 — Portable Standalone Binary
-1. Download **`cuty-ssh.exe`** (or **`cuty-ssh-v0.5.1-windows-x64.zip`**) from the [**GitHub Releases**](https://github.com/laurentvv/cuty-ssh/releases/latest) page.
+1. Download **`cuty-ssh.exe`** (or **`cuty-ssh-v0.6.0-windows-x64.zip`**) from the [**GitHub Releases**](https://github.com/laurentvv/cuty-ssh/releases/latest) page.
 2. Place `cuty-ssh.exe` in any folder and run it — zero installation required.
 3. Cuty-SSH automatically creates a local **`cuty-ssh-portable/`** directory next to the executable containing:
    - `config.json` (DPAPI-protected session profiles, folders, tags, snippets, UI language & theme)
