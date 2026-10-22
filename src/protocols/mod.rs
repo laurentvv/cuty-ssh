@@ -123,6 +123,10 @@ pub enum BackendCommand {
         remote_path: String,
         is_dir: bool,
     },
+    SftpRename {
+        old_path: String,
+        new_path: String,
+    },
     Disconnect,
 }
 
@@ -1448,6 +1452,29 @@ async fn run_ssh_session(
                                     Err(e) => {
                                         let _ = evt_c.send(BackendEvent::SftpStatus(format!(
                                             "Erreur création dossier : {}",
+                                            e
+                                        )));
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    Some(BackendCommand::SftpRename { old_path, new_path }) => {
+                        let sftp_ref = Arc::clone(&sftp_session);
+                        let evt_c = evt_tx.clone();
+                        tokio::spawn(async move {
+                            let guard = sftp_ref.lock().await;
+                            if let Some(sftp) = guard.as_ref() {
+                                match sftp.rename(&old_path, &new_path).await {
+                                    Ok(_) => {
+                                        let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                                            "Renommé : {} -> {}",
+                                            old_path, new_path
+                                        )));
+                                    }
+                                    Err(e) => {
+                                        let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                                            "Erreur renommage : {}",
                                             e
                                         )));
                                     }

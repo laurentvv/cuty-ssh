@@ -2,6 +2,7 @@ pub mod audit_modal;
 pub mod help_modal;
 pub mod known_hosts_modal;
 pub mod replay_modal;
+pub mod sftp_client;
 pub mod terminal_view;
 pub mod theme;
 
@@ -111,6 +112,8 @@ pub struct SessionTab {
 
     // Integrated SFTP explorer
     pub show_sftp_panel: bool,
+    pub show_sftp_full: bool,
+    pub sftp_client: sftp_client::SftpClientState,
     pub sftp_current_path: String,
     pub sftp_path_input: String,
     pub sftp_entries: Vec<SftpFileEntry>,
@@ -1212,6 +1215,8 @@ impl CutySshApp {
             telemetry: None,
             show_telemetry_bar: is_ssh,
             show_sftp_panel: false,
+            show_sftp_full: false,
+            sftp_client: sftp_client::SftpClientState::new(),
             sftp_current_path: "/".to_string(),
             sftp_path_input: "/".to_string(),
             sftp_entries: Vec::new(),
@@ -1521,8 +1526,20 @@ impl CutySshApp {
                         tab.sftp_entries = entries;
                         tab.sort_sftp_entries();
                         tab.sftp_status = format!("{} éléments", tab.sftp_entries.len());
+                        tab.sftp_client.log(
+                            format!(
+                                "Dossier distant listé : {} ({} éléments)",
+                                tab.sftp_current_path,
+                                tab.sftp_entries.len()
+                            ),
+                            false,
+                        );
                     }
                     BackendEvent::SftpStatus(st) => {
+                        tab.sftp_client.log(
+                            &st,
+                            st.contains("Erreur") || st.contains("Error") || st.contains("échec"),
+                        );
                         tab.sftp_status = st;
                         tab.sftp_progress = None;
                         if let Some(p) = tab.sftp_props.as_mut() {
@@ -1561,13 +1578,67 @@ impl CutySshApp {
                     } => {
                         if done || (total > 0 && transferred >= total) {
                             tab.sftp_progress = None;
+                            if is_upload {
+                                if let Some(task) =
+                                    tab.sftp_client.upload_queue.iter_mut().find(|t| {
+                                        t.filename == filename
+                                            && t.status == sftp_client::QueueTaskStatus::InProgress
+                                    })
+                                {
+                                    task.status = sftp_client::QueueTaskStatus::Completed;
+                                    task.transferred = task.size;
+                                }
+                            } else {
+                                if let Some(task) =
+                                    tab.sftp_client.download_queue.iter_mut().find(|t| {
+                                        t.filename == filename
+                                            && t.status == sftp_client::QueueTaskStatus::InProgress
+                                    })
+                                {
+                                    task.status = sftp_client::QueueTaskStatus::Completed;
+                                    task.transferred = task.size;
+                                }
+                                tab.sftp_client.refresh_local();
+                            }
+                            tab.sftp_client.check_watched_files(
+                                ctx,
+                                &tab.handle.cmd_tx,
+                                self.config.language,
+                            );
+                            tab.sftp_client
+                                .log(format!("Transfert terminé : {filename}"), false);
                         } else {
                             tab.sftp_progress = Some(SftpTransferProgress {
-                                filename,
+                                filename: filename.clone(),
                                 transferred,
                                 total,
                                 is_upload,
                             });
+                            if is_upload {
+                                if let Some(task) =
+                                    tab.sftp_client.upload_queue.iter_mut().find(|t| {
+                                        t.filename == filename
+                                            && t.status == sftp_client::QueueTaskStatus::InProgress
+                                    })
+                                {
+                                    task.transferred = transferred;
+                                    if total > 0 {
+                                        task.size = total;
+                                    }
+                                }
+                            } else {
+                                if let Some(task) =
+                                    tab.sftp_client.download_queue.iter_mut().find(|t| {
+                                        t.filename == filename
+                                            && t.status == sftp_client::QueueTaskStatus::InProgress
+                                    })
+                                {
+                                    task.transferred = transferred;
+                                    if total > 0 {
+                                        task.size = total;
+                                    }
+                                }
+                            }
                         }
                     }
                     BackendEvent::Disconnected(reason) => {
@@ -1765,6 +1836,11 @@ impl eframe::App for CutySshApp {
         self.poll_backend_events(&ctx);
         self.process_auto_reconnect(&ctx);
 
+        for tab in &mut self.tabs {
+            tab.sftp_client
+                .check_watched_files(&ctx, &tab.handle.cmd_tx, self.config.language);
+        }
+
         // Global Ctrl+K shortcut for the Command & Session Palette
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::K)) {
             self.show_command_palette = !self.show_command_palette;
@@ -1807,7 +1883,16 @@ impl eframe::App for CutySshApp {
                     self.render_welcome_dashboard(ui);
                 } else {
                     self.render_tabs_bar(ui);
-                    self.render_active_terminal(ui, &ctx);
+                    let is_sftp_full = self
+                        .tabs
+                        .get(self.active_tab_idx)
+                        .map(|t| t.show_sftp_full && t.profile.protocol == ProtocolType::Ssh)
+                        .unwrap_or(false);
+                    if is_sftp_full {
+                        self.render_sftp_client_full(ui, &ctx);
+                    } else {
+                        self.render_active_terminal(ui, &ctx);
+                    }
                 }
             });
 
@@ -3538,22 +3623,30 @@ impl CutySshApp {
                                     ));
                                 }
 
+                                let sftp_is_active = active_tab.show_sftp_full || active_tab.show_sftp_panel;
+                                let sftp_btn_label = if active_tab.show_sftp_full {
+                                    tr(lang, "\u{E256} SFTP (Actif)", "\u{E256} SFTP (Active)")
+                                } else {
+                                    "\u{E256} SFTP"
+                                };
                                 if ui
-                                    .selectable_label(active_tab.show_sftp_panel, "\u{E256} SFTP")
+                                    .selectable_label(sftp_is_active, sftp_btn_label)
                                     .on_hover_text(tr(
                                         lang,
-                                        "Ouvrir l'explorateur de fichiers SFTP latéral",
-                                        "Open the side SFTP file explorer",
+                                        "Ouvrir l'explorateur SFTP Client double-volet complet (remplace WinSCP)",
+                                        "Open the full dual-pane SFTP Client explorer (replaces WinSCP)",
                                     ))
                                     .clicked()
                                 {
-                                    active_tab.show_sftp_panel = !active_tab.show_sftp_panel;
-                                    if active_tab.show_sftp_panel {
+                                    active_tab.show_sftp_full = !active_tab.show_sftp_full;
+                                    active_tab.show_sftp_panel = false;
+                                    if active_tab.show_sftp_full {
                                         let _ = active_tab.handle.cmd_tx.send(
                                             BackendCommand::SftpListDir(
                                                 active_tab.sftp_current_path.clone(),
                                             ),
                                         );
+                                        active_tab.sftp_client.refresh_local();
                                     }
                                 }
 
@@ -3803,6 +3896,19 @@ impl CutySshApp {
                         .size(15.0),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .small_button("\u{E256} Plein écran")
+                            .on_hover_text(tr(
+                                lang,
+                                "Ouvrir l'explorateur SFTP Client double-volet complet",
+                                "Open the full dual-pane SFTP Client explorer",
+                            ))
+                            .clicked()
+                        {
+                            tab.show_sftp_full = true;
+                            tab.show_sftp_panel = false;
+                            tab.sftp_client.refresh_local();
+                        }
                         if ui
                             .small_button("\u{E3FE} WinSCP")
                             .on_hover_text(tr(
@@ -4332,6 +4438,53 @@ impl CutySshApp {
             });
 
         Self::render_sftp_dialogs(&ui.ctx().clone(), lang, tab);
+    }
+
+    fn render_sftp_client_full(&mut self, ui: &mut Ui, ctx: &Context) {
+        let lang = self.config.language;
+        let Some(tab) = self.tabs.get_mut(self.active_tab_idx) else {
+            return;
+        };
+
+        let mut close_requested = false;
+        let remote_path = tab.sftp_current_path.clone();
+        let remote_entries = tab.sftp_entries.clone();
+        let cmd_tx = tab.handle.cmd_tx.clone();
+
+        tab.sftp_client.render(
+            ui,
+            ctx,
+            lang,
+            &remote_path,
+            &remote_entries,
+            &cmd_tx,
+            &mut close_requested,
+        );
+
+        if let Some(entry) = tab.sftp_client.props_request.take() {
+            let mode = entry.permissions & 0o7777;
+            tab.sftp_props = Some(SftpPropsDialog {
+                entry,
+                mode,
+                mode_text: format!("{mode:04o}"),
+                link_name: String::new(),
+                sha256: None,
+                hashing: false,
+            });
+        }
+
+        if tab.sftp_client.mirror_request {
+            tab.sftp_client.mirror_request = false;
+            tab.sftp_mirror.open = true;
+            tab.sftp_mirror.local_dir = tab.sftp_client.local_path.to_string_lossy().to_string();
+            tab.sftp_mirror.remote_dir = tab.sftp_current_path.clone();
+        }
+
+        if close_requested {
+            tab.show_sftp_full = false;
+        }
+
+        Self::render_sftp_dialogs(ctx, lang, tab);
     }
 
     /// SFTP "Properties" (chmod / symlink / SHA-256) and "Mirror" windows of a tab.

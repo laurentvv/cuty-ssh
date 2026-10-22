@@ -18,21 +18,29 @@ fn attach_parent_console() {
         SetStdHandle,
     };
     unsafe {
-        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
-            return;
-        }
-        for (std_handle, name) in [
-            (STD_OUTPUT_HANDLE, "CONOUT$"),
-            (STD_ERROR_HANDLE, "CONOUT$"),
-        ] {
-            let cur = GetStdHandle(std_handle);
-            if (cur.is_null() || cur as isize == -1)
-                && let Ok(f) = std::fs::OpenOptions::new().write(true).open(name)
-            {
-                SetStdHandle(std_handle, f.into_raw_handle() as _);
+        let cur_out = GetStdHandle(STD_OUTPUT_HANDLE);
+        let redirected = !cur_out.is_null() && cur_out as isize != -1;
+        if !redirected && AttachConsole(ATTACH_PARENT_PROCESS) != 0 {
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open("CONOUT$") {
+                SetStdHandle(STD_OUTPUT_HANDLE, f.into_raw_handle() as _);
+            }
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open("CONOUT$") {
+                SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle() as _);
             }
         }
     }
+}
+
+/// Target destination requested from the command-line interface.
+#[derive(Debug, Clone)]
+pub enum CliTarget {
+    /// Saved session referenced by name or UUID.
+    SavedSession(String),
+    /// Ad-hoc connection generated dynamically on the fly.
+    AdHoc {
+        profile: Box<config::SessionProfile>,
+        open_sftp: bool,
+    },
 }
 
 fn main() -> eframe::Result {
@@ -50,24 +58,50 @@ fn main() -> eframe::Result {
             "Cuty-SSH {} — Fast, native Windows SSH2, SFTP, Telnet, Raw TCP & ConPTY connection manager\n",
             env!("CARGO_PKG_VERSION")
         );
-        println!("Usage: cuty-ssh.exe [OPTIONS]\n");
+        println!("Usage: cuty-ssh.exe [OPTIONS] [TARGET]\n");
+        println!("Arguments:");
+        println!(
+            "  [TARGET]                   Saved session name/UUID, [user@]host[:port], or URI (ssh://, sftp://, telnet://)\n"
+        );
         println!("Options:");
         println!("  -s, --session <NAME|UUID>  Open a saved session at startup");
+        println!("  -load <NAME|UUID>          Alias for --session (PuTTY/KiTTY compatibility)");
+        println!("  -shell, --shell            Open a local ConPTY PowerShell shell");
+        println!("  -ssh [USER@]HOST           Connect via SSH2");
+        println!("  -telnet HOST               Connect via Telnet");
+        println!("  -raw HOST                  Connect via Raw TCP");
+        println!("  -P, --port <PORT>          Target port number");
+        println!("  -l, --user <USER>          SSH username");
+        println!("  -pw <PASSWORD>             SSH/Telnet login password");
+        println!("  -i <KEYFILE>               SSH private key path (.ppk, OpenSSH, PEM)");
+        println!("  -passphrase <PASSPHRASE>   SSH private key passphrase");
+        println!("  -J <BASTION>               Bastion / ProxyJump (user@bastion:port)");
         println!("      --list                 List saved sessions and exit");
-        println!("  -V, --version   Print version information");
-        println!("  -h, --help      Print help information");
+        println!("  -V, --version              Print version information");
+        println!("  -h, --help                 Print help information");
         return Ok(());
     }
+
+    let loaded_config = config::AppConfig::load_or_default();
 
     if args.iter().any(|a| a == "--list") {
         #[cfg(windows)]
         attach_parent_console();
-        for s in config::AppConfig::load_or_default().sessions {
-            println!("{}  {}  {}@{}:{}", s.id, s.name, s.username, s.host, s.port);
+        for s in &loaded_config.sessions {
+            println!(
+                "{}  [{:^7}]  {:<25}  {}@{}:{}",
+                s.id,
+                s.protocol.label(),
+                s.name,
+                s.username,
+                s.host,
+                s.port
+            );
         }
         return Ok(());
     }
-    let startup_session = parse_session_arg(&args);
+
+    let startup_target = parse_cli_target(&args, &loaded_config);
 
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -118,8 +152,23 @@ fn main() -> eframe::Result {
             egui_extras::install_image_loaders(&cc.egui_ctx);
             tracing::info!("Initializing CutySshApp inside eframe closure...");
             let mut app = CutySshApp::new(cc, handle);
-            if let Some(key) = &startup_session {
-                app.open_session_by_key(key);
+            if let Some(target) = &startup_target {
+                match target {
+                    CliTarget::SavedSession(key) => app.open_session_by_key(key),
+                    CliTarget::AdHoc { profile, open_sftp } => {
+                        app.launch_session((**profile).clone());
+                        if *open_sftp && let Some(tab) = app.tabs.last_mut() {
+                            tab.show_sftp_full = true;
+                            tab.show_sftp_panel = false;
+                            let _ = tab.handle.cmd_tx.send(
+                                crate::protocols::BackendCommand::SftpListDir(
+                                    tab.sftp_current_path.clone(),
+                                ),
+                            );
+                            tab.sftp_client.refresh_local();
+                        }
+                    }
+                }
             }
             Ok(Box::new(app))
         }),
@@ -130,14 +179,263 @@ fn main() -> eframe::Result {
     Ok(())
 }
 
+/// Helper function to parse user@host:port (and optional IPv6 like `[::1]:22`).
+fn parse_user_host_port(raw: &str, default_port: u16) -> (Option<String>, String, Option<u16>) {
+    let (user, remainder) = if let Some((u, r)) = raw.split_once('@') {
+        (Some(u.to_string()), r)
+    } else {
+        (None, raw)
+    };
+
+    let (host, port) = if let Some(stripped) = remainder.strip_prefix('[') {
+        if let Some((ipv6, rest)) = stripped.split_once(']') {
+            let p = rest
+                .strip_prefix(':')
+                .and_then(|p_str| p_str.parse::<u16>().ok());
+            (ipv6.to_string(), p)
+        } else {
+            (remainder.to_string(), None)
+        }
+    } else if let Some((h, p_str)) = remainder.split_once(':') {
+        (h.to_string(), p_str.parse::<u16>().ok())
+    } else {
+        (remainder.to_string(), None)
+    };
+
+    (user, host, port.or(Some(default_port)))
+}
+
+/// Parses CLI arguments to determine if a saved session or an ad-hoc connection should start.
+pub fn parse_cli_target(args: &[String], config: &config::AppConfig) -> Option<CliTarget> {
+    let mut it = args.iter().skip(1).peekable();
+    let mut session_key: Option<String> = None;
+    let mut protocol: Option<config::ProtocolType> = None;
+    let mut host: Option<String> = None;
+    let mut port: Option<u16> = None;
+    let mut user: Option<String> = None;
+    let mut password: Option<String> = None;
+    let mut key_path: Option<String> = None;
+    let mut key_passphrase: Option<String> = None;
+    let mut proxy_jump: Option<String> = None;
+    let mut open_sftp = false;
+    let mut is_local_shell = false;
+    let mut positional: Vec<String> = Vec::new();
+
+    while let Some(arg) = it.next() {
+        if arg == "-s" || arg == "--session" || arg == "-load" {
+            if let Some(v) = it.next() {
+                session_key = Some(v.clone());
+            }
+        } else if let Some(v) = arg.strip_prefix("--session=") {
+            session_key = Some(v.to_string());
+        } else if let Some(v) = arg.strip_prefix("-load=") {
+            session_key = Some(v.to_string());
+        } else if arg == "-shell" || arg == "--shell" || arg == "-local" {
+            is_local_shell = true;
+        } else if arg == "-ssh" {
+            protocol = Some(config::ProtocolType::Ssh);
+            if it.peek().is_some_and(|next| !next.starts_with('-')) {
+                host = it.next().cloned();
+            }
+        } else if arg == "-telnet" {
+            protocol = Some(config::ProtocolType::Telnet);
+            if it.peek().is_some_and(|next| !next.starts_with('-')) {
+                host = it.next().cloned();
+            }
+        } else if arg == "-raw" {
+            protocol = Some(config::ProtocolType::RawTcp);
+            if it.peek().is_some_and(|next| !next.starts_with('-')) {
+                host = it.next().cloned();
+            }
+        } else if arg == "-P" || arg == "--port" {
+            if let Some(p_str) = it.next() {
+                port = p_str.parse().ok();
+            }
+        } else if let Some(p_str) = arg.strip_prefix("-P=") {
+            port = p_str.parse().ok();
+        } else if let Some(p_str) = arg.strip_prefix("--port=") {
+            port = p_str.parse().ok();
+        } else if arg == "-l" || arg == "--user" {
+            if let Some(u_str) = it.next() {
+                user = Some(u_str.clone());
+            }
+        } else if let Some(u_str) = arg.strip_prefix("-l=") {
+            user = Some(u_str.to_string());
+        } else if let Some(u_str) = arg.strip_prefix("--user=") {
+            user = Some(u_str.to_string());
+        } else if arg == "-pw" {
+            if let Some(pw_str) = it.next() {
+                password = Some(pw_str.clone());
+            }
+        } else if let Some(pw_str) = arg.strip_prefix("-pw=") {
+            password = Some(pw_str.to_string());
+        } else if arg == "-i" {
+            if let Some(i_str) = it.next() {
+                key_path = Some(i_str.clone());
+            }
+        } else if let Some(i_str) = arg.strip_prefix("-i=") {
+            key_path = Some(i_str.to_string());
+        } else if arg == "-passphrase"
+            || arg == "--passphrase"
+            || arg == "-keypass"
+            || arg == "--keypass"
+        {
+            if let Some(pp_str) = it.next() {
+                key_passphrase = Some(pp_str.clone());
+            }
+        } else if let Some(pp_str) = arg.strip_prefix("-passphrase=") {
+            key_passphrase = Some(pp_str.to_string());
+        } else if let Some(pp_str) = arg.strip_prefix("--passphrase=") {
+            key_passphrase = Some(pp_str.to_string());
+        } else if let Some(pp_str) = arg.strip_prefix("-keypass=") {
+            key_passphrase = Some(pp_str.to_string());
+        } else if let Some(pp_str) = arg.strip_prefix("--keypass=") {
+            key_passphrase = Some(pp_str.to_string());
+        } else if arg == "-J" {
+            if let Some(j_str) = it.next() {
+                proxy_jump = Some(j_str.clone());
+            }
+        } else if let Some(j_str) = arg.strip_prefix("-J=") {
+            proxy_jump = Some(j_str.to_string());
+        } else if !arg.starts_with('-') {
+            positional.push(arg.clone());
+        }
+    }
+
+    // 1. Explicit session key provided
+    if let Some(k) = session_key {
+        return Some(CliTarget::SavedSession(k));
+    }
+
+    // 2. Local shell flag
+    if is_local_shell {
+        let profile = config::SessionProfile {
+            name: "Shell Local (ConPTY)".to_string(),
+            protocol: config::ProtocolType::LocalShell,
+            local_shell_cmd: "powershell.exe".to_string(),
+            folder: "Local".to_string(),
+            ..Default::default()
+        };
+        return Some(CliTarget::AdHoc {
+            profile: Box::new(profile),
+            open_sftp: false,
+        });
+    }
+
+    // 3. Positional argument handling
+    if let Some(first_pos) = positional.first() {
+        if first_pos.starts_with("ssh://")
+            || first_pos.starts_with("sftp://")
+            || first_pos.starts_with("telnet://")
+            || first_pos.starts_with("raw://")
+        {
+            let (proto, scheme_open_sftp, def_port, rest) =
+                if let Some(r) = first_pos.strip_prefix("ssh://") {
+                    (config::ProtocolType::Ssh, false, 22, r)
+                } else if let Some(r) = first_pos.strip_prefix("sftp://") {
+                    (config::ProtocolType::Ssh, true, 22, r)
+                } else if let Some(r) = first_pos.strip_prefix("telnet://") {
+                    (config::ProtocolType::Telnet, false, 23, r)
+                } else if let Some(r) = first_pos.strip_prefix("raw://") {
+                    (config::ProtocolType::RawTcp, false, 80, r)
+                } else {
+                    unreachable!()
+                };
+            open_sftp = scheme_open_sftp;
+            protocol = Some(proto);
+
+            let authority = rest.split('/').next().unwrap_or(rest);
+            let (u, h, p) = parse_user_host_port(authority, def_port);
+            if user.is_none() && u.is_some() {
+                user = u;
+            }
+            host = Some(h);
+            if port.is_none() && p.is_some() {
+                port = p;
+            }
+        } else if config.find_session(first_pos).is_ok() {
+            return Some(CliTarget::SavedSession(first_pos.clone()));
+        } else {
+            let (u, h, p) = parse_user_host_port(first_pos, 22);
+            if user.is_none() && u.is_some() {
+                user = u;
+            }
+            if host.is_none() {
+                host = Some(h);
+            }
+            if port.is_none() && p.is_some() {
+                port = p;
+            }
+            if protocol.is_none() {
+                protocol = Some(config::ProtocolType::Ssh);
+            }
+        }
+    }
+
+    // 4. Construct AdHoc profile if host is present
+    if let Some(raw_host) = host {
+        let proto = protocol.unwrap_or(config::ProtocolType::Ssh);
+        let (u, target_host, p) = parse_user_host_port(&raw_host, proto.default_port());
+        if user.is_none() && u.is_some() {
+            user = u;
+        }
+        let final_port = port.or(p).unwrap_or_else(|| proto.default_port());
+        let final_user = user.unwrap_or_else(|| "root".to_string());
+        let session_name = if proto == config::ProtocolType::Ssh {
+            format!("{}@{}:{}", final_user, target_host, final_port)
+        } else {
+            format!("{}:{}", target_host, final_port)
+        };
+
+        let mut profile = config::SessionProfile {
+            name: session_name,
+            folder: "Ad-hoc".to_string(),
+            protocol: proto,
+            host: target_host,
+            port: final_port,
+            username: final_user,
+            ..Default::default()
+        };
+
+        if let Some(pw) = password {
+            profile.password = pw;
+            profile.auto_password = true;
+            profile.auto_login = true;
+        }
+
+        if let Some(kp) = key_path {
+            profile.ssh_auth = config::SshAuthMethod::PrivateKeyFile {
+                key_path: kp,
+                passphrase: key_passphrase.unwrap_or_default(),
+                cert_path: String::new(),
+            };
+        }
+
+        if let Some(pj) = proxy_jump {
+            profile.proxy_jump = pj;
+        }
+
+        return Some(CliTarget::AdHoc {
+            profile: Box::new(profile),
+            open_sftp,
+        });
+    }
+
+    None
+}
+
 /// Returns the value of `-s <key>`, `--session <key>` or `--session=<key>`.
+#[cfg(test)]
 fn parse_session_arg(args: &[String]) -> Option<String> {
     let mut it = args.iter().skip(1);
     while let Some(a) = it.next() {
-        if a == "-s" || a == "--session" {
+        if a == "-s" || a == "--session" || a == "-load" {
             return it.next().cloned();
         }
         if let Some(v) = a.strip_prefix("--session=") {
+            return Some(v.to_string());
+        }
+        if let Some(v) = a.strip_prefix("-load=") {
             return Some(v.to_string());
         }
     }
@@ -209,6 +507,127 @@ mod tests {
         assert_eq!(cfg.find_session("prod db").unwrap().name, "Prod DB");
         assert!(cfg.find_session("prod").unwrap_err().contains("ambiguous"));
         assert!(cfg.find_session("nope").is_err());
+    }
+
+    #[test]
+    fn test_cli_target_advanced_parsing() {
+        use super::{CliTarget, parse_cli_target};
+        use crate::config::ProtocolType;
+
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        let mut cfg = AppConfig::default();
+        cfg.sessions.clear();
+        cfg.sessions.push(crate::config::SessionProfile {
+            name: "Staging Server".into(),
+            ..Default::default()
+        });
+
+        // 1. Saved session via -load or exact name
+        match parse_cli_target(&a(&["cuty-ssh", "-load", "Staging Server"]), &cfg) {
+            Some(CliTarget::SavedSession(s)) => assert_eq!(s, "Staging Server"),
+            _ => panic!("Expected SavedSession"),
+        }
+        match parse_cli_target(&a(&["cuty-ssh", "Staging Server"]), &cfg) {
+            Some(CliTarget::SavedSession(s)) => assert_eq!(s, "Staging Server"),
+            _ => panic!("Expected SavedSession"),
+        }
+
+        // 2. Ad-hoc SSH user@host
+        let target = parse_cli_target(&a(&["cuty-ssh", "admin@192.168.1.1:2222"]), &cfg).unwrap();
+        if let CliTarget::AdHoc { profile, open_sftp } = target {
+            assert_eq!(profile.protocol, ProtocolType::Ssh);
+            assert_eq!(profile.username, "admin");
+            assert_eq!(profile.host, "192.168.1.1");
+            assert_eq!(profile.port, 2222);
+            assert!(!open_sftp);
+        } else {
+            panic!("Expected AdHoc target");
+        }
+
+        // 3. Ad-hoc sftp:// URI
+        let target =
+            parse_cli_target(&a(&["cuty-ssh", "sftp://root@remote.lan:22"]), &cfg).unwrap();
+        if let CliTarget::AdHoc { profile, open_sftp } = target {
+            assert_eq!(profile.protocol, ProtocolType::Ssh);
+            assert_eq!(profile.username, "root");
+            assert_eq!(profile.host, "remote.lan");
+            assert_eq!(profile.port, 22);
+            assert!(open_sftp);
+        } else {
+            panic!("Expected AdHoc target with open_sftp");
+        }
+
+        // 4. PuTTY style -ssh with -pw and -P
+        let target = parse_cli_target(
+            &a(&[
+                "cuty-ssh",
+                "-ssh",
+                "10.0.0.1",
+                "-P",
+                "2200",
+                "-l",
+                "deploy",
+                "-pw",
+                "secret123",
+            ]),
+            &cfg,
+        )
+        .unwrap();
+        if let CliTarget::AdHoc { profile, .. } = target {
+            assert_eq!(profile.protocol, ProtocolType::Ssh);
+            assert_eq!(profile.host, "10.0.0.1");
+            assert_eq!(profile.port, 2200);
+            assert_eq!(profile.username, "deploy");
+            assert_eq!(profile.password, "secret123");
+            assert!(profile.auto_password);
+        } else {
+            panic!("Expected AdHoc target");
+        }
+
+        // 5. Local shell -shell
+        let target = parse_cli_target(&a(&["cuty-ssh", "-shell"]), &cfg).unwrap();
+        if let CliTarget::AdHoc { profile, .. } = target {
+            assert_eq!(profile.protocol, ProtocolType::LocalShell);
+            assert_eq!(profile.local_shell_cmd, "powershell.exe");
+        } else {
+            panic!("Expected AdHoc target");
+        }
+
+        // 6. Private key with passphrase (-i and -passphrase)
+        let target = parse_cli_target(
+            &a(&[
+                "cuty-ssh",
+                "-ssh",
+                "10.0.0.1",
+                "-i",
+                r"C:\keys\id_rsa.ppk",
+                "-passphrase",
+                "my_key_pass",
+            ]),
+            &cfg,
+        )
+        .unwrap();
+        if let CliTarget::AdHoc { profile, .. } = target {
+            assert_eq!(profile.protocol, ProtocolType::Ssh);
+            assert_eq!(profile.host, "10.0.0.1");
+            if let crate::config::SshAuthMethod::PrivateKeyFile {
+                key_path,
+                passphrase,
+                ..
+            } = profile.ssh_auth
+            {
+                assert_eq!(key_path, r"C:\keys\id_rsa.ppk");
+                assert_eq!(passphrase, "my_key_pass");
+            } else {
+                panic!("Expected PrivateKeyFile auth method");
+            }
+        } else {
+            panic!("Expected AdHoc target");
+        }
+
+        // 7. Empty args
+        assert!(parse_cli_target(&a(&["cuty-ssh"]), &cfg).is_none());
     }
 
     #[test]
