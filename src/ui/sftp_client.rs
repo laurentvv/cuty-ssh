@@ -537,20 +537,7 @@ impl SftpClientState {
                         self.active_tab = SftpClientTab::Log;
                     }
 
-                    // Watched edit badge
-                    if !self.watched_files.is_empty() {
-                        ui.add_space(8.0);
-                        let w_count = self.watched_files.len();
-                        ui.label(
-                            RichText::new(tr(
-                                lang,
-                                &format!("💾 {w_count} en édition (Ctrl+S actif)"),
-                                &format!("💾 {w_count} editing (Ctrl+S active)"),
-                            ))
-                            .small()
-                            .color(Color32::from_rgb(56, 189, 248)),
-                        );
-                    }
+
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
@@ -620,11 +607,55 @@ impl SftpClientState {
         let mut launch_download: Option<Vec<String>> = None;
 
         let total_avail_h = ui.available_height();
+        let total_avail_w = ui.available_width();
+        let half_w = ((total_avail_w - 8.0) / 2.0).floor();
 
-        // Use strict 2-column layout so neither pane can overflow or misalign
+        // Pre-sort remote entries according to active sort column & direction
+        let mut sorted_remote: Vec<&SftpFileEntry> = remote_entries.iter().collect();
+        let col = self.remote_sort_col;
+        let asc = self.remote_sort_asc;
+        let folders_first = self.remote_folders_first;
+
+        sorted_remote.sort_by(|a, b| {
+            if folders_first && a.is_dir != b.is_dir {
+                return if a.is_dir {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+            }
+            let ord = match col {
+                SftpCol::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                SftpCol::Size => a.size.cmp(&b.size),
+                SftpCol::Type => {
+                    let a_type = if a.is_dir {
+                        "0"
+                    } else if a.is_symlink {
+                        "1"
+                    } else {
+                        "2"
+                    };
+                    let b_type = if b.is_dir {
+                        "0"
+                    } else if b.is_symlink {
+                        "1"
+                    } else {
+                        "2"
+                    };
+                    a_type
+                        .cmp(b_type)
+                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                }
+                SftpCol::Date => a.mtime.cmp(&b.mtime),
+            };
+            if asc { ord } else { ord.reverse() }
+        });
+
+        // Use strict 2-column layout with enforced max_width so neither column can push the other
         ui.columns(2, |columns| {
             // ==================== LEFT COLUMN: LOCAL FILES ====================
             let col_left = &mut columns[0];
+            col_left.set_max_width(half_w);
             egui::Frame::NONE
                 .fill(Color32::from_rgb(13, 17, 23))
                 .corner_radius(4.0)
@@ -735,9 +766,9 @@ impl SftpClientState {
 
                     ui.add_space(2.0);
 
-                    // Column Headers (Total fixed: 60 + 65 + 88 + spacing + scrollbar = 245)
+                    // Column Headers (Total fixed: 60 + 65 + 100 + spacing + scrollbar = 270)
                     let pane_avail_w = ui.available_width();
-                    let name_w = (pane_avail_w - 245.0).max(80.0);
+                    let name_w = (pane_avail_w - 270.0).max(80.0);
 
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
@@ -750,7 +781,8 @@ impl SftpClientState {
                         if ui
                             .add_sized(
                                 [name_w, 18.0],
-                                egui::Button::new(name_title)
+                                egui::Button::new("")
+                                    .left_text(name_title)
                                     .selected(self.local_sort_col == SftpCol::Name),
                             )
                             .clicked()
@@ -818,7 +850,7 @@ impl SftpClientState {
                         let date_title = format!("{}{date_arr}", tr(lang, "Modifié le", "Date Mod"));
                         if ui
                             .add_sized(
-                                [88.0, 18.0],
+                                [100.0, 18.0],
                                 egui::Button::new(date_title)
                                     .selected(self.local_sort_col == SftpCol::Date),
                             )
@@ -860,15 +892,17 @@ impl SftpClientState {
                                     ui.spacing_mut().item_spacing.x = 4.0;
                                     let btn = ui.add_sized(
                                         [name_w, 18.0],
-                                        egui::Button::new(RichText::new(label_text).color(
-                                            if is_selected {
-                                                Color32::from_rgb(88, 166, 255)
-                                            } else {
-                                                Color32::from_rgb(201, 209, 217)
-                                            },
-                                        ))
-                                        .frame(is_selected)
-                                        .truncate(),
+                                        egui::Button::new("")
+                                            .left_text(RichText::new(label_text).color(
+                                                if is_selected {
+                                                    Color32::from_rgb(88, 166, 255)
+                                                } else {
+                                                    Color32::from_rgb(201, 209, 217)
+                                                },
+                                            ))
+                                            .frame(is_selected)
+                                            .selected(is_selected)
+                                            .truncate(),
                                     );
 
                                     if btn.clicked() {
@@ -980,7 +1014,7 @@ impl SftpClientState {
                                         "-".to_string()
                                     };
                                     ui.add_sized(
-                                        [88.0, 18.0],
+                                        [100.0, 18.0],
                                         egui::Label::new(
                                             RichText::new(date_str)
                                                 .small()
@@ -1063,6 +1097,7 @@ impl SftpClientState {
 
             // ==================== RIGHT COLUMN: REMOTE FILES ====================
             let col_right = &mut columns[1];
+            col_right.set_max_width(half_w);
             egui::Frame::NONE
                 .fill(Color32::from_rgb(13, 17, 23))
                 .corner_radius(4.0)
@@ -1185,9 +1220,9 @@ impl SftpClientState {
 
                     ui.add_space(2.0);
 
-                    // Column Headers (Fixed widths)
+                    // Column Headers (Total fixed: 60 + 65 + 100 + spacing + scrollbar = 270)
                     let pane_avail_w = ui.available_width();
-                    let name_w = (pane_avail_w - 245.0).max(80.0);
+                    let name_w = (pane_avail_w - 270.0).max(80.0);
 
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
@@ -1200,7 +1235,8 @@ impl SftpClientState {
                         if ui
                             .add_sized(
                                 [name_w, 18.0],
-                                egui::Button::new(name_title)
+                                egui::Button::new("")
+                                    .left_text(name_title)
                                     .selected(self.remote_sort_col == SftpCol::Name),
                             )
                             .clicked()
@@ -1265,7 +1301,7 @@ impl SftpClientState {
                         let date_title = format!("{}{date_arr}", tr(lang, "Modifié le", "Date Mod"));
                         if ui
                             .add_sized(
-                                [88.0, 18.0],
+                                [100.0, 18.0],
                                 egui::Button::new(date_title)
                                     .selected(self.remote_sort_col == SftpCol::Date),
                             )
@@ -1291,7 +1327,7 @@ impl SftpClientState {
                         .max_height(scroll_h)
                         .show(ui, |ui| {
                             let filter_lc = self.remote_filter.trim().to_lowercase();
-                            for entry in remote_entries {
+                            for entry in sorted_remote {
                                 if !filter_lc.is_empty()
                                     && !entry.name.to_lowercase().contains(&filter_lc)
                                 {
@@ -1312,15 +1348,17 @@ impl SftpClientState {
                                     ui.spacing_mut().item_spacing.x = 4.0;
                                     let btn = ui.add_sized(
                                         [name_w, 18.0],
-                                        egui::Button::new(RichText::new(label_text).color(
-                                            if is_selected {
-                                                Color32::from_rgb(88, 166, 255)
-                                            } else {
-                                                Color32::from_rgb(201, 209, 217)
-                                            },
-                                        ))
-                                        .frame(is_selected)
-                                        .truncate(),
+                                        egui::Button::new("")
+                                            .left_text(RichText::new(label_text).color(
+                                                if is_selected {
+                                                    Color32::from_rgb(88, 166, 255)
+                                                } else {
+                                                    Color32::from_rgb(201, 209, 217)
+                                                },
+                                            ))
+                                            .frame(is_selected)
+                                            .selected(is_selected)
+                                            .truncate(),
                                     );
 
                                     if btn.clicked() {
@@ -1521,7 +1559,7 @@ impl SftpClientState {
                                         "-".to_string()
                                     };
                                     ui.add_sized(
-                                        [88.0, 18.0],
+                                        [100.0, 18.0],
                                         egui::Label::new(
                                             RichText::new(date_str)
                                                 .small()
@@ -2262,5 +2300,68 @@ mod tests {
         });
         assert_eq!(state.watched_files.len(), 1);
         assert_eq!(state.watched_files[0].remote_path, "/remote/test.txt");
+    }
+
+    #[test]
+    fn test_remote_sorting_columns() {
+        let entries = vec![
+            SftpFileEntry {
+                name: "zeta.txt".to_string(),
+                full_path: "/root/zeta.txt".to_string(),
+                is_dir: false,
+                is_symlink: false,
+                size: 500,
+                mtime: 200,
+                permissions: 0o644,
+            },
+            SftpFileEntry {
+                name: "beta_dir".to_string(),
+                full_path: "/root/beta_dir".to_string(),
+                is_dir: true,
+                is_symlink: false,
+                size: 0,
+                mtime: 100,
+                permissions: 0o755,
+            },
+            SftpFileEntry {
+                name: "alpha.txt".to_string(),
+                full_path: "/root/alpha.txt".to_string(),
+                is_dir: false,
+                is_symlink: false,
+                size: 1500,
+                mtime: 300,
+                permissions: 0o644,
+            },
+        ];
+
+        let mut sorted: Vec<&SftpFileEntry> = entries.iter().collect();
+        // Sort by size ascending, folders first
+        let col = SftpCol::Size;
+        let asc = true;
+        let folders_first = true;
+        sorted.sort_by(|a, b| {
+            if folders_first && a.is_dir != b.is_dir {
+                return if a.is_dir {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+            }
+            let ord = match col {
+                SftpCol::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                SftpCol::Size => a.size.cmp(&b.size),
+                SftpCol::Type => {
+                    let a_type = if a.is_dir { "0" } else { "1" };
+                    let b_type = if b.is_dir { "0" } else { "1" };
+                    a_type.cmp(b_type)
+                }
+                SftpCol::Date => a.mtime.cmp(&b.mtime),
+            };
+            if asc { ord } else { ord.reverse() }
+        });
+
+        assert_eq!(sorted[0].name, "beta_dir");
+        assert_eq!(sorted[1].name, "zeta.txt");
+        assert_eq!(sorted[2].name, "alpha.txt");
     }
 }
