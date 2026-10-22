@@ -74,6 +74,7 @@ fn main() -> eframe::Result {
         println!("  -l, --user <USER>          SSH username");
         println!("  -pw <PASSWORD>             SSH/Telnet login password");
         println!("  -i <KEYFILE>               SSH private key path (.ppk, OpenSSH, PEM)");
+        println!("  -passphrase <PASSPHRASE>   SSH private key passphrase");
         println!("  -J <BASTION>               Bastion / ProxyJump (user@bastion:port)");
         println!("      --list                 List saved sessions and exit");
         println!("  -V, --version              Print version information");
@@ -214,6 +215,7 @@ pub fn parse_cli_target(args: &[String], config: &config::AppConfig) -> Option<C
     let mut user: Option<String> = None;
     let mut password: Option<String> = None;
     let mut key_path: Option<String> = None;
+    let mut key_passphrase: Option<String> = None;
     let mut proxy_jump: Option<String> = None;
     let mut open_sftp = false;
     let mut is_local_shell = false;
@@ -273,6 +275,22 @@ pub fn parse_cli_target(args: &[String], config: &config::AppConfig) -> Option<C
             }
         } else if let Some(i_str) = arg.strip_prefix("-i=") {
             key_path = Some(i_str.to_string());
+        } else if arg == "-passphrase"
+            || arg == "--passphrase"
+            || arg == "-keypass"
+            || arg == "--keypass"
+        {
+            if let Some(pp_str) = it.next() {
+                key_passphrase = Some(pp_str.clone());
+            }
+        } else if let Some(pp_str) = arg.strip_prefix("-passphrase=") {
+            key_passphrase = Some(pp_str.to_string());
+        } else if let Some(pp_str) = arg.strip_prefix("--passphrase=") {
+            key_passphrase = Some(pp_str.to_string());
+        } else if let Some(pp_str) = arg.strip_prefix("-keypass=") {
+            key_passphrase = Some(pp_str.to_string());
+        } else if let Some(pp_str) = arg.strip_prefix("--keypass=") {
+            key_passphrase = Some(pp_str.to_string());
         } else if arg == "-J" {
             if let Some(j_str) = it.next() {
                 proxy_jump = Some(j_str.clone());
@@ -355,9 +373,13 @@ pub fn parse_cli_target(args: &[String], config: &config::AppConfig) -> Option<C
     }
 
     // 4. Construct AdHoc profile if host is present
-    if let Some(target_host) = host {
+    if let Some(raw_host) = host {
         let proto = protocol.unwrap_or(config::ProtocolType::Ssh);
-        let final_port = port.unwrap_or_else(|| proto.default_port());
+        let (u, target_host, p) = parse_user_host_port(&raw_host, proto.default_port());
+        if user.is_none() && u.is_some() {
+            user = u;
+        }
+        let final_port = port.or(p).unwrap_or_else(|| proto.default_port());
         let final_user = user.unwrap_or_else(|| "root".to_string());
         let session_name = if proto == config::ProtocolType::Ssh {
             format!("{}@{}:{}", final_user, target_host, final_port)
@@ -384,7 +406,7 @@ pub fn parse_cli_target(args: &[String], config: &config::AppConfig) -> Option<C
         if let Some(kp) = key_path {
             profile.ssh_auth = config::SshAuthMethod::PrivateKeyFile {
                 key_path: kp,
-                passphrase: String::new(),
+                passphrase: key_passphrase.unwrap_or_default(),
                 cert_path: String::new(),
             };
         }
@@ -572,7 +594,39 @@ mod tests {
             panic!("Expected AdHoc target");
         }
 
-        // 6. Empty args
+        // 6. Private key with passphrase (-i and -passphrase)
+        let target = parse_cli_target(
+            &a(&[
+                "cuty-ssh",
+                "-ssh",
+                "10.0.0.1",
+                "-i",
+                r"C:\keys\id_rsa.ppk",
+                "-passphrase",
+                "my_key_pass",
+            ]),
+            &cfg,
+        )
+        .unwrap();
+        if let CliTarget::AdHoc { profile, .. } = target {
+            assert_eq!(profile.protocol, ProtocolType::Ssh);
+            assert_eq!(profile.host, "10.0.0.1");
+            if let crate::config::SshAuthMethod::PrivateKeyFile {
+                key_path,
+                passphrase,
+                ..
+            } = profile.ssh_auth
+            {
+                assert_eq!(key_path, r"C:\keys\id_rsa.ppk");
+                assert_eq!(passphrase, "my_key_pass");
+            } else {
+                panic!("Expected PrivateKeyFile auth method");
+            }
+        } else {
+            panic!("Expected AdHoc target");
+        }
+
+        // 7. Empty args
         assert!(parse_cli_target(&a(&["cuty-ssh"]), &cfg).is_none());
     }
 
