@@ -206,6 +206,91 @@ Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur interméd
 
 ---
 
+### 8. Lanceur CLI universel & automatisation headless (Alternative à `plink` / `ssh`)
+
+Cuty-SSH intègre une interface en ligne de commande complète et performante (`cuty-ssh.exe`) conçue à la fois pour un usage bureautique interactif et pour **l'automatisation sans tête (scripts CI/CD, pipelines, tâches planifiées)** sans jamais ouvrir de fenêtre graphique :
+
+```text
+Usage: cuty-ssh.exe [OPTIONS] [TARGET] [-- COMMAND...]
+
+Arguments:
+  [TARGET]                           Nom/UUID de session, [user@]host[:port], ou URI (ssh://, sftp://, telnet://)
+
+Options de connexion & session :
+  -s, --session <NAME|UUID>          Ouvrir une session enregistrée
+  -load <NAME|UUID>                  Alias pour --session (compatibilité PuTTY/KiTTY)
+  -shell, --shell                    Ouvrir un shell local ConPTY PowerShell
+  -ssh [USER@]HOST                   Connexion via SSH2
+  -telnet HOST                       Connexion via Telnet
+  -raw HOST                          Connexion via Raw TCP
+  -P, --port <PORT>                  Port cible
+  -l, --user <USER>                  Nom d'utilisateur SSH
+  -pw <PASSWORD>                     Mot de passe de connexion
+  -i <KEYFILE>                       Clé privée SSH (.ppk v2/v3, OpenSSH, PEM)
+  -passphrase <PASSPHRASE>           Passphrase de clé privée SSH
+  -J <BASTION>                       Bastion / ProxyJump (user@bastion:port)
+
+Automatisation CLI & Exécution distante :
+  --exec <COMMAND>                   Exécuter une commande distante en direct (streaming stdout/stderr)
+  -m <SCRIPT_FILE>                   Lire et exécuter un script local sur le serveur distant
+  -- COMMAND...                      Exécuter tout ce qui suit '--' en tant que commande
+  -t                                 Allouer un pseudo-terminal (PTY) pour la commande
+  --batch                            Mode batch non interactif strict (aucun prompt, échec si hôte inconnu)
+  --timeout <SECS>                   Délai d'expiration de connexion et de commande en secondes
+
+Transferts SFTP en ligne de commande :
+  --sftp-put <LOCAL> <REMOTE>        Téléverser un fichier ou dossier vers le serveur SFTP
+  --sftp-get <REMOTE> <LOCAL>        Télécharger un fichier ou dossier depuis le serveur SFTP
+  -r, --recursive                    Transfert récursif pour les répertoires
+
+Tunnel de redirection de port :
+  --tunnel <[BIND:]PORT:HOST:PORT>   Rediriger un port local vers la destination distante (Ctrl+C pour quitter)
+
+Options générales :
+      --list                         Lister les sessions enregistrées et quitter
+  -V, --version                      Afficher la version
+  -h, --help                         Afficher l'aide
+```
+
+#### Fonctionnalités & conventions d'automatisation
+
+- **Flux direct non bufferisé** : `stdout` et `stderr` de la commande distante sont diffusés en direct sur les sorties correspondantes, sans altération d'octets.
+- **Propagation du code de sortie** : Le processus renvoie exactement le code de retour de la commande distante (ex. `exit 7` renvoie `7`). En cas d'erreur de connexion, refus d'authentification ou expiration de délai, Cuty-SSH renvoie `255` (convention standard OpenSSH).
+- **Mode batch non interactif strict (`--batch`)** : Interdit tout prompt interactif. Si une clé d'hôte est inconnue ou si un mot de passe manque, la commande échoue immédiatement avec le code `255` sur `stderr`.
+- **Compatibilité ascendante totale** : Lancer `cuty-ssh.exe` sans option d'exécution (`--exec`, `-m`, `--sftp-*`, `--tunnel`, `--`) ouvre l'application graphique normale à l'identique.
+
+#### Exemples d'automatisation
+
+- **Exécution distante (`--exec` et `--`)** :
+  ```powershell
+  cuty-ssh.exe -load "Serveur Production" --exec "uptime && free -m"
+  cuty-ssh.exe -load "Serveur Production" -- hostname -I
+  cuty-ssh.exe -ssh root@192.168.1.100 -i "D:\cles\id_ed25519.ppk" --exec "docker ps -a"
+  ```
+- **Exécution de script local (`-m`)** :
+  ```powershell
+  cuty-ssh.exe -ssh admin@10.0.0.1 -i "C:\cles\admin.ppk" -m "./scripts/deploy.sh"
+  cuty-ssh.exe -load "Noeud Backup" -m "C:\scripts\cleanup.sh"
+  ```
+- **Mode batch & timeout** :
+  ```powershell
+  cuty-ssh.exe --batch -load "Serveur Production" --exec "systemctl status nginx"
+  cuty-ssh.exe --batch --timeout 10 -ssh root@192.168.1.50 -i cle.ppk --exec "df -h"
+  ```
+- **Transferts SFTP (`--sftp-put` & `--sftp-get`)** :
+  ```powershell
+  cuty-ssh.exe --sftp-put ./app.tar.gz /var/www/ -load "Serveur Production"
+  cuty-ssh.exe --sftp-get /var/log/syslog ./syslog.log -ssh root@host -pw "secret"
+  cuty-ssh.exe -r --sftp-put ./dist/ /var/www/html/ -load "Serveur Production"
+  ```
+- **Tunnel de port en CLI (`--tunnel`)** :
+  ```powershell
+  cuty-ssh.exe --tunnel 8080:localhost:80 -ssh root@bastion.corp -i cle.ppk
+  cuty-ssh.exe --tunnel 0.0.0.0:5432:db.internal:5432 -load "Bastion Entreprise"
+  ```
+
+---
+
 ## Raccourcis clavier & souris
 
 | Raccourci / Interaction | Action |

@@ -67,6 +67,7 @@ pub struct CidrCalculation {
     pub usable_hosts: u64,
 }
 
+pub mod cli;
 mod mirror;
 
 /// Disconnect reason emitted when the user asked for the disconnection (never auto-reconnected).
@@ -348,7 +349,7 @@ async fn wait_for_secret_input(
     anyhow::bail!("Canal fermé en attente de saisie")
 }
 
-fn rsa_hash_candidates(preferred: Option<HashAlg>) -> Vec<Option<HashAlg>> {
+pub(crate) fn rsa_hash_candidates(preferred: Option<HashAlg>) -> Vec<Option<HashAlg>> {
     let mut list = Vec::with_capacity(4);
     for candidate in [
         preferred,
@@ -460,7 +461,7 @@ async fn try_authenticate_with_openssh_agent(
     None
 }
 
-fn parse_inline_proxy_jump(spec: &str) -> Option<SessionProfile> {
+pub(crate) fn parse_inline_proxy_jump(spec: &str) -> Option<SessionProfile> {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
         return None;

@@ -212,59 +212,117 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 
 ---
 
-### 8. Universal CLI Launcher, URI Schemes & DevOps Automation
+### 8. Universal CLI Launcher & Headless Automation (`plink` / `ssh` Alternative)
 
-Cuty-SSH includes a complete, high-performance command-line launcher (`cuty-ssh.exe`) designed for DevOps workflows, shell integration, Windows desktop shortcuts, and browser protocol handlers:
+Cuty-SSH includes a complete, high-performance command-line interface (`cuty-ssh.exe`) designed for both interactive desktop usage and **headless automation scripts, CI/CD pipelines, and cron tasks** without opening any GUI window:
 
 ```text
-Usage: cuty-ssh.exe [OPTIONS] [TARGET]
+Usage: cuty-ssh.exe [OPTIONS] [TARGET] [-- COMMAND...]
 
 Arguments:
-  [TARGET]                   Saved session name/UUID, [user@]host[:port], or URI (ssh://, sftp://, telnet://)
+  [TARGET]                           Saved session name/UUID, [user@]host[:port], or URI (ssh://, sftp://, telnet://)
 
-Options:
-  -s, --session <NAME|UUID>  Open a saved session at startup
-  -load <NAME|UUID>          Alias for --session (PuTTY/KiTTY drop-in compatibility)
-  -shell, --shell            Open a local ConPTY PowerShell shell tab immediately
-  -ssh [USER@]HOST           Connect via SSH2
-  -telnet HOST               Connect via Telnet
-  -raw HOST                  Connect via Raw TCP
-  -P, --port <PORT>          Target port number
-  -l, --user <USER>          SSH username
-  -pw <PASSWORD>             SSH/Telnet login password
-  -i <KEYFILE>               SSH private key path (.ppk v2/v3, OpenSSH, PEM)
-  -passphrase <PASSPHRASE>   SSH private key passphrase
-  -J <BASTION>               Bastion / ProxyJump (user@bastion:port)
-      --list                 List saved sessions with protocol and connection details
-  -V, --version              Print version information
-  -h, --help                 Print help information
+Connection & Session Options:
+  -s, --session <NAME|UUID>          Open a saved session
+  -load <NAME|UUID>                  Alias for --session (PuTTY/KiTTY drop-in compatibility)
+  -shell, --shell                    Open a local ConPTY PowerShell shell
+  -ssh [USER@]HOST                   Connect via SSH2
+  -telnet HOST                       Connect via Telnet
+  -raw HOST                          Connect via Raw TCP
+  -P, --port <PORT>                  Target port number
+  -l, --user <USER>                  SSH username
+  -pw <PASSWORD>                     SSH/Telnet login password
+  -i <KEYFILE>                       SSH private key path (.ppk v2/v3, OpenSSH, PEM)
+  -passphrase <PASSPHRASE>           SSH private key passphrase
+  -J <BASTION>                       Bastion / ProxyJump (user@bastion:port)
+
+CLI Automation & Remote Execution:
+  --exec <COMMAND>                   Execute remote SSH command headless and stream output
+  -m <SCRIPT_FILE>                   Read remote command from local script file and execute
+  -- COMMAND...                      Execute everything following '--' as remote command
+  -t                                 Force PTY allocation for remote command execution
+  --batch                            Strict non-interactive mode (no prompts, fail on unknown host)
+  --timeout <SECS>                   Connection and execution timeout in seconds
+
+SFTP Command-Line Transfers:
+  --sftp-put <LOCAL> <REMOTE>        Upload local file or directory to remote SFTP server
+  --sftp-get <REMOTE> <LOCAL>        Download remote file or directory from SFTP server
+  -r, --recursive                    Recursive transfer for directories
+
+Port Forwarding Tunnel:
+  --tunnel <[BIND:]PORT:HOST:PORT>   Forward local port to remote destination (Ctrl+C to quit)
+
+General Options:
+      --list                         List saved sessions with protocol and connection details
+  -V, --version                      Print version information
+  -h, --help                         Print help information
 ```
 
-#### Practical CLI Examples
+#### Automation Features & Conventions
 
-- **Ad-hoc OpenSSH connection**:
+- **Unbuffered Live Streaming**: Remote `stdout` and `stderr` are streamed in real time without end-of-command buffering or byte alteration.
+- **Exit Code Propagation**: The process returns the exact exit code of the remote command (e.g. `exit 7` exits with code `7`). On connection failure, authentication refusal, timeout, or untrusted host key, Cuty-SSH exits with code `255` (OpenSSH / Plink standard).
+- **Strict Non-Interactive Batch Mode (`--batch`)**: Forbids all interactive prompts. If a host key is not already cached in `known_hosts`, or if required credentials are missing, execution aborts immediately with code `255` and writes the error to `stderr`.
+- **Backward Compatibility**: Running `cuty-ssh.exe` without `--exec`, `-m`, `--sftp-*`, `--tunnel`, or `--` launches the full graphical desktop client exactly as before.
+
+#### Automation Examples
+
+- **Remote Command Execution (`--exec` & trailing `--`)**:
   ```powershell
-  cuty-ssh.exe root@192.168.1.50
-  cuty-ssh.exe admin@srv.domain.lan:2222
-  cuty-ssh.exe 10.0.0.1
+  # Execute remote command using a saved session (with its stored credentials & DPAPI secrets)
+  cuty-ssh.exe -load "Production Server" --exec "uptime && free -m"
+
+  # Pass arguments directly after '--' delimiter (OpenSSH convention)
+  cuty-ssh.exe -load "Production Server" -- hostname -I
+
+  # Direct ad-hoc SSH connection with private key
+  cuty-ssh.exe -ssh root@192.168.1.100 -i "D:\keys\id_ed25519.ppk" --exec "docker ps -a"
   ```
-- **Direct Dual-Pane SFTP Explorer (`sftp://`)**:
+
+- **Local Script File Execution (`-m`)**:
   ```powershell
-  # Connects over SSH and immediately reveals the dual-pane SFTP client
+  # Read a local deployment or health-check script and execute it on the remote host
+  cuty-ssh.exe -ssh admin@10.0.0.1 -i "C:\keys\admin.ppk" -m "./scripts/deploy.sh"
+  cuty-ssh.exe -load "Backup Node" -m "C:\scripts\cleanup.sh"
+  ```
+
+- **Non-Interactive Batch Mode (`--batch`) with Timeout**:
+  ```powershell
+  # Fails immediately if credentials or host key are not verified (never hangs)
+  cuty-ssh.exe --batch -load "Production Server" --exec "systemctl status nginx"
+
+  # Set a 10-second timeout for the entire connection and command execution
+  cuty-ssh.exe --batch --timeout 10 -ssh root@192.168.1.50 -i key.ppk --exec "df -h"
+  ```
+
+- **Headless SFTP Transfers (`--sftp-put` & `--sftp-get`)**:
+  ```powershell
+  # Upload a local file to remote destination (shows progress bar on interactive TTY; silent in scripts)
+  cuty-ssh.exe --sftp-put ./app.tar.gz /var/www/ -load "Production Server"
+
+  # Download remote logs with password authentication
+  cuty-ssh.exe --sftp-get /var/log/nginx/access.log ./local_access.log -ssh root@10.0.0.1 -pw "secret"
+
+  # Recursive directory upload (-r / --recursive)
+  cuty-ssh.exe -r --sftp-put ./dist/ /var/www/html/ -load "Production Server"
+  ```
+
+- **CLI Port Forwarding Tunnel (`--tunnel`)**:
+  ```powershell
+  # Forward local port 8080 to remote port 80 through SSH (stays in foreground, clean Ctrl+C exit)
+  cuty-ssh.exe --tunnel 8080:localhost:80 -ssh root@bastion.corp -i key.ppk
+
+  # Bind across all local interfaces to forward internal database port
+  cuty-ssh.exe --tunnel 0.0.0.0:5432:db.internal:5432 -load "Corporate Bastion"
+  ```
+
+- **Interactive GUI Launch (Unchanged)**:
+  ```powershell
+  # Open saved session in GUI window
+  cuty-ssh.exe -load "Production Server"
+  # Open dual-pane SFTP in GUI window
   cuty-ssh.exe sftp://deploy@192.168.1.10:22
-  ```
-- **Key-based authentication with passphrase**:
-  ```powershell
-  # Connect using a PuTTY .ppk key and optional passphrase
-  cuty-ssh.exe -ssh admin@10.0.0.1:22 -i "D:\keys\prod.ppk" -passphrase "secret"
-  ```
-- **PuTTY & KiTTY drop-in replacement**:
-  ```powershell
-  cuty-ssh.exe -load "Production Database"
-  cuty-ssh.exe "Production Database"
-  ```
-- **Local ConPTY PowerShell Tab**:
-  ```powershell
+  # Open local ConPTY PowerShell tab
   cuty-ssh.exe -shell
   ```
 - **Browser & Wiki integration**:

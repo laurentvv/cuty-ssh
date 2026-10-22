@@ -10,8 +10,8 @@ pub mod ui;
 use ui::CutySshApp;
 
 /// Re-attach stdout/stderr to the console of the parent process (needed with the GUI subsystem).
-#[cfg(windows)]
-fn attach_parent_console() {
+#[cfg(all(windows, not(debug_assertions)))]
+pub fn attach_parent_console() {
     use std::os::windows::io::IntoRawHandle;
     use windows_sys::Win32::System::Console::{
         ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
@@ -19,7 +19,7 @@ fn attach_parent_console() {
     };
     unsafe {
         let cur_out = GetStdHandle(STD_OUTPUT_HANDLE);
-        let redirected = !cur_out.is_null() && cur_out as isize != -1;
+        let redirected = !cur_out.is_null() && cur_out as isize != -1 && cur_out as isize != 0;
         if !redirected && AttachConsole(ATTACH_PARENT_PROCESS) != 0 {
             if let Ok(f) = std::fs::OpenOptions::new().write(true).open("CONOUT$") {
                 SetStdHandle(STD_OUTPUT_HANDLE, f.into_raw_handle() as _);
@@ -30,6 +30,9 @@ fn attach_parent_console() {
         }
     }
 }
+
+#[cfg(any(not(windows), debug_assertions))]
+pub fn attach_parent_console() {}
 
 /// Target destination requested from the command-line interface.
 #[derive(Debug, Clone)]
@@ -58,27 +61,80 @@ fn main() -> eframe::Result {
             "Cuty-SSH {} — Fast, native Windows SSH2, SFTP, Telnet, Raw TCP & ConPTY connection manager\n",
             env!("CARGO_PKG_VERSION")
         );
-        println!("Usage: cuty-ssh.exe [OPTIONS] [TARGET]\n");
+        println!("Usage: cuty-ssh.exe [OPTIONS] [TARGET] [-- COMMAND...]\n");
         println!("Arguments:");
         println!(
-            "  [TARGET]                   Saved session name/UUID, [user@]host[:port], or URI (ssh://, sftp://, telnet://)\n"
+            "  [TARGET]                           Saved session name/UUID, [user@]host[:port], or URI (ssh://, sftp://, telnet://)\n"
         );
-        println!("Options:");
-        println!("  -s, --session <NAME|UUID>  Open a saved session at startup");
-        println!("  -load <NAME|UUID>          Alias for --session (PuTTY/KiTTY compatibility)");
-        println!("  -shell, --shell            Open a local ConPTY PowerShell shell");
-        println!("  -ssh [USER@]HOST           Connect via SSH2");
-        println!("  -telnet HOST               Connect via Telnet");
-        println!("  -raw HOST                  Connect via Raw TCP");
-        println!("  -P, --port <PORT>          Target port number");
-        println!("  -l, --user <USER>          SSH username");
-        println!("  -pw <PASSWORD>             SSH/Telnet login password");
-        println!("  -i <KEYFILE>               SSH private key path (.ppk, OpenSSH, PEM)");
-        println!("  -passphrase <PASSPHRASE>   SSH private key passphrase");
-        println!("  -J <BASTION>               Bastion / ProxyJump (user@bastion:port)");
-        println!("      --list                 List saved sessions and exit");
-        println!("  -V, --version              Print version information");
-        println!("  -h, --help                 Print help information");
+        println!("Connection & Session Options:");
+        println!("  -s, --session <NAME|UUID>          Open a saved session");
+        println!(
+            "  -load <NAME|UUID>                  Alias for --session (PuTTY/KiTTY compatibility)"
+        );
+        println!("  -shell, --shell                    Open a local ConPTY PowerShell shell");
+        println!("  -ssh [USER@]HOST                   Connect via SSH2");
+        println!("  -telnet HOST                       Connect via Telnet");
+        println!("  -raw HOST                          Connect via Raw TCP");
+        println!("  -P, --port <PORT>                  Target port number");
+        println!("  -l, --user <USER>                  SSH username");
+        println!("  -pw <PASSWORD>                     SSH/Telnet login password");
+        println!("  -i <KEYFILE>                       SSH private key path (.ppk, OpenSSH, PEM)");
+        println!("  -passphrase <PASSPHRASE>           SSH private key passphrase");
+        println!("  -J <BASTION>                       Bastion / ProxyJump (user@bastion:port)\n");
+        println!("CLI Automation & Remote Execution:");
+        println!(
+            "  --exec <COMMAND>                   Execute remote SSH command headless and stream output"
+        );
+        println!(
+            "  -m <SCRIPT_FILE>                   Read remote command from local script file and execute"
+        );
+        println!(
+            "  -- COMMAND...                      Execute everything following '--' as remote command"
+        );
+        println!(
+            "  -t                                 Force PTY allocation for remote command execution"
+        );
+        println!(
+            "  --batch                            Strict non-interactive mode (no prompts, fail on unknown host)"
+        );
+        println!(
+            "  --timeout <SECS>                   Connection and execution timeout in seconds\n"
+        );
+        println!("SFTP Command-Line Transfers:");
+        println!(
+            "  --sftp-put <LOCAL> <REMOTE>        Upload local file or directory to remote SFTP server"
+        );
+        println!(
+            "  --sftp-get <REMOTE> <LOCAL>        Download remote file or directory from SFTP server"
+        );
+        println!("  -r, --recursive                    Recursive transfer for directories\n");
+        println!("Port Forwarding Tunnel:");
+        println!(
+            "  --tunnel <[BIND:]PORT:HOST:PORT>   Forward local port to remote destination (Ctrl+C to quit)\n"
+        );
+        println!("General Options:");
+        println!("      --list                         List saved sessions and exit");
+        println!("  -V, --version                      Print version information");
+        println!("  -h, --help                         Print help information\n");
+        println!("Examples:");
+        println!("  1. Remote Command Execution:");
+        println!("     cuty-ssh -ssh root@host -i key.ppk --exec \"uptime && free -m\"");
+        println!("     cuty-ssh -load \"PROD_SERVER\" -- hostname -I\n");
+        println!("  2. Local Script Execution:");
+        println!("     cuty-ssh -ssh root@host -m ./deploy.sh");
+        println!("     cuty-ssh -load \"PROD_SERVER\" -m ./diagnose.sh\n");
+        println!("  3. Non-Interactive Batch Mode:");
+        println!("     cuty-ssh --batch --exec \"systemctl status nginx\" -load \"PROD_SERVER\"");
+        println!(
+            "     cuty-ssh --batch --timeout 10 -ssh root@10.0.0.1 -i key.ppk --exec \"df -h\"\n"
+        );
+        println!("  4. SFTP File & Directory Transfers:");
+        println!("     cuty-ssh --sftp-put ./app.tar.gz /var/www/ -load \"PROD_SERVER\"");
+        println!("     cuty-ssh --sftp-get /var/log/syslog ./syslog.log -ssh root@host -pw secret");
+        println!("     cuty-ssh -r --sftp-put ./dist/ /var/www/html/ -load \"PROD_SERVER\"\n");
+        println!("  5. CLI Port Forwarding Tunnel:");
+        println!("     cuty-ssh --tunnel 8080:localhost:80 -ssh root@host -i key.ppk");
+        println!("     cuty-ssh --tunnel 0.0.0.0:5432:db.internal:5432 -load \"DB_BASTION\"");
         return Ok(());
     }
 
@@ -99,6 +155,29 @@ fn main() -> eframe::Result {
             );
         }
         return Ok(());
+    }
+
+    // Headless CLI automation dispatcher (--exec, -m, --sftp-put, --sftp-get, --tunnel, --batch, or --)
+    match protocols::cli::parse_cli_invocation(&args, &loaded_config) {
+        Ok(Some(invocation)) => {
+            #[cfg(windows)]
+            attach_parent_console();
+
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to initialize Tokio runtime for CLI mode");
+
+            let exit_code = rt.block_on(protocols::cli::run_cli(invocation));
+            std::process::exit(exit_code);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            #[cfg(windows)]
+            attach_parent_console();
+            eprintln!("cuty-ssh: Error: {:#}", e);
+            std::process::exit(255);
+        }
     }
 
     let startup_target = parse_cli_target(&args, &loaded_config);
