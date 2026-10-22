@@ -4,10 +4,12 @@
 //! - Dual-pane browser (Local files on left, Remote files on right)
 //! - Upload & Download transfer queues with status and progress
 //! - Comprehensive right-click context menu (Download/Upload, Open, Edit,
-//!   Move to, Rename, Erase, SHA-256 hashes, Symlinks, Copy path, Properties)
+//!   Choose editor, Move to, Rename, Erase, SHA-256 hashes, Symlinks, Copy path, Properties/Chmod)
 //! - Auto-upload on save (Ctrl+S) for edited remote files
-//! - Collision resolution dialog (Rename/Resume/Overwrite/Skip)
-//! - Operation activity log
+//! - External editor configuration (Bitvise #450) with presets & file picker
+//! - Collision resolution dialog (Bitvise #415: Overwrite/Resume/Rename/Skip)
+//! - Folder Mirror / Synchronization tool (Bitvise #477)
+//! - Remote & Local Bookmarks / Signets (WinSCP Bookmarks)
 //! - Strict bilingual FR / EN localization (zero mixed languages)
 
 use crate::config::UiLanguage;
@@ -136,6 +138,19 @@ pub struct WatchedEditFile {
     pub use_default_app: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct CollisionModal {
+    pub is_upload: bool,
+    pub filename: String,
+    pub local_path: PathBuf,
+    pub remote_path: String,
+    pub local_size: u64,
+    pub local_mtime: u64,
+    pub remote_size: u64,
+    pub remote_mtime: u64,
+    pub new_name: String,
+}
+
 pub struct SftpClientState {
     pub active_tab: SftpClientTab,
     pub transfer_mode: TransferMode,
@@ -153,6 +168,7 @@ pub struct SftpClientState {
     pub local_folders_first: bool,
     pub local_new_folder_name: String,
     pub show_local_mkdir: bool,
+    pub local_bookmarks: Vec<PathBuf>,
 
     // Remote pane extra controls
     pub remote_filter: String,
@@ -162,6 +178,7 @@ pub struct SftpClientState {
     pub remote_folders_first: bool,
     pub remote_new_folder_name: String,
     pub show_remote_mkdir: bool,
+    pub remote_bookmarks: Vec<String>,
 
     // Transfer Queues
     pub next_task_id: u64,
@@ -176,6 +193,15 @@ pub struct SftpClientState {
     pub move_modal: Option<MoveModal>,
     pub symlink_modal: Option<SymlinkModal>,
     pub delete_confirm: Option<(bool, String, bool)>, // (is_remote, path, is_dir)
+    pub collision_modal: Option<CollisionModal>,
+
+    // External editor configuration
+    pub editor_path: String,
+    pub show_editor_modal: bool,
+
+    // Integration triggers for parent tab
+    pub props_request: Option<SftpFileEntry>,
+    pub mirror_request: bool,
 
     // Watched files for auto-upload on save (Ctrl+S)
     pub watched_files: Vec<WatchedEditFile>,
@@ -201,6 +227,23 @@ impl SftpClientState {
             .map(PathBuf::from)
             .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("C:\\")));
 
+        let mut local_bms = vec![initial_local.clone()];
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            let p = PathBuf::from(userprofile);
+            let desktop = p.join("Desktop");
+            let docs = p.join("Documents");
+            let downloads = p.join("Downloads");
+            if desktop.exists() {
+                local_bms.push(desktop);
+            }
+            if docs.exists() {
+                local_bms.push(docs);
+            }
+            if downloads.exists() {
+                local_bms.push(downloads);
+            }
+        }
+
         let mut state = Self {
             active_tab: SftpClientTab::Browse,
             transfer_mode: TransferMode::Binary,
@@ -217,6 +260,7 @@ impl SftpClientState {
             local_folders_first: true,
             local_new_folder_name: String::new(),
             show_local_mkdir: false,
+            local_bookmarks: local_bms,
 
             remote_filter: String::new(),
             remote_selected: HashSet::new(),
@@ -225,6 +269,13 @@ impl SftpClientState {
             remote_folders_first: true,
             remote_new_folder_name: String::new(),
             show_remote_mkdir: false,
+            remote_bookmarks: vec![
+                "/root".to_string(),
+                "/var/www".to_string(),
+                "/etc".to_string(),
+                "/tmp".to_string(),
+                "~".to_string(),
+            ],
 
             next_task_id: 1,
             upload_queue: Vec::new(),
@@ -235,6 +286,13 @@ impl SftpClientState {
             move_modal: None,
             symlink_modal: None,
             delete_confirm: None,
+            collision_modal: None,
+
+            editor_path: "notepad.exe".to_string(),
+            show_editor_modal: false,
+
+            props_request: None,
+            mirror_request: false,
 
             watched_files: Vec::new(),
         };
@@ -419,12 +477,17 @@ impl SftpClientState {
                     false,
                 );
             } else {
-                let _ = std::process::Command::new("notepad.exe").arg(&path).spawn();
+                let ed = if self.editor_path.trim().is_empty() {
+                    "notepad.exe"
+                } else {
+                    self.editor_path.trim()
+                };
+                let _ = std::process::Command::new(ed).arg(&path).spawn();
                 self.log(
                     tr(
                         lang,
-                        &format!("Éditeur Notepad ouvert pour : {}", path.display()),
-                        &format!("Notepad editor opened for: {}", path.display()),
+                        &format!("Éditeur ({ed}) ouvert pour : {}", path.display()),
+                        &format!("Editor ({ed}) opened for: {}", path.display()),
                     ),
                     false,
                 );
@@ -465,7 +528,7 @@ impl SftpClientState {
         // Run active edit watcher check
         self.check_watched_files(ctx, cmd_tx, lang);
 
-        // Top Toolbar: Tabs (Browse, Upload queue, Download queue, Log) + Back to terminal
+        // Top Toolbar: Tabs + Mirror / Sync + Refresh + Back to terminal
         egui::Frame::NONE
             .fill(Color32::from_rgb(18, 24, 38))
             .inner_margin(egui::Margin::symmetric(10, 6))
@@ -537,8 +600,6 @@ impl SftpClientState {
                         self.active_tab = SftpClientTab::Log;
                     }
 
-
-
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
                             .button(
@@ -567,6 +628,24 @@ impl SftpClientState {
                             self.refresh_local();
                             let _ = cmd_tx.send(BackendCommand::SftpListDir(remote_path.to_string()));
                             self.log(tr(lang, "Actualisation des dossiers effectuée", "Directories refreshed"), false);
+                        }
+
+                        // Mirror / Sync Tool Button
+                        if ui
+                            .button(RichText::new(tr(lang, "🔄 Miroir / Synchro", "🔄 Mirror / Sync")).color(Color32::from_rgb(56, 189, 248)))
+                            .on_hover_text(tr(lang, "Ouvrir l'outil de synchronisation miroir (Bitvise #477)", "Open folder mirror sync tool (Bitvise #477)"))
+                            .clicked()
+                        {
+                            self.mirror_request = true;
+                        }
+
+                        // External Editor Button
+                        if ui
+                            .small_button(tr(lang, "⚙ Éditeur", "⚙ Editor"))
+                            .on_hover_text(tr(lang, "Configurer l'éditeur externe (Bitvise #450)", "Configure external editor (Bitvise #450)"))
+                            .clicked()
+                        {
+                            self.show_editor_modal = true;
                         }
                     });
                 });
@@ -688,7 +767,7 @@ impl SftpClientState {
 
                     ui.add_space(2.0);
 
-                    // Local Toolbar: Up, New Folder, Refresh, Home, Path Box
+                    // Local Toolbar: Up, New Folder, Refresh, Home, Bookmarks, Path Box
                     ui.horizontal(|ui| {
                         if ui
                             .small_button("\u{E08E}")
@@ -718,6 +797,37 @@ impl SftpClientState {
                         {
                             self.navigate_local_home();
                         }
+
+                        // Local Bookmarks Menu
+                        ui.menu_button("📑", |ui| {
+                            ui.label(RichText::new(tr(lang, "Signets locaux :", "Local bookmarks:")).strong().small());
+                            let mut to_nav: Option<PathBuf> = None;
+                            let mut to_remove: Option<usize> = None;
+                            for (idx, bm) in self.local_bookmarks.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    if ui.button(bm.display().to_string()).clicked() {
+                                        to_nav = Some(bm.clone());
+                                        ui.close();
+                                    }
+                                    if ui.small_button("✖").clicked() {
+                                        to_remove = Some(idx);
+                                    }
+                                });
+                            }
+                            if let Some(target) = to_nav {
+                                cd_local_into = Some(target);
+                            }
+                            if let Some(idx) = to_remove.filter(|&i| i < self.local_bookmarks.len()) {
+                                self.local_bookmarks.remove(idx);
+                            }
+                            ui.separator();
+                            if ui.button(tr(lang, "➕ Ajouter le dossier actuel", "➕ Bookmark current folder")).clicked() {
+                                if !self.local_bookmarks.contains(&self.local_path) {
+                                    self.local_bookmarks.push(self.local_path.clone());
+                                }
+                                ui.close();
+                            }
+                        });
 
                         let text_w = (ui.available_width() - 48.0).max(60.0);
                         let mut p_str = self.local_path_input.clone();
@@ -936,9 +1046,18 @@ impl SftpClientState {
                                             ui.close();
                                         }
                                         if ui.button(tr(lang, "Éditer", "Edit")).clicked() {
-                                            let _ = std::process::Command::new("notepad.exe")
+                                            let ed = if self.editor_path.trim().is_empty() {
+                                                "notepad.exe"
+                                            } else {
+                                                self.editor_path.trim()
+                                            };
+                                            let _ = std::process::Command::new(ed)
                                                 .arg(&entry.path)
                                                 .spawn();
+                                            ui.close();
+                                        }
+                                        if ui.button(tr(lang, "Choisir l'éditeur...", "Choose editor...")).clicked() {
+                                            self.show_editor_modal = true;
                                             ui.close();
                                         }
                                         if ui.button(tr(lang, "Renommer...", "Rename...")).clicked() {
@@ -1130,7 +1249,7 @@ impl SftpClientState {
 
                     ui.add_space(2.0);
 
-                    // Remote Toolbar: Up, New Folder, Refresh, Home, Path Box
+                    // Remote Toolbar: Up, New Folder, Refresh, Home, Bookmarks, Path Box
                     ui.horizontal(|ui| {
                         if ui
                             .small_button("\u{E08E}")
@@ -1172,6 +1291,38 @@ impl SftpClientState {
                         {
                             cd_remote_into = Some(".".to_string());
                         }
+
+                        // Remote Bookmarks Menu (WinSCP Bookmarks style)
+                        ui.menu_button("📑", |ui| {
+                            ui.label(RichText::new(tr(lang, "Signets distants :", "Remote bookmarks:")).strong().small());
+                            let mut to_nav: Option<String> = None;
+                            let mut to_remove: Option<usize> = None;
+                            for (idx, bm) in self.remote_bookmarks.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    if ui.button(bm).clicked() {
+                                        to_nav = Some(bm.clone());
+                                        ui.close();
+                                    }
+                                    if ui.small_button("✖").clicked() {
+                                        to_remove = Some(idx);
+                                    }
+                                });
+                            }
+                            if let Some(target) = to_nav {
+                                cd_remote_into = Some(target);
+                            }
+                            if let Some(idx) = to_remove.filter(|&i| i < self.remote_bookmarks.len()) {
+                                self.remote_bookmarks.remove(idx);
+                            }
+                            ui.separator();
+                            if ui.button(tr(lang, "➕ Ajouter le dossier actuel", "➕ Bookmark current folder")).clicked() {
+                                let cur = remote_path.to_string();
+                                if !self.remote_bookmarks.contains(&cur) {
+                                    self.remote_bookmarks.push(cur);
+                                }
+                                ui.close();
+                            }
+                        });
 
                         let text_w = (ui.available_width() - 48.0).max(60.0);
                         let mut p_str = remote_path.to_string();
@@ -1457,6 +1608,10 @@ impl SftpClientState {
                                             );
                                             ui.close();
                                         }
+                                        if ui.button(tr(lang, "Choisir l'éditeur...", "Choose editor...")).clicked() {
+                                            self.show_editor_modal = true;
+                                            ui.close();
+                                        }
                                         if ui.button(tr(lang, "Déplacer vers...", "Move to...")).clicked() {
                                             self.move_modal = Some(MoveModal {
                                                 is_remote: true,
@@ -1508,10 +1663,12 @@ impl SftpClientState {
                                             ui.close();
                                         }
                                         ui.separator();
+                                        // Properties / Chmod Dialog trigger (Bitvise #355)
                                         if ui
                                             .button(tr(lang, "Propriétés (Permissions / Chmod)", "Properties (Permissions / Chmod)"))
                                             .clicked()
                                         {
+                                            self.props_request = Some(entry.clone());
                                             ui.close();
                                         }
                                     });
@@ -1648,7 +1805,7 @@ impl SftpClientState {
             self.remote_selected.clear();
         }
 
-        // Upload batch
+        // Upload batch with collision detection
         if let Some(paths) = launch_upload {
             for p in paths {
                 let filename = p
@@ -1661,7 +1818,48 @@ impl SftpClientState {
                     format!("{}/{}", remote_path, filename)
                 };
 
-                let meta_len = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                let meta = std::fs::metadata(&p).ok();
+                let local_size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let local_mtime = meta
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                // Collision check against remote entries
+                let existing_remote = remote_entries.iter().find(|e| e.name == filename);
+                if let Some(existing) = existing_remote {
+                    match self.existing_file_rule {
+                        ExistingFileRule::Skip => {
+                            self.log(
+                                tr(
+                                    lang,
+                                    &format!("Fichier existant ignoré : {filename}"),
+                                    &format!("Existing file skipped: {filename}"),
+                                ),
+                                false,
+                            );
+                            continue;
+                        }
+                        ExistingFileRule::Ask => {
+                            self.collision_modal = Some(CollisionModal {
+                                is_upload: true,
+                                filename: filename.clone(),
+                                local_path: p.clone(),
+                                remote_path: remote_target.clone(),
+                                local_size,
+                                local_mtime,
+                                remote_size: existing.size,
+                                remote_mtime: existing.mtime as u64,
+                                new_name: format!("{}_new", filename),
+                            });
+                            continue;
+                        }
+                        ExistingFileRule::Overwrite | ExistingFileRule::Resume => {}
+                    }
+                }
+
                 let task_id = self.next_task_id;
                 self.next_task_id += 1;
 
@@ -1670,7 +1868,7 @@ impl SftpClientState {
                     filename: filename.clone(),
                     local_path: p.clone(),
                     remote_path: remote_target.clone(),
-                    size: meta_len,
+                    size: local_size,
                     transferred: 0,
                     is_upload: true,
                     status: if self.queue_paused {
@@ -1697,7 +1895,7 @@ impl SftpClientState {
             }
         }
 
-        // Download batch
+        // Download batch with collision detection
         if let Some(names) = launch_download {
             for name in names {
                 let remote_src = if remote_path.ends_with('/') {
@@ -1707,6 +1905,50 @@ impl SftpClientState {
                 };
                 let local_dst = self.local_path.join(&name);
 
+                let existing_remote = remote_entries.iter().find(|e| e.name == name);
+                let remote_size = existing_remote.map(|e| e.size).unwrap_or(0);
+                let remote_mtime = existing_remote.map(|e| e.mtime).unwrap_or(0);
+
+                if local_dst.exists() {
+                    let meta = std::fs::metadata(&local_dst).ok();
+                    let local_size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                    let local_mtime = meta
+                        .as_ref()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+
+                    match self.existing_file_rule {
+                        ExistingFileRule::Skip => {
+                            self.log(
+                                tr(
+                                    lang,
+                                    &format!("Fichier local existant ignoré : {name}"),
+                                    &format!("Existing local file skipped: {name}"),
+                                ),
+                                false,
+                            );
+                            continue;
+                        }
+                        ExistingFileRule::Ask => {
+                            self.collision_modal = Some(CollisionModal {
+                                is_upload: false,
+                                filename: name.clone(),
+                                local_path: local_dst.clone(),
+                                remote_path: remote_src.clone(),
+                                local_size,
+                                local_mtime,
+                                remote_size,
+                                remote_mtime: remote_mtime as u64,
+                                new_name: format!("{}_new", name),
+                            });
+                            continue;
+                        }
+                        ExistingFileRule::Overwrite | ExistingFileRule::Resume => {}
+                    }
+                }
+
                 let task_id = self.next_task_id;
                 self.next_task_id += 1;
 
@@ -1715,7 +1957,7 @@ impl SftpClientState {
                     filename: name.clone(),
                     local_path: local_dst.clone(),
                     remote_path: remote_src.clone(),
-                    size: 0,
+                    size: remote_size,
                     transferred: 0,
                     is_upload: false,
                     status: if self.queue_paused {
@@ -1883,6 +2125,7 @@ impl SftpClientState {
         lang: UiLanguage,
         cmd_tx: &UnboundedSender<BackendCommand>,
     ) {
+        // 1. Rename Modal
         if let Some(rename) = &mut self.rename_modal {
             let mut close = false;
             let mut execute_rename = false;
@@ -1972,6 +2215,7 @@ impl SftpClientState {
             }
         }
 
+        // 2. Move Modal (Bitvise #451)
         if let Some(mv) = &mut self.move_modal {
             let mut close = false;
             let mut execute_move = false;
@@ -2034,6 +2278,7 @@ impl SftpClientState {
             }
         }
 
+        // 3. Delete Confirm Modal
         if let Some((is_remote, path, is_dir)) = &self.delete_confirm {
             let mut close = false;
             let mut do_delete = false;
@@ -2108,6 +2353,7 @@ impl SftpClientState {
             }
         }
 
+        // 4. Symlink Modal (Bitvise #452)
         if let Some(sym) = &mut self.symlink_modal {
             let mut close = false;
             let mut create_sym = false;
@@ -2171,6 +2417,266 @@ impl SftpClientState {
                 self.symlink_modal = None;
             }
         }
+
+        // 5. Collision Resolution Modal (Bitvise #415)
+        let mut collision_result = None;
+        if let Some(col_modal) = &mut self.collision_modal {
+            let mut close = false;
+            let mut action: Option<ExistingFileRule> = None;
+            let mut renamed_target: Option<String> = None;
+
+            egui::Window::new(tr(lang, "⚠️ Conflit de fichier existant", "⚠️ File collision conflict"))
+                .collapsible(false)
+                .resizable(false)
+                .default_width(450.0)
+                .show(ctx, |ui| {
+                    ui.label(RichText::new(tr(
+                        lang,
+                        "Le fichier de destination existe déjà. Quelle action souhaitez-vous exécuter ?",
+                        "Destination file already exists. Which action would you like to take?",
+                    )).strong());
+                    ui.add_space(4.0);
+
+                    // Comparison side-by-side
+                    egui::Grid::new("collision_grid").show(ui, |ui| {
+                        ui.label("");
+                        ui.label(RichText::new(tr(lang, "Taille", "Size")).strong());
+                        ui.label(RichText::new(tr(lang, "Date", "Date")).strong());
+                        ui.end_row();
+
+                        let src_lbl = if col_modal.is_upload { tr(lang, "Source (Local)", "Source (Local)") } else { tr(lang, "Source (Distant)", "Source (Remote)") };
+                        let src_sz = if col_modal.is_upload { col_modal.local_size } else { col_modal.remote_size };
+                        let src_mt = if col_modal.is_upload { col_modal.local_mtime } else { col_modal.remote_mtime };
+                        let src_d = if src_mt > 0 { chrono::DateTime::from_timestamp(src_mt as i64, 0).map(|d| d.format("%d/%m/%y %H:%M").to_string()).unwrap_or_default() } else { "-".to_string() };
+
+                        ui.label(src_lbl);
+                        ui.label(format_bytes(src_sz));
+                        ui.label(src_d);
+                        ui.end_row();
+
+                        let dst_lbl = if col_modal.is_upload { tr(lang, "Cible (Distant)", "Target (Remote)") } else { tr(lang, "Cible (Local)", "Target (Local)") };
+                        let dst_sz = if col_modal.is_upload { col_modal.remote_size } else { col_modal.local_size };
+                        let dst_mt = if col_modal.is_upload { col_modal.remote_mtime } else { col_modal.local_mtime };
+                        let dst_d = if dst_mt > 0 { chrono::DateTime::from_timestamp(dst_mt as i64, 0).map(|d| d.format("%d/%m/%y %H:%M").to_string()).unwrap_or_default() } else { "-".to_string() };
+
+                        ui.label(dst_lbl);
+                        ui.label(format_bytes(dst_sz));
+                        ui.label(dst_d);
+                        ui.end_row();
+                    });
+
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(tr(lang, "Renommer en :", "Rename to:"));
+                        ui.text_edit_singleline(&mut col_modal.new_name);
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(tr(lang, "Écraser", "Overwrite")).clicked() {
+                            action = Some(ExistingFileRule::Overwrite);
+                            close = true;
+                        }
+                        if ui.button(tr(lang, "Reprendre", "Resume")).clicked() {
+                            action = Some(ExistingFileRule::Resume);
+                            close = true;
+                        }
+                        if ui.button(tr(lang, "Renommer", "Rename")).clicked() && !col_modal.new_name.trim().is_empty() {
+                            renamed_target = Some(col_modal.new_name.trim().to_string());
+                            close = true;
+                        }
+                        if ui.button(tr(lang, "Ignorer", "Skip")).clicked() {
+                            action = Some(ExistingFileRule::Skip);
+                            close = true;
+                        }
+                    });
+                });
+
+            if close {
+                collision_result = Some((action, renamed_target));
+            }
+        }
+
+        let resolved_collision =
+            collision_result.and_then(|res| self.collision_modal.take().map(|m| (m, res)));
+        if let Some((col_modal, (action, renamed_target))) = resolved_collision {
+            if let Some(act) = action {
+                match act {
+                    ExistingFileRule::Overwrite | ExistingFileRule::Resume => {
+                        let task_id = self.next_task_id;
+                        self.next_task_id += 1;
+                        if col_modal.is_upload {
+                            let _ = cmd_tx.send(BackendCommand::SftpUpload {
+                                local_path: col_modal.local_path.clone(),
+                                remote_path: col_modal.remote_path.clone(),
+                            });
+                            self.upload_queue.push(QueueTask {
+                                id: task_id,
+                                filename: col_modal.filename.clone(),
+                                local_path: col_modal.local_path.clone(),
+                                remote_path: col_modal.remote_path.clone(),
+                                size: col_modal.local_size,
+                                transferred: 0,
+                                is_upload: true,
+                                status: QueueTaskStatus::InProgress,
+                            });
+                        } else {
+                            let _ = cmd_tx.send(BackendCommand::SftpDownload {
+                                remote_path: col_modal.remote_path.clone(),
+                                local_path: col_modal.local_path.clone(),
+                            });
+                            self.download_queue.push(QueueTask {
+                                id: task_id,
+                                filename: col_modal.filename.clone(),
+                                local_path: col_modal.local_path.clone(),
+                                remote_path: col_modal.remote_path.clone(),
+                                size: col_modal.remote_size,
+                                transferred: 0,
+                                is_upload: false,
+                                status: QueueTaskStatus::InProgress,
+                            });
+                        }
+                    }
+                    ExistingFileRule::Skip => {
+                        self.log(
+                            tr(
+                                lang,
+                                &format!("Transfert ignoré (collision) : {}", col_modal.filename),
+                                &format!("Transfer skipped (collision): {}", col_modal.filename),
+                            ),
+                            false,
+                        );
+                    }
+                    ExistingFileRule::Ask => {}
+                }
+            } else if let Some(new_name) = renamed_target {
+                let task_id = self.next_task_id;
+                self.next_task_id += 1;
+                if col_modal.is_upload {
+                    let parent = col_modal
+                        .remote_path
+                        .rsplit_once('/')
+                        .map(|(p, _)| p)
+                        .unwrap_or("");
+                    let new_remote = if parent.ends_with('/') {
+                        format!("{}{}", parent, new_name)
+                    } else {
+                        format!("{}/{}", parent, new_name)
+                    };
+                    let _ = cmd_tx.send(BackendCommand::SftpUpload {
+                        local_path: col_modal.local_path.clone(),
+                        remote_path: new_remote.clone(),
+                    });
+                    self.upload_queue.push(QueueTask {
+                        id: task_id,
+                        filename: new_name,
+                        local_path: col_modal.local_path.clone(),
+                        remote_path: new_remote,
+                        size: col_modal.local_size,
+                        transferred: 0,
+                        is_upload: true,
+                        status: QueueTaskStatus::InProgress,
+                    });
+                } else {
+                    let new_local = col_modal
+                        .local_path
+                        .parent()
+                        .map(|p| p.join(&new_name))
+                        .unwrap_or_else(|| PathBuf::from(&new_name));
+                    let _ = cmd_tx.send(BackendCommand::SftpDownload {
+                        remote_path: col_modal.remote_path.clone(),
+                        local_path: new_local.clone(),
+                    });
+                    self.download_queue.push(QueueTask {
+                        id: task_id,
+                        filename: new_name,
+                        local_path: new_local,
+                        remote_path: col_modal.remote_path.clone(),
+                        size: col_modal.remote_size,
+                        transferred: 0,
+                        is_upload: false,
+                        status: QueueTaskStatus::InProgress,
+                    });
+                }
+            }
+        }
+
+        // 6. External Editor Settings Modal (Bitvise #450)
+        if self.show_editor_modal {
+            let mut close = false;
+            let mut current_ed = self.editor_path.clone();
+
+            egui::Window::new(tr(
+                lang,
+                "⚙ Configuration de l'éditeur externe (Bitvise #450)",
+                "⚙ External Editor Configuration (Bitvise #450)",
+            ))
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.label(tr(
+                    lang,
+                    "Choisissez le programme pour l'édition des fichiers :",
+                    "Choose program for editing files:",
+                ));
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    ui.label(tr(lang, "Exécutable :", "Executable:"));
+                    ui.add(egui::TextEdit::singleline(&mut current_ed).desired_width(240.0));
+                    if ui.button(tr(lang, "Parcourir...", "Browse...")).clicked() {
+                        let picked = rfd::FileDialog::new()
+                            .add_filter("Exécutable", &["exe", "cmd", "bat"])
+                            .pick_file();
+                        if let Some(file) = picked {
+                            current_ed = file.to_string_lossy().to_string();
+                        }
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(tr(lang, "Préréglages rapides :", "Quick presets:"))
+                        .small()
+                        .color(Color32::from_rgb(139, 148, 158)),
+                );
+                ui.horizontal(|ui| {
+                    if ui.small_button("Notepad").clicked() {
+                        current_ed = "notepad.exe".to_string();
+                    }
+                    if ui.small_button("VS Code").clicked() {
+                        current_ed = "code".to_string();
+                    }
+                    if ui.small_button("Notepad++").clicked() {
+                        current_ed = r"C:\Program Files\Notepad++\notepad++.exe".to_string();
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(tr(lang, "Valider", "Apply")).clicked() {
+                        self.editor_path = current_ed.trim().to_string();
+                        self.log(
+                            tr(
+                                lang,
+                                &format!("Éditeur configuré sur : {}", self.editor_path),
+                                &format!("Editor set to: {}", self.editor_path),
+                            ),
+                            false,
+                        );
+                        close = true;
+                    }
+                    if ui.button(tr(lang, "Fermer", "Close")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+            if close {
+                self.show_editor_modal = false;
+            }
+        }
     }
 }
 
@@ -2206,57 +2712,27 @@ mod tests {
 
     #[test]
     fn test_local_sorting_folders_first() {
-        let mut state = SftpClientState {
-            active_tab: SftpClientTab::Browse,
-            transfer_mode: TransferMode::Binary,
-            existing_file_rule: ExistingFileRule::Ask,
-            queue_paused: false,
-            local_path: PathBuf::from("."),
-            local_path_input: ".".to_string(),
-            local_filter: String::new(),
-            local_entries: vec![
-                LocalFileEntry {
-                    name: "zebra.txt".to_string(),
-                    path: PathBuf::from("zebra.txt"),
-                    is_dir: false,
-                    is_symlink: false,
-                    size: 100,
-                    mtime: 1000,
-                    file_type: "Fichier".to_string(),
-                },
-                LocalFileEntry {
-                    name: "alpha_dir".to_string(),
-                    path: PathBuf::from("alpha_dir"),
-                    is_dir: true,
-                    is_symlink: false,
-                    size: 0,
-                    mtime: 2000,
-                    file_type: "Dossier".to_string(),
-                },
-            ],
-            local_selected: HashSet::new(),
-            local_sort_col: SftpCol::Name,
-            local_sort_asc: true,
-            local_folders_first: true,
-            local_new_folder_name: String::new(),
-            show_local_mkdir: false,
-            remote_filter: String::new(),
-            remote_selected: HashSet::new(),
-            remote_sort_col: SftpCol::Name,
-            remote_sort_asc: true,
-            remote_folders_first: true,
-            remote_new_folder_name: String::new(),
-            show_remote_mkdir: false,
-            next_task_id: 1,
-            upload_queue: Vec::new(),
-            download_queue: Vec::new(),
-            logs: Vec::new(),
-            rename_modal: None,
-            move_modal: None,
-            symlink_modal: None,
-            delete_confirm: None,
-            watched_files: Vec::new(),
-        };
+        let mut state = SftpClientState::new();
+        state.local_entries = vec![
+            LocalFileEntry {
+                name: "zebra.txt".to_string(),
+                path: PathBuf::from("zebra.txt"),
+                is_dir: false,
+                is_symlink: false,
+                size: 100,
+                mtime: 1000,
+                file_type: "Fichier".to_string(),
+            },
+            LocalFileEntry {
+                name: "alpha_dir".to_string(),
+                path: PathBuf::from("alpha_dir"),
+                is_dir: true,
+                is_symlink: false,
+                size: 0,
+                mtime: 2000,
+                file_type: "Dossier".to_string(),
+            },
+        ];
 
         state.sort_local();
         assert_eq!(state.local_entries[0].name, "alpha_dir");
@@ -2304,7 +2780,7 @@ mod tests {
 
     #[test]
     fn test_remote_sorting_columns() {
-        let entries = vec![
+        let entries = [
             SftpFileEntry {
                 name: "zeta.txt".to_string(),
                 full_path: "/root/zeta.txt".to_string(),
@@ -2335,7 +2811,6 @@ mod tests {
         ];
 
         let mut sorted: Vec<&SftpFileEntry> = entries.iter().collect();
-        // Sort by size ascending, folders first
         let col = SftpCol::Size;
         let asc = true;
         let folders_first = true;
@@ -2363,5 +2838,17 @@ mod tests {
         assert_eq!(sorted[0].name, "beta_dir");
         assert_eq!(sorted[1].name, "zeta.txt");
         assert_eq!(sorted[2].name, "alpha.txt");
+    }
+
+    #[test]
+    fn test_bookmarks_and_editor_config() {
+        let mut state = SftpClientState::new();
+        assert!(!state.remote_bookmarks.is_empty());
+        state.remote_bookmarks.push("/opt".to_string());
+        assert!(state.remote_bookmarks.contains(&"/opt".to_string()));
+
+        assert_eq!(state.editor_path, "notepad.exe");
+        state.editor_path = "code".to_string();
+        assert_eq!(state.editor_path, "code");
     }
 }

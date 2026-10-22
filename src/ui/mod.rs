@@ -4461,6 +4461,25 @@ impl CutySshApp {
             &mut close_requested,
         );
 
+        if let Some(entry) = tab.sftp_client.props_request.take() {
+            let mode = entry.permissions & 0o7777;
+            tab.sftp_props = Some(SftpPropsDialog {
+                entry,
+                mode,
+                mode_text: format!("{mode:04o}"),
+                link_name: String::new(),
+                sha256: None,
+                hashing: false,
+            });
+        }
+
+        if tab.sftp_client.mirror_request {
+            tab.sftp_client.mirror_request = false;
+            tab.sftp_mirror.open = true;
+            tab.sftp_mirror.local_dir = tab.sftp_client.local_path.to_string_lossy().to_string();
+            tab.sftp_mirror.remote_dir = tab.sftp_current_path.clone();
+        }
+
         if close_requested {
             tab.show_sftp_full = false;
         }
