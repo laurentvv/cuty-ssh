@@ -493,7 +493,7 @@ pub fn launch_pageant_with_keys(configured_path: &str, ppk_files: &[String]) -> 
 
     if !exe.exists() {
         anyhow::bail!(
-            "Pageant executable not found at \"{}\". Verify PuTTY or KiTTY is installed or specify the path to pageant.exe.",
+            "Pageant executable not found at \"{}\". Install PuTTY (winget install SimonTatham.PuTTY) or download from https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html",
             exe.display()
         );
     }

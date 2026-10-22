@@ -5656,21 +5656,158 @@ impl CutySshApp {
                         "\u{E40C} Pageant Integration (PuTTY SSH Agent)",
                     ));
                     ui.add_space(4.0);
+
+                    let pageant_path_buf = PathBuf::from(&self.config.pageant_path);
+                    let pageant_found = !self.config.pageant_path.trim().is_empty() && pageant_path_buf.is_file();
+
+                    if pageant_found {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(tr(
+                                    lang,
+                                    "✔ Exécutable Pageant détecté :",
+                                    "✔ Pageant executable detected:",
+                                ))
+                                .color(Color32::from_rgb(76, 175, 80))
+                                .strong(),
+                            );
+                            ui.monospace(&self.config.pageant_path);
+                            if let Some(parent) = pageant_path_buf.parent()
+                                && ui
+                                    .small_button(tr(lang, "📁 Ouvrir dossier", "📁 Open Folder"))
+                                    .on_hover_text(tr(
+                                        lang,
+                                        "Ouvrir l'emplacement de Pageant dans l'Explorateur Windows",
+                                        "Open Pageant location in Windows Explorer",
+                                    ))
+                                    .clicked()
+                            {
+                                let _ = open::that(parent);
+                            }
+                            if ui
+                                .small_button(tr(lang, "🔄 Re-détecter", "🔄 Re-detect"))
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Relancer la recherche automatique de Pageant / KiTTY sur le système",
+                                    "Re-run auto-detection for Pageant / KiTTY across the system",
+                                ))
+                                .clicked()
+                            {
+                                self.config.pageant_path.clear();
+                                self.resolve_pageant_path();
+                            }
+                        });
+                    } else {
+                        // Guide when Pageant is not found
+                        egui::Frame::NONE
+                            .fill(Color32::from_rgb(32, 24, 16))
+                            .corner_radius(6.0)
+                            .inner_margin(egui::Margin::same(8))
+                            .stroke(Stroke::new(1.0, Color32::from_rgb(210, 153, 34)))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(tr(
+                                            lang,
+                                            "⚠ Exécutable Pageant introuvable sur votre système",
+                                            "⚠ Pageant executable not found on your system",
+                                        ))
+                                        .color(Color32::from_rgb(227, 179, 65))
+                                        .strong(),
+                                    );
+                                });
+                                ui.label(
+                                    RichText::new(tr(
+                                        lang,
+                                        "Pageant est l'agent SSH de PuTTY qui conserve vos clés .ppk déverrouillées en mémoire vive sans retaper vos passphrases à chaque connexion.",
+                                        "Pageant is PuTTY's official SSH authentication agent that keeps your decrypted .ppk keys in memory so you don't have to re-enter passphrases.",
+                                    ))
+                                    .small()
+                                    .color(Color32::from_rgb(180, 190, 200)),
+                                );
+                                ui.add_space(4.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(RichText::new(tr(lang, "Comment l'obtenir :", "How to get it:")).strong());
+                                    if ui
+                                        .button(
+                                            RichText::new(tr(
+                                                lang,
+                                                "🌐 Télécharger Pageant (Site officiel PuTTY)",
+                                                "🌐 Download Pageant (Official PuTTY Site)",
+                                            ))
+                                            .color(Color32::from_rgb(88, 166, 255)),
+                                        )
+                                        .on_hover_text("https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html")
+                                        .clicked()
+                                    {
+                                        let _ = open::that("https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html");
+                                    }
+
+                                    if ui
+                                        .button(
+                                            RichText::new(tr(
+                                                lang,
+                                                "📦 Copier commande WinGet (winget install SimonTatham.PuTTY)",
+                                                "📦 Copy WinGet command (winget install SimonTatham.PuTTY)",
+                                            ))
+                                            .color(Color32::from_rgb(86, 211, 100)),
+                                        )
+                                        .clicked()
+                                    {
+                                        ui.ctx().copy_text("winget install SimonTatham.PuTTY".to_string());
+                                        self.set_toast(tr(
+                                            lang,
+                                            "Commande WinGet copiée ! Collez-la dans PowerShell pour installer PuTTY & Pageant.",
+                                            "WinGet command copied! Paste it into PowerShell to install PuTTY & Pageant.",
+                                        ));
+                                    }
+
+                                    if ui
+                                        .button(
+                                            RichText::new(tr(
+                                                lang,
+                                                "🐱 Télécharger KiTTY",
+                                                "🐱 Download KiTTY",
+                                            ))
+                                            .color(Color32::from_rgb(210, 153, 34)),
+                                        )
+                                        .on_hover_text("http://www.9bis.net/kitty/")
+                                        .clicked()
+                                    {
+                                        let _ = open::that("http://www.9bis.net/kitty/");
+                                    }
+                                });
+                            });
+                    }
+
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.label(tr(
                             lang,
-                            "Exécutable Pageant :",
-                            "Pageant Executable:",
+                            "Chemin Pageant :",
+                            "Pageant Path:",
                         ));
-                        ui.add(
+                        if ui.add(
                             egui::TextEdit::singleline(&mut self.config.pageant_path)
-                                .desired_width(340.0),
-                        );
+                                .desired_width(340.0)
+                                .hint_text(tr(
+                                    lang,
+                                    "Ex: C:\\Program Files\\PuTTY\\pageant.exe ou D:\\Doc\\Kitty\\pageant.exe",
+                                    "E.g.: C:\\Program Files\\PuTTY\\pageant.exe or D:\\Doc\\Kitty\\pageant.exe",
+                                )),
+                        ).lost_focus() {
+                            let _ = self.config.save();
+                        }
                         if ui
-                            .small_button(tr(lang, "\u{E256} Parcourir", "\u{E256} Browse"))
+                            .small_button(tr(lang, "\u{E256} Parcourir…", "\u{E256} Browse…"))
+                            .on_hover_text(tr(
+                                lang,
+                                "Sélectionner manuellement pageant.exe ou kageant.exe sur vos disques",
+                                "Manually browse and select pageant.exe or kageant.exe on disk",
+                            ))
                             .clicked()
                             && let Some(p) = rfd::FileDialog::new()
-                                .add_filter("Executable", &["exe"])
+                                .add_filter("Pageant Executable", &["exe"])
                                 .pick_file()
                         {
                             self.config.pageant_path = p.to_string_lossy().to_string();

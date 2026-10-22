@@ -453,6 +453,11 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
+                    "• Où trouver Pageant : Si Pageant n'est pas encore installé sur votre système, Cuty-SSH affiche un guide dans la modale « 🔑 Clés » avec liens directs vers le site officiel de PuTTY (https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html) ou via WinGet (« winget install SimonTatham.PuTTY »). KiTTY et son agent kageant.exe sont également supportés.",
+                    "• Where to get Pageant: If Pageant is not yet installed on your system, Cuty-SSH displays a guide in the '🔑 Keys' modal with direct links to the official PuTTY site (https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html) or via WinGet ('winget install SimonTatham.PuTTY'). KiTTY and its kageant.exe agent are also supported.",
+                ),
+                tr(
+                    lang,
                     "• Outil PuTTYgen intégré (bouton « 🔑 Clés ») : Inspectez l'empreinte SHA-256 d'une clé, copiez la ligne authorized_keys, convertissez .ppk ↔ OpenSSH, ou générez une nouvelle clé .ppk v3.",
                     "• Built-in PuTTYgen tool ('🔑 Keys' button): Inspect SHA-256 fingerprints, copy the authorized_keys line, convert .ppk ↔ OpenSSH, or generate a new .ppk v3 key.",
                 ),
