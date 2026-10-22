@@ -19,7 +19,7 @@
   <img src="assets/cuty_ssh_icon.png" width="88" alt="Cuty-SSH App Icon" style="border-radius: 18px;" />
 </p>
 
-[**Download Latest Release (`v0.7.0`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#interactive-animated-tour--cockpit-preview) · [**Key Features**](#key-features) · [**CLI Automation (`plink` mode)**](#8-universal-cli-launcher--headless-automation-plink--ssh-alternative) · [**1-Click `ssh-copy-id`**](#1-click-ssh-copy-id--automatic-password-to-key-migration) · [**Bastion (`-J`)**](#ssh-bastion--jump-host--j--proxyjump) · [**Architecture**](#architecture) · [**Build from Source**](#build-from-source)
+[**⬇ Download Latest Release (`v0.7.0`)**](#download--quick-start) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#screenshots--animated-tour) · [**Key Features**](#key-features) · [**CLI Automation**](#8-universal-cli-launcher--headless-automation-plink--ssh-alternative) · [**Architecture**](#architecture) · [**Contributing**](#contributing)
 
 </div>
 
@@ -35,9 +35,38 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 - Provision new servers in **1 click (`ssh-copy-id`)**: connect once with a password, deploy your Primary SSH Key to `~/.ssh/authorized_keys`, and let Cuty-SSH automatically switch the saved session profile to passwordless key authentication while wiping the stored password.
 - Route sessions through **SSH Bastions / Jump Hosts (`-J` / `ProxyJump`)**, manage **TOFU `known_hosts` SHA-256 fingerprints**, encrypt credentials at rest with **Windows DPAPI**, transfer files via **Drag-and-Drop streaming SFTP**, and monitor live remote server telemetry (`CPU load`, `RAM`, `Disk`, `Uptime`).
 
+> [!IMPORTANT]
+> **Zero plaintext secrets on disk** — passwords and key passphrases are stored exclusively through Windows **DPAPI** encryption (bound to your user account) and wiped from memory with `zeroize`. **Zero external binaries** — everything (SSH2, SFTP, terminal, key formats) is implemented in Rust; `putty.exe`/`kitty.exe`/`plink.exe` are never invoked.
+
+<details>
+<summary><strong>📑 Table of Contents</strong></summary>
+
+1. [Screenshots & Animated Tour](#screenshots--animated-tour)
+2. [Feature Matrix: Why Cuty-SSH?](#feature-matrix-why-cuty-ssh)
+3. [Key Features](#key-features)
+   - [1. Native PuTTY Key (`.ppk`), Pageant & Windows OpenSSH Agent](#1-native-putty-key-ppk-pageant--windows-openssh-agent)
+   - [2. Multi-Protocol Engine, Bastion (`ProxyJump`) & Security Vault](#2-multi-protocol-engine-bastion-proxyjump--security-vault)
+   - [3. Split View, Advanced SFTP Client (Bitvise/WinSCP Parity) & High-Performance Terminal](#3-split-view-advanced-sftp-client-bitvisewinscp-parity--high-performance-terminal)
+   - [4. Session Organization, Tags (`#tag`) & SysAdmin Network Toolkit](#4-session-organization-tags-tag--sysadmin-network-toolkit)
+   - [5. Bilingual UI (`EN / FR`) & In-App Illustrated User Guide](#5-bilingual-ui-en--fr--in-app-illustrated-user-guide--help)
+   - [6. Fleet Management, Zero-Trust Edge, Session Recording & Audit Trail](#6-fleet-management-zero-trust-edge-session-recording--audit-trail)
+   - [7. Resilience, Scripting & Tunnels](#7-resilience-scripting--tunnels)
+   - [8. Universal CLI Launcher & Headless Automation (`plink` / `ssh` Alternative)](#8-universal-cli-launcher--headless-automation-plink--ssh-alternative)
+4. [Mouse & Keyboard Shortcuts](#mouse--keyboard-shortcuts)
+5. [Download & Quick Start](#download--quick-start)
+6. [Architecture](#architecture)
+7. [Release Notes](#release-notes)
+8. [Contributing](#contributing)
+9. [Security](#security)
+10. [Support](#support)
+11. [Acknowledgments](#acknowledgments)
+12. [License](#license)
+
+</details>
+
 ---
 
-## Interactive Animated Tour & Cockpit Preview
+## Screenshots & Animated Tour
 
 ### Animated Feature Tour (`assets/cuty_ssh_demo.gif`)
 > Live walkthrough of the **SysAdmin Cockpit**, **Bastion / Jump Host (`-J`) Session Editor**, **Built-in Illustrated User Guide (`📖 Help`)**, **Network & IPv4 CIDR Toolkit**, **TOFU Known Hosts (`🛡 Hosts`)**, and **PuTTY `.ppk` Key Inspector & Pageant Manager**:
@@ -154,6 +183,7 @@ Connect to isolated private or DMZ servers transparently through an intermediate
   - Parses standard `~/.ssh/config` files (`Host`, `HostName`, `User`, `Port`, `IdentityFile`, `ProxyJump`, `LocalForward`, `RemoteForward`) and imports them with tags and tunnels.
   - Automatic & manual import from `HKCU\Software\SimonTatham\PuTTY\Sessions`.
   - **`Import ▾ → KiTTY…`**: pick a portable KiTTY folder (the one containing `Sessions/`) to import all its sessions; `Import ▾ → Sync` re-imports it afterwards.
+  - **`Import ▾ → Bitvise…`**: reads `.tlp` / `.bscp` profiles (host, port, user).
 - **SysAdmin Diagnostic Toolkit (`🛠 Network & CIDR`) & Command Palette (`Ctrl+K`)**:
   - Fuzzy session & command launcher (`Ctrl+K`).
   - Multi-threaded async **TCP Port Scanner & SSH Banner Grabber**.
@@ -197,6 +227,8 @@ Connect to isolated private or DMZ servers transparently through an intermediate
   - Full-text search and event filter chips (`CONNECT`, `DISCONNECT`, `ERROR`, `DEPLOY_KEY`).
   - 1-click **CSV** and **JSON** exports for security audits and reporting.
   - Strictly compliant with our **Zero Plaintext Secrets** policy (no credentials, passwords, or private keys are ever written to the audit log).
+
+---
 
 ### 7. Resilience, Scripting & Tunnels
 
@@ -348,6 +380,13 @@ General Options:
 
 ## Download & Quick Start
 
+> [!TIP]
+> Stay up to date with `winget upgrade LaurentVolff.Cuty-SSH`.
+
+### Requirements
+- **Windows 10 or 11 (x64)** — no administrator rights required (per-user install or fully portable).
+- A GPU with **DirectX 12**, Vulkan, or OpenGL support (`wgpu` backend; defaults to DirectX 12, override with `WGPU_BACKEND=vulkan` or `WGPU_BACKEND=gl`).
+
 ### Option 1 — Windows Installer (.msi) & WinGet (Recommended)
 - **Direct Download**: Download and run [**`cuty-ssh-v0.7.0-windows-x64.msi`**](https://github.com/laurentvv/cuty-ssh/releases/download/v0.7.0/cuty-ssh-v0.7.0-windows-x64.msi).
   - Installs cleanly to `%LOCALAPPDATA%\Programs\Cuty-SSH` without administrator/UAC prompts.
@@ -364,8 +403,10 @@ General Options:
 3. Cuty-SSH automatically creates a local **`cuty-ssh-portable/`** directory next to the executable containing:
    - `config.json` (DPAPI-protected session profiles, folders, tags, snippets, UI language & theme)
    - `known_hosts.json` (TOFU SHA-256 server host key fingerprints)
+   - `audit_log.json` (local zero-secret audit trail)
    - `keys/` (auto-generated or imported `.ppk` / OpenSSH keys, including your Primary SSH Key)
    - `Sessions/` (individual portable session files)
+   - `recordings/` (Asciinema v2 `.cast` session recordings)
 
 ### Option 3 — Build from Source
 Requires the **Rust 2024 toolchain** (`rustup` stable on Windows 10/11 x64):
@@ -374,7 +415,7 @@ Requires the **Rust 2024 toolchain** (`rustup` stable on Windows 10/11 x64):
 git clone https://github.com/laurentvv/cuty-ssh.git
 cd cuty-ssh
 
-# Format check, Clippy linter, and unit tests (42 tests)
+# Format check, Clippy linter, and unit tests (55 tests)
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
@@ -395,17 +436,77 @@ The compiled executable is generated at `target/release/cuty-ssh.exe`.
 | :--- | :--- | :--- |
 | **Entrypoint & CLI Launcher** | [`src/main.rs`](src/main.rs) | Universal CLI connection launcher (`CliTarget` ad-hoc SSH/SFTP/Telnet/Shell, URI scheme router, PuTTY compatibility flags), parent console attacher, native `eframe 0.37` viewport bootstrap (`1320×820`), DirectX 12 `wgpu` backend, Tokio runtime setup, and test suite. |
 | **Config, DPAPI Vault & Audit Storage** | [`src/config/mod.rs`](src/config/mod.rs) | `SessionProfile`, `AppConfig`, `UiLanguage` (`English` / `French`), Windows DPAPI encryption (`CryptProtectData`), TOFU `known_hosts.json` store, `AuditLogEntry` append-only engine, Edge Gateway presets, `~/.ssh/config` parser, and Registry PuTTY importer. |
-| **PuTTY `.ppk`, Agents & `ssh-copy-id`** | [`src/ssh/ppk.rs`](src/ssh/ppk.rs) | `.ppk` v2/v3 & OpenSSH/PEM/`.pub` inspection, `zeroize`-hardened decoding, `.ppk` v3 encoder, Primary Key resolver/generator, `ssh-copy-id` POSIX script builder, and Pageant/OpenSSH Agent client helpers. |
+| **PuTTY `.ppk`, Agents & `ssh-copy-id`** | [`src/ssh/mod.rs`](src/ssh/mod.rs), [`src/ssh/ppk.rs`](src/ssh/ppk.rs) | `.ppk` v2/v3 & OpenSSH/PEM/`.pub` inspection, `zeroize`-hardened decoding, `.ppk` v3 encoder, Primary Key resolver/generator, `ssh-copy-id` POSIX script builder, and Pageant/OpenSSH Agent client helpers. |
 | **VT100 Terminal Engine & Fast Selection** | [`src/terminal/mod.rs`](src/terminal/mod.rs) | `vte 0.15`-backed terminal grid, compact 1-byte bitflag `TerminalCell`, alternate screen (`?1049h`), 256-color/TrueColor SGR, scrollback, double-click word/token and triple-click line selection, search, and URL detection. |
 | **Asciinema v2 Session Recorder & Player** | [`src/terminal/recording.rs`](src/terminal/recording.rs) | Standard `.cast` JSON Lines session recorder, event parser, and interactive playback engine. |
 | **Async Protocols, Bastion & SFTP** | [`src/protocols/mod.rs`](src/protocols/mod.rs) | Async SSH2 (`russh`), `ProxyJump` (`direct-tcpip`), TOFU host key check, `DeployPublicKey` (`ssh-copy-id` exec channel), streaming SFTP (`russh-sftp`), Telnet RFC 854, Raw TCP, Windows ConPTY (`portable-pty`), live SSH telemetry, and IPv4 CIDR calculator. |
-| **Desktop UI & SysAdmin Cockpit** | [`src/ui/mod.rs`](src/ui/mod.rs) | `egui 0.37` / `eframe 0.37` desktop interface: Dark-Tech theme, bilingual EN/FR localization, interactive Cockpit dashboard, Command Palette (`Ctrl+K`), 1-click Password-to-Key migration, Fleet Health check, and Network Toolkit. |
+| **Headless CLI Automation Engine** | [`src/protocols/cli.rs`](src/protocols/cli.rs) | `CliAction` dispatch (remote `exec`, `--sftp-put`/`--sftp-get` transfers, `--tunnel` port forwarding), unbuffered stdout/stderr streaming, OpenSSH-compatible exit-code propagation (255 on failure), and strict `--batch` mode. |
+| **SFTP Directory Mirror Engine** | [`src/protocols/mirror.rs`](src/protocols/mirror.rs) | One-way local ↔ remote directory synchronization: delta planning by size/mtime (with SFTP timestamp tolerance), local & remote tree walkers, and safe copy/delete execution plans. |
+| **Desktop UI & SysAdmin Cockpit** | [`src/ui/mod.rs`](src/ui/mod.rs) | `egui 0.37` / `eframe 0.37` desktop interface: bilingual EN/FR localization, interactive Cockpit dashboard, Command Palette (`Ctrl+K`), 1-click Password-to-Key migration, Fleet Health check, and Network Toolkit. |
+| **Central Visual Theme** | [`src/ui/theme.rs`](src/ui/theme.rs) | Shared Dark-Tech palette (accent, surfaces, borders), spacing & corner-radius tokens, text styles, and embedded **Phosphor** icon font loading (`assets/fonts/Phosphor.ttf`). |
 | **Advanced Dual-Pane SFTP Client** | [`src/ui/sftp_client.rs`](src/ui/sftp_client.rs) | Dual-pane SFTP client (Bitvise SSH Client 9.66 & WinSCP 6.7 clean-room parity), external editor configuration with auto-upload file watcher, collision resolution modal, directory bookmarks (`📑`), interactive chmod permissions modal (`rwx` & octal), and transfer queues. |
 | **Batched Terminal & Split View** | [`src/ui/terminal_view.rs`](src/ui/terminal_view.rs) | Run-length batched terminal renderer, Horizontal/Vertical Split View panes, Broadcast Input mode, and VT key encoder. |
 | **Local Audit Trail Modal** | [`src/ui/audit_modal.rs`](src/ui/audit_modal.rs) | Full-text audit log explorer, event filters, duration tracking, and 1-click CSV/JSON export. |
 | **Asciinema Replay Player Modal** | [`src/ui/replay_modal.rs`](src/ui/replay_modal.rs) | In-app session replay player with interactive timeline scrubber and speed multiplier (`0.5x`–`4x`). |
 | **Known Hosts TOFU Modal** | [`src/ui/known_hosts_modal.rs`](src/ui/known_hosts_modal.rs) | TOFU `known_hosts` SHA-256 fingerprint manager and `~/.ssh/config` import dialog. |
 | **Built-in Illustrated User Guide** | [`src/ui/help_modal.rs`](src/ui/help_modal.rs) | In-app bilingual User Guide modal (`📖 Help`), 9 illustrated chapters, embedded Cockpit screenshot texture, and standalone HTML User Guide exporter. |
+
+---
+
+## Release Notes
+
+Detailed notes accompany every release:
+- Current: [`RELEASE_NOTES_v0.7.0.md`](RELEASE_NOTES_v0.7.0.md)
+- Full history: [**GitHub Releases**](https://github.com/laurentvv/cuty-ssh/releases)
+
+---
+
+## Contributing
+
+Contributions are welcome — bug reports, feature ideas, documentation improvements, and pull requests.
+
+1. Fork the repository and create a descriptive branch (`feat/…` or `fix/…`).
+2. Make your changes, keeping the codebase **Rust 2024 / Windows-first** and honoring the business invariants: zero plaintext secrets on disk, zero external binary dependencies (`putty.exe`/`kitty.exe` are never invoked), and atomic configuration saves.
+3. Run the full quality gate (same as CI) — all three must pass before committing:
+   ```powershell
+   cargo fmt --all -- --check
+   cargo clippy --all-targets -- -D warnings
+   cargo test
+   ```
+4. Open a pull request against `main` describing **what** changed and **why**.
+
+CI ([`ci.yml`](.github/workflows/ci.yml)) runs the same gate on every push and pull request (`windows-latest`).
+
+---
+
+## Security
+
+> [!WARNING]
+> Cuty-SSH implements Trust-On-First-Use (TOFU) host key verification: the **first** connection to a new server records its SHA-256 fingerprint, and any later mismatch **blocks the connection** with a MITM alert. Verify fingerprints on first connect on networks you do not control.
+
+- **Secrets at rest**: passwords and key passphrases are encrypted with Windows **DPAPI** (bound to your Windows account) — never stored in plaintext, never written to the Registry or the audit log, and wiped from memory with `zeroize`.
+- **No telemetry**: Cuty-SSH performs no outbound requests beyond the sessions you open.
+- **Reporting a vulnerability**: please use [GitHub's private vulnerability reporting](https://github.com/laurentvv/cuty-ssh/security/advisories/new) rather than opening a public issue.
+
+---
+
+## Support
+
+- 🐛 **Bug reports & feature requests**: [open an issue](https://github.com/laurentvv/cuty-ssh/issues/new/choose)
+- 💬 **Questions & discussions**: [GitHub Discussions](https://github.com/laurentvv/cuty-ssh/discussions)
+- 📖 **In-app documentation**: launch Cuty-SSH and press **`📖 Help`** (9 illustrated chapters + HTML export)
+
+---
+
+## Acknowledgments
+
+Cuty-SSH is a clean-room implementation built on outstanding open-source foundations:
+
+- **[russh](https://crates.io/crates/russh)** & **[russh-sftp](https://crates.io/crates/russh-sftp)** — async SSH2 & SFTP protocol implementation
+- **[egui](https://github.com/emilk/egui)** / **[eframe](https://github.com/emilk/egui)** — immediate-mode GUI & wgpu/DirectX 12 rendering
+- **[vte](https://crates.io/crates/vte)** — VT100/ANSI parser · **[portable-pty](https://crates.io/crates/portable-pty)** — Windows ConPTY bridge
+- **[Phosphor Icons](https://phosphoricons.com)** — embedded icon font ([license](assets/fonts/PHOSPHOR-LICENSE.txt))
+- Inspired by the workflows of **PuTTY / KiTTY**, **Bitvise SSH Client**, **WinSCP**, and **OpenSSH** — interoperable with their key formats, agents, and configs, without wrapping their binaries.
 
 ---
 
