@@ -121,7 +121,7 @@ pub struct SymlinkModal {
     pub link_name: String,
 }
 
-pub struct BitviseSftpState {
+pub struct SftpClientState {
     pub active_tab: SftpClientTab,
     pub transfer_mode: TransferMode,
     pub existing_file_rule: ExistingFileRule,
@@ -171,13 +171,13 @@ pub enum SftpCol {
     Date,
 }
 
-impl Default for BitviseSftpState {
+impl Default for SftpClientState {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl BitviseSftpState {
+impl SftpClientState {
     pub fn new() -> Self {
         let initial_local = std::env::var("USERPROFILE")
             .map(PathBuf::from)
@@ -1781,7 +1781,7 @@ mod tests {
 
     #[test]
     fn test_local_sorting_folders_first() {
-        let mut state = BitviseSftpState {
+        let mut state = SftpClientState {
             active_tab: SftpClientTab::Browse,
             transfer_mode: TransferMode::Binary,
             existing_file_rule: ExistingFileRule::Ask,
@@ -1839,7 +1839,7 @@ mod tests {
 
     #[test]
     fn test_log_bounding() {
-        let mut state = BitviseSftpState::new();
+        let mut state = SftpClientState::new();
         for i in 0..600 {
             state.log(format!("msg {i}"), false);
         }
