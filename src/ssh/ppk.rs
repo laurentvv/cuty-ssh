@@ -375,25 +375,115 @@ fn wrap_base64_lines(s: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
-/// Resolves the path to `pageant.exe`, prioritizing `"C:\Program Files\PuTTY\pageant.exe"`.
-pub fn resolve_pageant_executable(configured_path: &str) -> Option<PathBuf> {
-    let candidates = [
-        configured_path,
+/// Resolves the path to `pageant.exe` or `kageant.exe` using configured path, provided hints,
+/// standard install directories, KiTTY paths, and the system PATH.
+pub fn resolve_pageant_executable_with_hints(
+    configured_path: &str,
+    hints: &[&str],
+) -> Option<PathBuf> {
+    // 1. Direct configured path if valid
+    let trimmed = configured_path.trim();
+    if !trimmed.is_empty() {
+        let p = PathBuf::from(trimmed);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // 2. Check hints (directory, file parent, grandparent) for pageant.exe / kageant.exe
+    for hint in hints {
+        let h_trim = hint.trim();
+        if h_trim.is_empty() {
+            continue;
+        }
+        let hint_path = PathBuf::from(h_trim);
+        let mut dirs_to_check = Vec::new();
+        if hint_path.is_dir() {
+            dirs_to_check.push(hint_path.clone());
+        } else if let Some(parent) = hint_path.parent() {
+            dirs_to_check.push(parent.to_path_buf());
+            if let Some(grandparent) = parent.parent() {
+                dirs_to_check.push(grandparent.to_path_buf());
+            }
+        }
+        for dir in dirs_to_check {
+            for exe_name in ["pageant.exe", "kageant.exe"] {
+                let candidate = dir.join(exe_name);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    // 3. Known standard & portable paths
+    let standard_candidates = [
         r"C:\Program Files\PuTTY\pageant.exe",
         r"C:\Program Files (x86)\PuTTY\pageant.exe",
+        r"C:\Program Files\KiTTY\pageant.exe",
+        r"C:\Program Files (x86)\KiTTY\pageant.exe",
+        r"C:\Program Files\KiTTY\kageant.exe",
+        r"C:\Program Files (x86)\KiTTY\kageant.exe",
+        r"D:\Doc\Kitty\pageant.exe",
+        r"C:\Tools\kitty\pageant.exe",
+        r"C:\Tools\putty\pageant.exe",
+        r"D:\Tools\kitty\pageant.exe",
+        r"D:\Tools\putty\pageant.exe",
+        r"C:\Program Files\TortoiseGit\bin\pageant.exe",
+        r"C:\Program Files\Git\usr\bin\pageant.exe",
     ];
-    for c in candidates {
+    for c in standard_candidates {
         let p = PathBuf::from(c);
         if p.exists() {
             return Some(p);
         }
     }
+
+    // 4. Check PATH environment variable
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            for exe_name in ["pageant.exe", "kageant.exe"] {
+                let p = dir.join(exe_name);
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+
+    // 5. Check next to current executable
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        for exe_name in ["pageant.exe", "kageant.exe"] {
+            let p = dir.join(exe_name);
+            if p.exists() {
+                return Some(p);
+            }
+            if let Some(parent) = dir.parent() {
+                let p2 = parent.join(exe_name);
+                if p2.exists() {
+                    return Some(p2);
+                }
+            }
+        }
+    }
+
     None
 }
 
-/// Launches Pageant (`C:\Program Files\PuTTY\pageant.exe`) with an optional list of `.ppk` key files.
+/// Resolves the path to `pageant.exe`, prioritizing `configured_path` then standard paths.
+pub fn resolve_pageant_executable(configured_path: &str) -> Option<PathBuf> {
+    resolve_pageant_executable_with_hints(configured_path, &[])
+}
+
+/// Launches Pageant with an optional list of `.ppk` key files.
 pub fn launch_pageant_with_keys(configured_path: &str, ppk_files: &[String]) -> Result<String> {
-    let exe = resolve_pageant_executable(configured_path).unwrap_or_else(|| {
+    let mut hints: Vec<&str> = Vec::new();
+    for f in ppk_files {
+        hints.push(f.as_str());
+    }
+    let exe = resolve_pageant_executable_with_hints(configured_path, &hints).unwrap_or_else(|| {
         if configured_path.trim().is_empty() {
             PathBuf::from(r"C:\Program Files\PuTTY\pageant.exe")
         } else {
@@ -403,8 +493,8 @@ pub fn launch_pageant_with_keys(configured_path: &str, ppk_files: &[String]) -> 
 
     if !exe.exists() {
         anyhow::bail!(
-            "Pageant executable not found at {:?}. Verify PuTTY is installed at \"C:\\Program Files\\PuTTY\\pageant.exe\".",
-            exe
+            "Pageant executable not found at \"{}\". Verify PuTTY or KiTTY is installed or specify the path to pageant.exe.",
+            exe.display()
         );
     }
 
@@ -415,7 +505,7 @@ pub fn launch_pageant_with_keys(configured_path: &str, ppk_files: &[String]) -> 
         }
     }
     cmd.spawn()
-        .with_context(|| format!("Failed to launch {:?}", exe))?;
+        .with_context(|| format!("Failed to launch {}", exe.display()))?;
 
     if ppk_files.is_empty() {
         Ok(format!("Pageant démarré ({})", exe.display()))
@@ -555,4 +645,45 @@ pub fn build_ssh_copy_id_script(openssh_pubkey: &str) -> Result<String> {
         "umask 077 && mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && if grep -qxF '{escaped}' ~/.ssh/authorized_keys 2>/dev/null; then echo CUTY_SSH_KEY_ALREADY_PRESENT; else printf '\\n%s\\n' '{escaped}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo CUTY_SSH_KEY_INSTALLED_OK; fi"
     );
     Ok(script)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_pageant_executable_with_hints_finds_in_key_dir() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("cuty_test_pageant_{}", uuid::Uuid::new_v4()));
+        let sub_key_dir = temp_dir.join("key");
+        fs::create_dir_all(&sub_key_dir).unwrap();
+
+        let fake_pageant = temp_dir.join("pageant.exe");
+        fs::write(&fake_pageant, b"MZ").unwrap();
+
+        let fake_key = sub_key_dir.join("test.ppk");
+        fs::write(&fake_key, b"fake ppk").unwrap();
+
+        let resolved = resolve_pageant_executable_with_hints(
+            r"C:\NonExistent\pageant.exe",
+            &[fake_key.to_str().unwrap()],
+        );
+
+        assert_eq!(resolved, Some(fake_pageant));
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_resolve_pageant_executable_direct_valid_path() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("cuty_test_pageant_direct_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let fake_pageant = temp_dir.join("custom_pageant.exe");
+        fs::write(&fake_pageant, b"MZ").unwrap();
+
+        let resolved = resolve_pageant_executable_with_hints(fake_pageant.to_str().unwrap(), &[]);
+
+        assert_eq!(resolved, Some(fake_pageant));
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 }

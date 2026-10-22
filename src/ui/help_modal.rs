@@ -677,8 +677,8 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
-                    "• Ligne de commande : « cuty-ssh --session \"Prod Web\" » ouvre une session enregistrée au démarrage (nom, fragment de nom unique ou UUID) ; « cuty-ssh --list » affiche les sessions.",
-                    "• Command line: 'cuty-ssh --session \"Prod Web\"' opens a saved session at startup (name, unique name fragment or UUID); 'cuty-ssh --list' prints the sessions.",
+                    "• Ligne de commande & Automatisation headless : « cuty-ssh -load \"Nom\" --exec \"uptime\" » (ou avec « -- ») exécute une commande distante sans interface graphique et streame les flux stdout/stderr en direct ; « -m script.sh » exécute un script local ; « --batch » interdit tout prompt interactif (mode CI/scripts, erreur 255) ; « --timeout N » limite la durée en secondes ; « --sftp-put » et « --sftp-get » (-r pour récursif) transfèrent des fichiers en CLI ; « --tunnel 8080:localhost:80 » ouvre un tunnel local au premier plan.",
+                    "• Command Line & Headless Automation: 'cuty-ssh -load \"Name\" --exec \"uptime\"' (or trailing '--') runs remote SSH commands headless with unbuffered live stdout/stderr streaming; '-m script.sh' executes local script files; '--batch' enforces non-interactive execution for CI/cron (exit 255); '--timeout N' bounds execution time; '--sftp-put' and '--sftp-get' (-r for recursive) transfer files via CLI; '--tunnel 8080:localhost:80' opens a local port forwarding tunnel in foreground.",
                 ),
                 tr(
                     lang,
@@ -1079,8 +1079,8 @@ impl CutySshApp {
             ),
             c9_b3 = tr(
                 lang,
-                "<code>cuty-ssh --session \"Nom\"</code> ouvre une session au démarrage ; <code>cuty-ssh --list</code> liste les sessions.",
-                "<code>cuty-ssh --session \"Name\"</code> opens a session at startup; <code>cuty-ssh --list</code> lists sessions."
+                "<strong>Automatisation CLI &amp; Headless</strong> (alternative <code>plink</code> / <code>ssh</code>) : <code>--exec &quot;cmd&quot;</code> ou <code>-- cmd</code> avec streaming direct et code de sortie distant, <code>-m script.sh</code>, mode strict <code>--batch</code> (CI/CD), <code>--timeout N</code>, <code>--sftp-put / --sftp-get</code> (SFTP CLI avec <code>-r</code>) et tunnel <code>--tunnel</code>.",
+                "<strong>CLI &amp; Headless Automation</strong> (<code>plink</code> / <code>ssh</code> alternative): <code>--exec &quot;cmd&quot;</code> or trailing <code>-- cmd</code> with live streaming and remote exit code, <code>-m script.sh</code>, strict <code>--batch</code> mode (CI/CD), <code>--timeout N</code>, <code>--sftp-put / --sftp-get</code> (CLI SFTP with <code>-r</code>) and <code>--tunnel</code> port forwarding."
             ),
             c9_b4 = tr(
                 lang,

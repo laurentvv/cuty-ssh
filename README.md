@@ -19,7 +19,7 @@
   <img src="assets/cuty_ssh_icon.png" width="88" alt="Cuty-SSH App Icon" style="border-radius: 18px;" />
 </p>
 
-[**Download Latest Release (`v0.6.2`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#interactive-animated-tour--cockpit-preview) · [**Key Features**](#key-features) · [**1-Click `ssh-copy-id`**](#1-click-ssh-copy-id--automatic-password-to-key-migration) · [**Bastion (`-J`)**](#ssh-bastion--jump-host--j--proxyjump) · [**Architecture**](#architecture) · [**Build from Source**](#build-from-source)
+[**Download Latest Release (`v0.6.2`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#interactive-animated-tour--cockpit-preview) · [**Key Features**](#key-features) · [**CLI Automation (`plink` mode)**](#8-universal-cli-launcher--headless-automation-plink--ssh-alternative) · [**1-Click `ssh-copy-id`**](#1-click-ssh-copy-id--automatic-password-to-key-migration) · [**Bastion (`-J`)**](#ssh-bastion--jump-host--j--proxyjump) · [**Architecture**](#architecture) · [**Build from Source**](#build-from-source)
 
 </div>
 
@@ -59,6 +59,7 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 | **Dual Agent: Pageant + Windows OpenSSH Agent** | Pageant only | OpenSSH Agent only | ✅ **Both queried automatically** |
 | **1-Click `ssh-copy-id` + Auto Password ➡ Key Switch** | ❌ | ❌ Manual CLI | ✅ **1-Click button + auto profile migration** |
 | **SSH Bastion / Jump Host (`-J` / `ProxyJump`)** | Complex proxy cmd | ✅ `-J` flag | ✅ **Visual selector + inline `ProxyJump`** |
+| **Headless CLI Automation & Scripting (`plink` / `ssh` drop-in)** | Limited (`plink.exe`) | OpenSSH CLI | ✅ **Built-in (`--exec`, `--batch`, `-m`, `--sftp-put/get`, `--tunnel`)** |
 | **Integrated Streaming SFTP + Explorer Drag & Drop** | ❌ Separate `psftp` | ❌ | ✅ **Dual-pane Bitvise/WinSCP SFTP, editor watcher, chmod, collision & mirror** |
 | **Live Remote Telemetry Bar (`Load` / `RAM` / `Disk`)** | ❌ | ❌ | ✅ **Non-intrusive header bar** |
 | **Windows DPAPI Hardware-Bound Secret Encryption** | ❌ Plaintext registry | ❌ | ✅ **`CryptProtectData` + `zeroize`** |

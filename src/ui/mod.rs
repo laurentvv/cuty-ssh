@@ -507,6 +507,7 @@ impl CutySshApp {
         if let Some(stage) = demo_stage {
             app.apply_demo_stage(&stage);
         } else {
+            app.resolve_pageant_path();
             app.refresh_agent_keys();
             app.probe_all_sessions();
         }
@@ -1133,9 +1134,65 @@ impl CutySshApp {
         });
     }
 
-    /// Collects all `.ppk` files configured across saved sessions and loads them into Pageant.
+    /// Resolves the Pageant executable path, auto-detecting portable KiTTY / PuTTY installations
+    /// and updating `self.config.pageant_path` if the currently configured path does not exist.
+    pub fn resolve_pageant_path(&mut self) -> String {
+        if !self.config.pageant_path.trim().is_empty()
+            && Path::new(&self.config.pageant_path).exists()
+        {
+            return self.config.pageant_path.clone();
+        }
+        let mut hints: Vec<&str> = Vec::new();
+        if !self.config.kitty_dir.trim().is_empty() {
+            hints.push(self.config.kitty_dir.as_str());
+        }
+        if !self.config.primary_key_path.trim().is_empty() {
+            hints.push(self.config.primary_key_path.as_str());
+        }
+        if !self.quick_ppk_path.trim().is_empty() {
+            hints.push(self.quick_ppk_path.as_str());
+        }
+        let inspected_path_str;
+        if let Some(ref info) = self.inspected_key {
+            inspected_path_str = info.path.clone();
+            if !inspected_path_str.trim().is_empty() {
+                hints.push(inspected_path_str.as_str());
+            }
+        }
+        for s in &self.config.sessions {
+            if let SshAuthMethod::PrivateKeyFile { key_path, .. } = &s.ssh_auth
+                && !key_path.trim().is_empty()
+            {
+                hints.push(key_path.as_str());
+            }
+        }
+        if let Some(found) = crate::ssh::ppk::resolve_pageant_executable_with_hints(
+            &self.config.pageant_path,
+            &hints,
+        ) {
+            let p_str = found.to_string_lossy().to_string();
+            self.config.pageant_path = p_str.clone();
+            let _ = self.config.save();
+            return p_str;
+        }
+        self.config.pageant_path.clone()
+    }
+
+    /// Collects all `.ppk` files configured across saved sessions, primary key, and loads them into Pageant.
     pub fn load_all_session_ppks_into_pageant(&mut self) {
         let mut paths: Vec<String> = Vec::new();
+        if !self.config.primary_key_path.trim().is_empty() {
+            let pk = self.config.primary_key_path.trim();
+            if PathBuf::from(pk).exists() && !paths.iter().any(|p| p.eq_ignore_ascii_case(pk)) {
+                paths.push(pk.to_string());
+            }
+        }
+        if !self.quick_ppk_path.trim().is_empty() {
+            let mk = self.quick_ppk_path.trim();
+            if PathBuf::from(mk).exists() && !paths.iter().any(|p| p.eq_ignore_ascii_case(mk)) {
+                paths.push(mk.to_string());
+            }
+        }
         for s in &self.config.sessions {
             if let SshAuthMethod::PrivateKeyFile { key_path, .. } = &s.ssh_auth {
                 let trimmed = key_path.trim();
@@ -1151,7 +1208,8 @@ impl CutySshApp {
             self.set_toast("Aucun fichier clé .ppk existant trouvé dans vos sessions.");
             return;
         }
-        match launch_pageant_with_keys(&self.config.pageant_path, &paths) {
+        let pageant_exe = self.resolve_pageant_path();
+        match launch_pageant_with_keys(&pageant_exe, &paths) {
             Ok(msg) => {
                 self.key_manager_status = msg.clone();
                 self.set_toast(msg);
@@ -3222,7 +3280,8 @@ impl CutySshApp {
                     });
 
                 if let Some(ppk) = ppk_to_load {
-                    match launch_pageant_with_keys(&self.config.pageant_path, &[ppk]) {
+                    let pageant_exe = self.resolve_pageant_path();
+                    match launch_pageant_with_keys(&pageant_exe, &[ppk]) {
                         Ok(msg) => {
                             self.set_toast(msg);
                             self.refresh_agent_keys();
@@ -5462,7 +5521,8 @@ impl CutySshApp {
             }
         }
         if let Some(kp) = ppk_to_load {
-            let _ = launch_pageant_with_keys(&self.config.pageant_path, &[kp]);
+            let pageant_exe = self.resolve_pageant_path();
+            let _ = launch_pageant_with_keys(&pageant_exe, &[kp]);
             self.refresh_agent_keys();
         }
     }
@@ -5578,6 +5638,11 @@ impl CutySshApp {
 
             ui.add_space(6.0);
 
+            // Auto-resolve pageant path if current configured path does not exist on disk
+            if !Path::new(&self.config.pageant_path).exists() {
+                self.resolve_pageant_path();
+            }
+
             // Section 1: Pageant ("C:\Program Files\PuTTY\pageant.exe")
             egui::Frame::NONE
                 .fill(Color32::from_rgb(18, 22, 29))
@@ -5617,10 +5682,15 @@ impl CutySshApp {
                     ui.horizontal_wrapped(|ui| {
                         if ui
                             .button(tr(lang, "\u{E3FE} Démarrer Pageant", "\u{E3FE} Launch Pageant"))
-                            .on_hover_text("Launches \"C:\\Program Files\\PuTTY\\pageant.exe\"")
+                            .on_hover_text(tr(
+                                lang,
+                                "Lance l'exécutable Pageant configuré pour garder vos clés .ppk en mémoire",
+                                "Launches the configured Pageant executable to hold .ppk keys in memory",
+                            ))
                             .clicked()
                         {
-                            match launch_pageant_with_keys(&self.config.pageant_path, &[]) {
+                            let pageant_exe = self.resolve_pageant_path();
+                            match launch_pageant_with_keys(&pageant_exe, &[]) {
                                 Ok(msg) => {
                                     self.key_manager_status = msg;
                                     self.refresh_agent_keys();
@@ -5655,7 +5725,8 @@ impl CutySshApp {
                                 .into_iter()
                                 .map(|p| p.to_string_lossy().to_string())
                                 .collect();
-                            match launch_pageant_with_keys(&self.config.pageant_path, &paths) {
+                            let pageant_exe = self.resolve_pageant_path();
+                            match launch_pageant_with_keys(&pageant_exe, &paths) {
                                 Ok(msg) => {
                                     self.key_manager_status = msg;
                                     self.refresh_agent_keys();
@@ -9208,7 +9279,8 @@ impl CutySshApp {
             }
         }
         if let Some(kp) = ppk_to_load {
-            match launch_pageant_with_keys(&self.config.pageant_path, &[kp]) {
+            let pageant_exe = self.resolve_pageant_path();
+            match launch_pageant_with_keys(&pageant_exe, &[kp]) {
                 Ok(msg) => {
                     self.set_toast(msg);
                     self.refresh_agent_keys();

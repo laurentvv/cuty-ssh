@@ -19,7 +19,7 @@
   <img src="assets/cuty_ssh_icon.png" width="88" alt="Icône Cuty-SSH" style="border-radius: 18px;" />
 </p>
 
-[**Télécharger la dernière version (`v0.6.2`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇬🇧 English Version**](README.md) · [**Visite animée**](#visite-guide-anime--aperu-du-cockpit) · [**Fonctionnalités**](#fonctionnalits-cls) · [**`ssh-copy-id` en 1 clic**](#dploiement-de-cl-ssh-copy-id-en-1-clic--migration-automatique-mot-de-passe--cl) · [**Bastion (`-J`)**](#bastion-ssh--hte-de-rebond--j--proxyjump) · [**Architecture**](#architecture) · [**Compiler depuis les sources**](#compiler-depuis-les-sources)
+[**Télécharger la dernière version (`v0.6.2`)**](https://github.com/laurentvv/cuty-ssh/releases/latest) · [**🇬🇧 English Version**](README.md) · [**Visite animée**](#visite-guide-anime--aperu-du-cockpit) · [**Fonctionnalités**](#fonctionnalits-cls) · [**Automatisation CLI (mode `plink`)**](#8-lanceur-cli-universel--automatisation-headless-alternative-à-plink--ssh) · [**`ssh-copy-id` en 1 clic**](#dploiement-de-cl-ssh-copy-id-en-1-clic--migration-automatique-mot-de-passe--cl) · [**Bastion (`-J`)**](#bastion-ssh--hte-de-rebond--j--proxyjump) · [**Architecture**](#architecture) · [**Compiler depuis les sources**](#compiler-depuis-les-sources)
 
 </div>
 
@@ -60,6 +60,7 @@ Il réconcilie l'écosystème classique **PuTTY / KiTTY** avec les méthodes de 
 | **Double Agent : Pageant + Windows OpenSSH Agent** | Pageant uniquement | OpenSSH Agent uniquement | ✅ **Interrogation des deux agents** |
 | **`ssh-copy-id` 1-clic + bascule auto mot de passe ➡ clé** | ❌ | ❌ Ligne de commande manuelle | ✅ **Bouton 1-clic + migration de profil** |
 | **Bastion SSH / Hôte de rebond (`-J` / `ProxyJump`)** | Commande proxy complexe | ✅ Option `-J` | ✅ **Sélecteur visuel + `ProxyJump`** |
+| **Automatisation CLI & Scripts Headless (Équivalent `plink` / `ssh`)** | Limité (`plink.exe`) | OpenSSH CLI | ✅ **Intégré (`--exec`, `--batch`, `-m`, `--sftp-put/get`, `--tunnel`)** |
 | **Explorateur SFTP en streaming + Glisser-Déposer** | ❌ `psftp` séparé | ❌ | ✅ **Panneau intégré + flux 64 Ko** |
 | **Télémétrie serveur en direct (`Load` / `RAM` / `Disque`)** | ❌ | ❌ | ✅ **Bandeau d'en-tête non intrusif** |
 | **Chiffrement matériel des secrets (Windows DPAPI)** | ❌ Registre en clair | ❌ | ✅ **`CryptProtectData` + `zeroize`** |
