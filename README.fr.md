@@ -31,6 +31,7 @@
 
 Il réconcilie l'écosystème classique **PuTTY / KiTTY** avec les méthodes de travail modernes **OpenSSH** :
 - Chargement natif des clés privées **PuTTY `.ppk` v2 et v3** (incluant le chiffrement par mot de passe **Argon2id**) en plus des formats OpenSSH et PEM.
+- **Migration depuis vos outils existants en 1 clic** : import de sessions depuis le **registre PuTTY**, les dossiers portables **KiTTY**, les profils **Bitvise SSH Client** (`.tlp` / `.bscp`), et `~/.ssh/config` (avec `ProxyJump` et tunnels de transfert de port).
 - Authentification automatique et transparente via **Pageant** (mémoire partagée Windows) **et** le service natif **Windows OpenSSH Agent** (`\\.\pipe\openssh-ssh-agent`).
 - Provisionnement de serveurs en **1 clic (`ssh-copy-id`)** : connectez-vous une première fois avec identifiant et mot de passe, déployez votre clé principale dans `~/.ssh/authorized_keys`, et laissez Cuty-SSH basculer automatiquement la session en authentification par clé sans mot de passe tout en effaçant le mot de passe stocké.
 - Routage sécurisé via **Bastions SSH / Jump Hosts (`-J` / `ProxyJump`)**, gestion TOFU des empreintes de serveurs **`known_hosts` SHA-256**, chiffrement local des secrets par le **coffre Windows DPAPI**, transferts de fichiers par glisser-déposer **SFTP en streaming**, et surveillance en direct de la télémétrie serveur (`charge CPU`, `RAM`, `Disque`, `Uptime`).
