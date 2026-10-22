@@ -525,8 +525,8 @@ impl CutySshApp {
     fn render_help_sftp(&self, ui: &mut egui::Ui, lang: UiLanguage) {
         ui.heading(tr(
             lang,
-            "📂 6. Explorateur SFTP : Drag & Drop, Streaming & WinSCP",
-            "📂 6. SFTP Explorer: Drag & Drop, Streaming & WinSCP",
+            "📂 6. Client Bitvise SFTP Intégré : Double-Volet, Queues & Remplacement WinSCP",
+            "📂 6. Integrated Bitvise SFTP Client: Dual-Pane, Queues & WinSCP Replacement",
         ));
         ui.add_space(6.0);
 
@@ -555,8 +555,8 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
-                    "4. Tri & WinSCP : Cliquez sur les en-têtes Nom / Taille / Date pour trier, sur « 📁⬆ Dossiers 1er » pour grouper les dossiers, ou sur « 🚀 WinSCP » pour ouvrir WinSCP externe.",
-                    "4. Sorting & WinSCP: Click Name / Size / Date headers to sort, toggle '📁⬆ Folders 1st', or click '🚀 WinSCP' to launch external WinSCP.",
+                    "4. Client Double-Volet Bitvise : Cliquez sur « 📁 SFTP » pour ouvrir le client Bitvise complet (fichiers locaux à gauche, distants à droite, files d'attente d'upload/download et menu contextuel clic-droit complet : Open, Edit, Move to, Erase, Rename, Hashes SHA-256, Symlinks, Copy full path).",
+                    "4. Dual-Pane Bitvise Client: Click '📁 SFTP' to open the complete Bitvise client (local files on left, remote on right, upload/download queues, and full right-click context menu: Open, Edit, Move to, Erase, Rename, Hashes SHA-256, Symlinks, Copy full path).",
                 ),
             ],
         );

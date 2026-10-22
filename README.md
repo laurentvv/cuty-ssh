@@ -133,7 +133,7 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 - **Streaming SFTP Explorer with Drag & Drop & Progress Bar**:
   - Drag and drop files directly from **Windows Explorer** onto the Cuty-SSH window to upload them to the active SFTP directory.
   - Asynchronous chunked streaming (`64 KB` buffers) for large uploads and downloads with a live transfer progress bar.
-  - Interactive column sorting (Name, Size, Date, `📁⬆ Folders 1st` toggle) and 1-click external **WinSCP** launch.
+  - **Integrated Bitvise dual-pane SFTP client** (local & remote files side-by-side, upload/download queues, full right-click context menu: Open, Edit, Move to, Erase, Rename, SHA-256 hashes, symlinks) replacing any need for external WinSCP.
 - **High-Throughput Batched Terminal Renderer**:
   - Run-length text batching of adjacent cells sharing foreground color (`painter.text` per contiguous run instead of per cell).
   - Compact 1-byte bitflag `TerminalCell` attributes (`CELL_FLAG_*`), alternate screen buffer (`?1049h` for `vim`, `htop`, `tmux`), 256-color & 24-bit TrueColor SGR, and Ctrl+Click URL opening.

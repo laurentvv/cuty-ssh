@@ -134,7 +134,7 @@ Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur interméd
 - **Explorateur SFTP avec glisser-déposer & barre de progression** :
   - Glissez-déposez des fichiers depuis l'Explorateur Windows directement sur la fenêtre de Cuty-SSH pour les téléverser dans le dossier SFTP distant actif.
   - Streaming asynchrone par blocs de 64 Ko pour les gros fichiers avec barre de progression de transfert en direct.
-  - Tri interactif par colonnes (Nom, Taille, Date, bascule `📁⬆ Dossiers 1ers`) et ouverture externe dans WinSCP en 1 clic.
+  - **Client Bitvise SFTP double-volet intégré** (fichiers locaux & distants côte-à-côte, files d'attente d'upload/download, menu clic-droit complet : Open, Edit, Move to, Erase, Rename, SHA-256, liens symboliques) remplaçant tout besoin de WinSCP externe.
 - **Rendu graphique haute performance par lots (Run-Length Text Batching)** :
   - Rendu par séquences de texte contiguës partageant la même couleur pour garantir 60+ FPS constants.
   - Cellules de terminal compactes (`TerminalCell` avec drapeaux binaires sur 1 octet), écran alternatif (`?1049h` pour `vim`, `htop`, `tmux`), couleurs 256 et 24-bit TrueColor, et ouverture d'URLs au Ctrl+Clic.
