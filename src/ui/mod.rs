@@ -3623,8 +3623,8 @@ impl CutySshApp {
                                     .selectable_label(sftp_is_active, sftp_btn_label)
                                     .on_hover_text(tr(
                                         lang,
-                                        "Ouvrir l'explorateur complet double-volet Bitvise SFTP (remplace WinSCP)",
-                                        "Open the full dual-pane Bitvise SFTP explorer (replaces WinSCP)",
+                                        "Ouvrir l'explorateur SFTP Client double-volet complet (remplace WinSCP)",
+                                        "Open the full dual-pane SFTP Client explorer (replaces WinSCP)",
                                     ))
                                     .clicked()
                                 {
@@ -3890,8 +3890,8 @@ impl CutySshApp {
                             .small_button("\u{E256} Plein écran")
                             .on_hover_text(tr(
                                 lang,
-                                "Ouvrir l'explorateur double-volet Bitvise SFTP complet",
-                                "Open the full dual-pane Bitvise SFTP explorer",
+                                "Ouvrir l'explorateur SFTP Client double-volet complet",
+                                "Open the full dual-pane SFTP Client explorer",
                             ))
                             .clicked()
                         {

@@ -1,27 +1,25 @@
-//! Bitvise-style dual-pane SFTP client module for cuty-ssh.
+//! SFTP Client module for cuty-ssh.
 //!
-//! Provides a full-featured, integrated SFTP explorer modeled clean-room
-//! after Bitvise SFTP (dialogs #234, #354, #355, #415, #476, #494, #543),
-//! completely replacing the need for external WinSCP:
+//! Provides a full-featured, integrated double-pane SFTP explorer:
 //! - Dual-pane browser (Local files on left, Remote files on right)
 //! - Upload & Download transfer queues with status and progress
 //! - Comprehensive right-click context menu (Download/Upload, Open, Edit,
-//!   Move to, Rename, Delete, SHA-256 hashes, Symlinks, Copy path, Properties)
-//! - Collision resolution dialog (#415 Rename/Resume/Overwrite/Skip)
+//!   Move to, Rename, Erase, SHA-256 hashes, Symlinks, Copy path, Properties)
+//! - Collision resolution dialog (Rename/Resume/Overwrite/Skip)
 //! - Operation activity log
 
 use crate::config::UiLanguage;
 use crate::protocols::{BackendCommand, SftpFileEntry};
 use crate::ui::help_modal::tr;
 use crate::ui::terminal_view::format_bytes;
-use egui::{Align, Color32, Context, Layout, RichText, ScrollArea, Stroke, Ui, Vec2};
+use egui::{Align, Color32, Context, Layout, RichText, ScrollArea, Stroke, Ui};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BitviseSftpTab {
+pub enum SftpClientTab {
     Browse,
     UploadQueue,
     DownloadQueue,
@@ -123,20 +121,8 @@ pub struct SymlinkModal {
     pub link_name: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct CollisionDialog {
-    pub filename: String,
-    pub local_path: PathBuf,
-    pub remote_path: String,
-    pub local_size: u64,
-    pub local_mtime: u64,
-    pub remote_size: u64,
-    pub remote_mtime: u64,
-    pub is_upload: bool,
-}
-
 pub struct BitviseSftpState {
-    pub active_tab: BitviseSftpTab,
+    pub active_tab: SftpClientTab,
     pub transfer_mode: TransferMode,
     pub existing_file_rule: ExistingFileRule,
     pub queue_paused: bool,
@@ -174,7 +160,6 @@ pub struct BitviseSftpState {
     pub rename_modal: Option<RenameModal>,
     pub move_modal: Option<MoveModal>,
     pub symlink_modal: Option<SymlinkModal>,
-    pub collision_dialog: Option<CollisionDialog>,
     pub delete_confirm: Option<(bool, String, bool)>, // (is_remote, path, is_dir)
 }
 
@@ -199,7 +184,7 @@ impl BitviseSftpState {
             .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("C:\\")));
 
         let mut state = Self {
-            active_tab: BitviseSftpTab::Browse,
+            active_tab: SftpClientTab::Browse,
             transfer_mode: TransferMode::Binary,
             existing_file_rule: ExistingFileRule::Ask,
             queue_paused: false,
@@ -231,12 +216,11 @@ impl BitviseSftpState {
             rename_modal: None,
             move_modal: None,
             symlink_modal: None,
-            collision_dialog: None,
             delete_confirm: None,
         };
 
         state.refresh_local();
-        state.log("Session SFTP Bitvise initialisée", false);
+        state.log("Session SFTP Client initialisée", false);
         state
     }
 
@@ -287,11 +271,9 @@ impl BitviseSftpState {
                         }
                         "pdf" => "Document PDF".to_string(),
                         "txt" | "md" | "rst" | "log" => "Document texte".to_string(),
-                        "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" => {
-                            "Archive compressée".to_string()
-                        }
+                        "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" => "Archive".to_string(),
                         "exe" => "Application".to_string(),
-                        "dll" => "Extension d'application".to_string(),
+                        "dll" => "Extension".to_string(),
                         "lnk" => "Raccourci".to_string(),
                         "rs" | "py" | "js" | "ts" | "c" | "cpp" | "h" | "json" | "toml"
                         | "yaml" | "yml" => "Code source".to_string(),
@@ -355,7 +337,6 @@ impl BitviseSftpState {
         }
     }
 
-    /// Render the complete Bitvise SFTP window view.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -367,7 +348,7 @@ impl BitviseSftpState {
         cmd_tx: &UnboundedSender<BackendCommand>,
         close_requested: &mut bool,
     ) {
-        // Top Toolbar: Tabs (Browse, Upload queue, Download queue, Log) + Mode + Back to terminal
+        // Top Toolbar: Tabs (Browse, Upload queue, Download queue, Log) + Back to terminal
         egui::Frame::NONE
             .fill(Color32::from_rgb(18, 24, 38))
             .inner_margin(egui::Margin::symmetric(10, 6))
@@ -375,7 +356,7 @@ impl BitviseSftpState {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("📁 Bitvise SFTP Client")
+                        RichText::new("📁 SFTP Client")
                             .strong()
                             .size(15.0)
                             .color(Color32::from_rgb(88, 166, 255)),
@@ -384,7 +365,7 @@ impl BitviseSftpState {
                     ui.add_space(12.0);
 
                     // Tab buttons
-                    let browse_active = self.active_tab == BitviseSftpTab::Browse;
+                    let browse_active = self.active_tab == SftpClientTab::Browse;
                     if ui
                         .selectable_label(
                             browse_active,
@@ -392,7 +373,7 @@ impl BitviseSftpState {
                         )
                         .clicked()
                     {
-                        self.active_tab = BitviseSftpTab::Browse;
+                        self.active_tab = SftpClientTab::Browse;
                     }
 
                     let up_count = self
@@ -406,10 +387,10 @@ impl BitviseSftpState {
                         "⬆ Upload queue".to_string()
                     };
                     if ui
-                        .selectable_label(self.active_tab == BitviseSftpTab::UploadQueue, up_label)
+                        .selectable_label(self.active_tab == SftpClientTab::UploadQueue, up_label)
                         .clicked()
                     {
-                        self.active_tab = BitviseSftpTab::UploadQueue;
+                        self.active_tab = SftpClientTab::UploadQueue;
                     }
 
                     let dl_count = self
@@ -423,17 +404,17 @@ impl BitviseSftpState {
                         "⬇ Download queue".to_string()
                     };
                     if ui
-                        .selectable_label(self.active_tab == BitviseSftpTab::DownloadQueue, dl_label)
+                        .selectable_label(self.active_tab == SftpClientTab::DownloadQueue, dl_label)
                         .clicked()
                     {
-                        self.active_tab = BitviseSftpTab::DownloadQueue;
+                        self.active_tab = SftpClientTab::DownloadQueue;
                     }
 
                     if ui
-                        .selectable_label(self.active_tab == BitviseSftpTab::Log, "📋 Log")
+                        .selectable_label(self.active_tab == SftpClientTab::Log, "📋 Log")
                         .clicked()
                     {
-                        self.active_tab = BitviseSftpTab::Log;
+                        self.active_tab = SftpClientTab::Log;
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -471,28 +452,26 @@ impl BitviseSftpState {
 
         ui.add_space(4.0);
 
-        // Content Area depending on active tab
         match self.active_tab {
-            BitviseSftpTab::Browse => {
-                self.render_browse_tab(ui, lang, remote_path, remote_entries, cmd_tx);
+            SftpClientTab::Browse => {
+                self.render_browse_view(ui, lang, remote_path, remote_entries, cmd_tx);
             }
-            BitviseSftpTab::UploadQueue => {
+            SftpClientTab::UploadQueue => {
                 self.render_upload_queue_tab(ui, lang);
             }
-            BitviseSftpTab::DownloadQueue => {
+            SftpClientTab::DownloadQueue => {
                 self.render_download_queue_tab(ui, lang);
             }
-            BitviseSftpTab::Log => {
+            SftpClientTab::Log => {
                 self.render_log_tab(ui, lang);
             }
         }
 
-        // Sub-dialogs rendering (Modals)
         self.render_modals(ctx, lang, cmd_tx);
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn render_browse_tab(
+    fn render_browse_view(
         &mut self,
         ui: &mut Ui,
         lang: UiLanguage,
@@ -500,959 +479,902 @@ impl BitviseSftpState {
         remote_entries: &[SftpFileEntry],
         cmd_tx: &UnboundedSender<BackendCommand>,
     ) {
-        let total_w = ui.available_width();
-        let pane_w = ((total_w - 42.0) * 0.5).max(300.0);
-        let pane_h = (ui.available_height() - 48.0).max(250.0);
-
         let mut cd_local_into: Option<PathBuf> = None;
         let mut cd_remote_into: Option<String> = None;
         let mut launch_upload: Option<Vec<PathBuf>> = None;
         let mut launch_download: Option<Vec<String>> = None;
 
-        ui.horizontal(|ui| {
-            // ================= LEFT: LOCAL FILES =================
-            ui.allocate_ui(Vec2::new(pane_w, pane_h + 44.0), |ui| {
-                egui::Frame::NONE
-                    .fill(Color32::from_rgb(13, 17, 23))
-                    .corner_radius(4.0)
-                    .inner_margin(egui::Margin::same(6))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(38, 44, 54)))
-                    .show(ui, |ui| {
-                        // Title & Filter
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(tr(lang, "Local files", "Local files"))
-                                    .strong()
-                                    .color(Color32::from_rgb(88, 166, 255)),
+        // Use strict 2-column layout so neither pane can ever overflow or overlap
+        ui.columns(2, |columns| {
+            // ==================== LEFT COLUMN: LOCAL FILES ====================
+            let col_left = &mut columns[0];
+            egui::Frame::NONE
+                .fill(Color32::from_rgb(13, 17, 23))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::same(6))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(38, 44, 54)))
+                .show(col_left, |ui| {
+                    // Header: Title & Filter
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Local files")
+                                .strong()
+                                .size(13.0)
+                                .color(Color32::from_rgb(88, 166, 255)),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.local_filter)
+                                    .hint_text("Filtrer...")
+                                    .desired_width(110.0),
                             );
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.local_filter)
-                                        .hint_text("Filter...")
-                                        .desired_width(120.0),
-                                );
-                                ui.label(
-                                    RichText::new("Filter:")
-                                        .small()
-                                        .color(Color32::from_rgb(139, 148, 158)),
-                                );
-                            });
+                            ui.label(
+                                RichText::new("Filtre:")
+                                    .small()
+                                    .color(Color32::from_rgb(139, 148, 158)),
+                            );
                         });
+                    });
 
-                        ui.add_space(2.0);
+                    ui.add_space(2.0);
 
-                        // Local Toolbar: Up, New Folder, Refresh, Home, Path Box
-                        ui.horizontal(|ui| {
-                            if ui
-                                .small_button("\u{E08E}")
-                                .on_hover_text("Dossier parent")
-                                .clicked()
-                            {
-                                self.navigate_local_up();
-                            }
-                            if ui
-                                .small_button("\u{E24A}+")
-                                .on_hover_text("Nouveau dossier")
-                                .clicked()
-                            {
-                                self.show_local_mkdir = !self.show_local_mkdir;
-                            }
-                            if ui
-                                .small_button("\u{E094}")
-                                .on_hover_text("Rafraîchir")
-                                .clicked()
-                            {
+                    // Local Toolbar: Up, New Folder, Refresh, Home, Path Box
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button("\u{E08E}")
+                            .on_hover_text("Dossier parent")
+                            .clicked()
+                        {
+                            self.navigate_local_up();
+                        }
+                        if ui
+                            .small_button("\u{E24A}+")
+                            .on_hover_text("Nouveau dossier local")
+                            .clicked()
+                        {
+                            self.show_local_mkdir = !self.show_local_mkdir;
+                        }
+                        if ui
+                            .small_button("\u{E094}")
+                            .on_hover_text("Rafraîchir")
+                            .clicked()
+                        {
+                            self.refresh_local();
+                        }
+                        if ui
+                            .small_button("\u{E072}")
+                            .on_hover_text("Home (Profil utilisateur)")
+                            .clicked()
+                        {
+                            self.navigate_local_home();
+                        }
+
+                        let text_w = (ui.available_width() - 48.0).max(60.0);
+                        let mut p_str = self.local_path_input.clone();
+                        let resp =
+                            ui.add(egui::TextEdit::singleline(&mut p_str).desired_width(text_w));
+                        let enter =
+                            resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        self.local_path_input = p_str;
+
+                        if ui.small_button("Aller").clicked() || enter {
+                            let p = PathBuf::from(&self.local_path_input);
+                            if p.is_dir() {
+                                self.local_path = p;
                                 self.refresh_local();
                             }
-                            if ui
-                                .small_button("\u{E072}")
-                                .on_hover_text("Dossier personnel")
-                                .clicked()
-                            {
-                                self.navigate_local_home();
-                            }
+                        }
+                    });
 
-                            let mut path_str = self.local_path_input.clone();
-                            let path_resp = ui.add(
-                                egui::TextEdit::singleline(&mut path_str)
-                                    .desired_width(ui.available_width() - 36.0),
+                    if self.show_local_mkdir {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Nom:").small());
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.local_new_folder_name)
+                                    .desired_width(110.0),
                             );
-                            if path_resp.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            if ui.small_button("Créer").clicked()
+                                && !self.local_new_folder_name.trim().is_empty()
                             {
-                                let p = PathBuf::from(&path_str);
-                                if p.is_dir() {
-                                    self.local_path = p;
-                                    self.refresh_local();
-                                }
-                            }
-                            self.local_path_input = path_str;
-
-                            if ui.small_button("Aller").clicked() {
-                                let p = PathBuf::from(&self.local_path_input);
-                                if p.is_dir() {
-                                    self.local_path = p;
-                                    self.refresh_local();
-                                }
+                                let new_dir =
+                                    self.local_path.join(self.local_new_folder_name.trim());
+                                let _ = std::fs::create_dir_all(&new_dir);
+                                self.log(
+                                    format!("Dossier local créé : {}", new_dir.display()),
+                                    false,
+                                );
+                                self.local_new_folder_name.clear();
+                                self.show_local_mkdir = false;
+                                self.refresh_local();
                             }
                         });
+                    }
 
-                        if self.show_local_mkdir {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("Nom :").small());
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.local_new_folder_name)
-                                        .desired_width(120.0),
-                                );
-                                if ui.small_button("Créer").clicked()
-                                    && !self.local_new_folder_name.trim().is_empty()
-                                {
-                                    let new_dir =
-                                        self.local_path.join(self.local_new_folder_name.trim());
-                                    let _ = std::fs::create_dir_all(&new_dir);
-                                    self.log(
-                                        format!("Dossier local créé : {}", new_dir.display()),
-                                        false,
-                                    );
-                                    self.local_new_folder_name.clear();
-                                    self.show_local_mkdir = false;
-                                    self.refresh_local();
-                                }
-                            });
+                    ui.add_space(2.0);
+
+                    // Column Headers (Fixed widths: Size 65px, Type 75px, Date 85px, Name takes remaining)
+                    let pane_avail_w = ui.available_width();
+                    let name_w = (pane_avail_w - 235.0).max(100.0);
+
+                    ui.horizontal(|ui| {
+                        let name_arr = if self.local_sort_col == SftpCol::Name {
+                            if self.local_sort_asc { " ▲" } else { " ▼" }
+                        } else {
+                            ""
+                        };
+                        if ui
+                            .add_sized(
+                                [name_w, 18.0],
+                                egui::Button::new(format!("Name{name_arr}"))
+                                    .selected(self.local_sort_col == SftpCol::Name),
+                            )
+                            .clicked()
+                        {
+                            if self.local_sort_col == SftpCol::Name {
+                                self.local_sort_asc = !self.local_sort_asc;
+                            } else {
+                                self.local_sort_col = SftpCol::Name;
+                                self.local_sort_asc = true;
+                            }
+                            self.sort_local();
                         }
 
-                        ui.add_space(2.0);
-
-                        // Local Table Header
-                        ui.horizontal(|ui| {
-                            let name_arrow = if self.local_sort_col == SftpCol::Name {
-                                if self.local_sort_asc { " ▲" } else { " ▼" }
+                        let size_arr = if self.local_sort_col == SftpCol::Size {
+                            if self.local_sort_asc { " ▲" } else { " ▼" }
+                        } else {
+                            ""
+                        };
+                        if ui
+                            .add_sized(
+                                [65.0, 18.0],
+                                egui::Button::new(format!("Size{size_arr}"))
+                                    .selected(self.local_sort_col == SftpCol::Size),
+                            )
+                            .clicked()
+                        {
+                            if self.local_sort_col == SftpCol::Size {
+                                self.local_sort_asc = !self.local_sort_asc;
                             } else {
-                                ""
-                            };
-                            if ui
-                                .selectable_label(
-                                    self.local_sort_col == SftpCol::Name,
-                                    format!("Name{name_arrow}"),
-                                )
-                                .clicked()
-                            {
-                                if self.local_sort_col == SftpCol::Name {
-                                    self.local_sort_asc = !self.local_sort_asc;
-                                } else {
-                                    self.local_sort_col = SftpCol::Name;
-                                    self.local_sort_asc = true;
-                                }
-                                self.sort_local();
+                                self.local_sort_col = SftpCol::Size;
+                                self.local_sort_asc = false;
                             }
+                            self.sort_local();
+                        }
 
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                let date_arrow = if self.local_sort_col == SftpCol::Date {
-                                    if self.local_sort_asc { " ▲" } else { " ▼" }
-                                } else {
-                                    ""
-                                };
-                                if ui
-                                    .selectable_label(
-                                        self.local_sort_col == SftpCol::Date,
-                                        format!("Date Mod{date_arrow}"),
-                                    )
-                                    .clicked()
+                        let type_arr = if self.local_sort_col == SftpCol::Type {
+                            if self.local_sort_asc { " ▲" } else { " ▼" }
+                        } else {
+                            ""
+                        };
+                        if ui
+                            .add_sized(
+                                [75.0, 18.0],
+                                egui::Button::new(format!("Type{type_arr}"))
+                                    .selected(self.local_sort_col == SftpCol::Type),
+                            )
+                            .clicked()
+                        {
+                            if self.local_sort_col == SftpCol::Type {
+                                self.local_sort_asc = !self.local_sort_asc;
+                            } else {
+                                self.local_sort_col = SftpCol::Type;
+                                self.local_sort_asc = true;
+                            }
+                            self.sort_local();
+                        }
+
+                        let date_arr = if self.local_sort_col == SftpCol::Date {
+                            if self.local_sort_asc { " ▲" } else { " ▼" }
+                        } else {
+                            ""
+                        };
+                        if ui
+                            .add_sized(
+                                [85.0, 18.0],
+                                egui::Button::new(format!("Date Mod{date_arr}"))
+                                    .selected(self.local_sort_col == SftpCol::Date),
+                            )
+                            .clicked()
+                        {
+                            if self.local_sort_col == SftpCol::Date {
+                                self.local_sort_asc = !self.local_sort_asc;
+                            } else {
+                                self.local_sort_col = SftpCol::Date;
+                                self.local_sort_asc = false;
+                            }
+                            self.sort_local();
+                        }
+                    });
+
+                    ui.separator();
+
+                    // Table Body with ScrollArea
+                    let list_h = (ui.available_height() - 36.0).max(120.0);
+                    ScrollArea::vertical()
+                        .id_salt("local_scroll_fixed")
+                        .max_height(list_h)
+                        .show(ui, |ui| {
+                            let filter_lc = self.local_filter.trim().to_lowercase();
+                            for entry in &self.local_entries {
+                                if !filter_lc.is_empty()
+                                    && !entry.name.to_lowercase().contains(&filter_lc)
                                 {
-                                    if self.local_sort_col == SftpCol::Date {
-                                        self.local_sort_asc = !self.local_sort_asc;
-                                    } else {
-                                        self.local_sort_col = SftpCol::Date;
-                                        self.local_sort_asc = false;
-                                    }
-                                    self.sort_local();
+                                    continue;
                                 }
 
-                                let type_arrow = if self.local_sort_col == SftpCol::Type {
-                                    if self.local_sort_asc { " ▲" } else { " ▼" }
-                                } else {
-                                    ""
-                                };
-                                if ui
-                                    .selectable_label(
-                                        self.local_sort_col == SftpCol::Type,
-                                        format!("Type{type_arrow}"),
-                                    )
-                                    .clicked()
-                                {
-                                    if self.local_sort_col == SftpCol::Type {
-                                        self.local_sort_asc = !self.local_sort_asc;
-                                    } else {
-                                        self.local_sort_col = SftpCol::Type;
-                                        self.local_sort_asc = true;
-                                    }
-                                    self.sort_local();
-                                }
+                                let is_selected = self.local_selected.contains(&entry.name);
+                                let icon = if entry.is_dir { "\u{E24A}" } else { "📄" };
+                                let label_text = format!("{} {}", icon, entry.name);
 
-                                let size_arrow = if self.local_sort_col == SftpCol::Size {
-                                    if self.local_sort_asc { " ▲" } else { " ▼" }
-                                } else {
-                                    ""
-                                };
-                                if ui
-                                    .selectable_label(
-                                        self.local_sort_col == SftpCol::Size,
-                                        format!("Size{size_arrow}"),
-                                    )
-                                    .clicked()
-                                {
-                                    if self.local_sort_col == SftpCol::Size {
-                                        self.local_sort_asc = !self.local_sort_asc;
-                                    } else {
-                                        self.local_sort_col = SftpCol::Size;
-                                        self.local_sort_asc = false;
-                                    }
-                                    self.sort_local();
-                                }
-                            });
-                        });
-
-                        ui.separator();
-
-                        // Local Table Body
-                        ScrollArea::vertical()
-                            .id_salt("local_files_scroll_v3")
-                            .max_height(pane_h - 78.0)
-                            .show(ui, |ui| {
-                                let filter_lc = self.local_filter.trim().to_lowercase();
-                                for entry in &self.local_entries {
-                                    if !filter_lc.is_empty()
-                                        && !entry.name.to_lowercase().contains(&filter_lc)
-                                    {
-                                        continue;
-                                    }
-
-                                    let is_selected = self.local_selected.contains(&entry.name);
-                                    let icon = if entry.is_dir { "\u{E24A}" } else { "📄" };
-                                    let label_text = format!("{} {}", icon, entry.name);
-
-                                    ui.horizontal(|ui| {
-                                        let btn = ui.selectable_label(is_selected, label_text);
-                                        if btn.clicked() {
-                                            if ui.input(|i| i.modifiers.ctrl) {
-                                                if is_selected {
-                                                    self.local_selected.remove(&entry.name);
-                                                } else {
-                                                    self.local_selected.insert(entry.name.clone());
-                                                }
+                                ui.horizontal(|ui| {
+                                    let btn = ui.add_sized(
+                                        [name_w, 18.0],
+                                        egui::Button::new(RichText::new(label_text).color(
+                                            if is_selected {
+                                                Color32::from_rgb(88, 166, 255)
                                             } else {
-                                                self.local_selected.clear();
+                                                Color32::from_rgb(201, 209, 217)
+                                            },
+                                        ))
+                                        .frame(is_selected)
+                                        .truncate(),
+                                    );
+
+                                    if btn.clicked() {
+                                        if ui.input(|i| i.modifiers.ctrl) {
+                                            if is_selected {
+                                                self.local_selected.remove(&entry.name);
+                                            } else {
                                                 self.local_selected.insert(entry.name.clone());
                                             }
+                                        } else {
+                                            self.local_selected.clear();
+                                            self.local_selected.insert(entry.name.clone());
                                         }
-                                        if btn.double_clicked() && entry.is_dir {
-                                            cd_local_into = Some(entry.path.clone());
-                                        }
+                                    }
+                                    if btn.double_clicked() && entry.is_dir {
+                                        cd_local_into = Some(entry.path.clone());
+                                    }
 
-                                        // Right-click context menu (Local file)
-                                        btn.context_menu(|ui| {
-                                            if ui.button("⬆ Upload vers serveur distant").clicked()
-                                            {
-                                                launch_upload = Some(vec![entry.path.clone()]);
-                                                ui.close();
-                                            }
-                                            if ui.button("⏸ Enqueue paused").clicked() {
-                                                ui.close();
-                                            }
-                                            ui.separator();
-                                            if ui.button("Open (Ouvrir)").clicked() {
-                                                let _ = open::that(&entry.path);
-                                                ui.close();
-                                            }
-                                            if ui.button("Edit (Éditer)").clicked() {
-                                                let _ = std::process::Command::new("notepad.exe")
-                                                    .arg(&entry.path)
-                                                    .spawn();
-                                                ui.close();
-                                            }
-                                            if ui.button("Rename (Renommer)...").clicked() {
-                                                self.rename_modal = Some(RenameModal {
-                                                    is_remote: false,
-                                                    current_full_path: entry
-                                                        .path
-                                                        .to_string_lossy()
-                                                        .to_string(),
-                                                    new_name: entry.name.clone(),
-                                                });
-                                                ui.close();
-                                            }
-                                            if ui.button("Erase (Supprimer)").clicked() {
-                                                self.delete_confirm = Some((
-                                                    false,
+                                    // Right-click context menu (Local file)
+                                    btn.context_menu(|ui| {
+                                        if ui.button("⬆ Upload vers serveur distant").clicked() {
+                                            launch_upload = Some(vec![entry.path.clone()]);
+                                            ui.close();
+                                        }
+                                        if ui.button("⏸ Enqueue paused").clicked() {
+                                            ui.close();
+                                        }
+                                        ui.separator();
+                                        if ui.button("Open (Ouvrir)").clicked() {
+                                            let _ = open::that(&entry.path);
+                                            ui.close();
+                                        }
+                                        if ui.button("Edit (Éditer)").clicked() {
+                                            let _ = std::process::Command::new("notepad.exe")
+                                                .arg(&entry.path)
+                                                .spawn();
+                                            ui.close();
+                                        }
+                                        if ui.button("Rename (Renommer)...").clicked() {
+                                            self.rename_modal = Some(RenameModal {
+                                                is_remote: false,
+                                                current_full_path: entry
+                                                    .path
+                                                    .to_string_lossy()
+                                                    .to_string(),
+                                                new_name: entry.name.clone(),
+                                            });
+                                            ui.close();
+                                        }
+                                        if ui.button("Erase (Supprimer)").clicked() {
+                                            self.delete_confirm = Some((
+                                                false,
+                                                entry.path.to_string_lossy().to_string(),
+                                                entry.is_dir,
+                                            ));
+                                            ui.close();
+                                        }
+                                        ui.separator();
+                                        if ui.button("Copy full path (Copier le chemin)").clicked()
+                                        {
+                                            if let Ok(mut clip) = arboard::Clipboard::new() {
+                                                let _ = clip.set_text(
                                                     entry.path.to_string_lossy().to_string(),
-                                                    entry.is_dir,
-                                                ));
-                                                ui.close();
+                                                );
                                             }
-                                            ui.separator();
-                                            if ui
-                                                .button("Copy full path (Copier le chemin)")
-                                                .clicked()
-                                            {
-                                                if let Ok(mut clip) = arboard::Clipboard::new() {
-                                                    let _ = clip.set_text(
-                                                        entry.path.to_string_lossy().to_string(),
-                                                    );
-                                                }
-                                                ui.close();
-                                            }
-                                        });
-
-                                        ui.with_layout(
-                                            Layout::right_to_left(Align::Center),
-                                            |ui| {
-                                                // Date
-                                                let date_str = if entry.mtime > 0 {
-                                                    chrono::DateTime::from_timestamp(
-                                                        entry.mtime as i64,
-                                                        0,
-                                                    )
-                                                    .map(|dt| {
-                                                        dt.format("%d/%m/%y %H:%M").to_string()
-                                                    })
-                                                    .unwrap_or_else(|| "-".to_string())
-                                                } else {
-                                                    "-".to_string()
-                                                };
-                                                ui.add_sized(
-                                                    [80.0, 16.0],
-                                                    egui::Label::new(
-                                                        RichText::new(date_str).small().color(
-                                                            Color32::from_rgb(110, 118, 129),
-                                                        ),
-                                                    ),
-                                                );
-
-                                                // Type
-                                                ui.add_sized(
-                                                    [90.0, 16.0],
-                                                    egui::Label::new(
-                                                        RichText::new(&entry.file_type)
-                                                            .small()
-                                                            .color(Color32::from_rgb(
-                                                                139, 148, 158,
-                                                            )),
-                                                    ),
-                                                );
-
-                                                // Size
-                                                let size_str = if entry.is_dir {
-                                                    "-".to_string()
-                                                } else {
-                                                    format_bytes(entry.size)
-                                                };
-                                                ui.add_sized(
-                                                    [60.0, 16.0],
-                                                    egui::Label::new(
-                                                        RichText::new(size_str)
-                                                            .small()
-                                                            .monospace()
-                                                            .color(Color32::from_rgb(
-                                                                201, 209, 217,
-                                                            )),
-                                                    ),
-                                                );
-                                            },
-                                        );
+                                            ui.close();
+                                        }
                                     });
-                                }
-                            });
 
-                        ui.separator();
+                                    // Size
+                                    let size_str = if entry.is_dir {
+                                        "-".to_string()
+                                    } else {
+                                        format_bytes(entry.size)
+                                    };
+                                    ui.add_sized(
+                                        [65.0, 18.0],
+                                        egui::Label::new(
+                                            RichText::new(size_str)
+                                                .small()
+                                                .monospace()
+                                                .color(Color32::from_rgb(139, 148, 158)),
+                                        ),
+                                    );
 
-                        // Bottom Action Bar (Local)
-                        ui.horizontal(|ui| {
-                            let can_upload = !self.local_selected.is_empty();
-                            if ui
-                                .add_enabled(
-                                    can_upload,
-                                    egui::Button::new(RichText::new("⬆ Upload →").strong()),
-                                )
-                                .clicked()
-                            {
-                                let paths: Vec<PathBuf> = self
-                                    .local_selected
-                                    .iter()
-                                    .map(|n| self.local_path.join(n))
-                                    .collect();
-                                launch_upload = Some(paths);
+                                    // Type
+                                    ui.add_sized(
+                                        [75.0, 18.0],
+                                        egui::Label::new(
+                                            RichText::new(&entry.file_type)
+                                                .small()
+                                                .color(Color32::from_rgb(110, 118, 129)),
+                                        )
+                                        .truncate(),
+                                    );
+
+                                    // Date
+                                    let date_str = if entry.mtime > 0 {
+                                        chrono::DateTime::from_timestamp(entry.mtime as i64, 0)
+                                            .map(|dt| dt.format("%d/%m/%y %H:%M").to_string())
+                                            .unwrap_or_else(|| "-".to_string())
+                                    } else {
+                                        "-".to_string()
+                                    };
+                                    ui.add_sized(
+                                        [85.0, 18.0],
+                                        egui::Label::new(
+                                            RichText::new(date_str)
+                                                .small()
+                                                .monospace()
+                                                .color(Color32::from_rgb(110, 118, 129)),
+                                        ),
+                                    );
+                                });
                             }
-
-                            ui.checkbox(&mut self.queue_paused, "Enqueue paused");
-
-                            // Mode ComboBox
-                            egui::ComboBox::from_id_salt("local_mode_cb")
-                                .selected_text(self.transfer_mode.label())
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.transfer_mode,
-                                        TransferMode::Binary,
-                                        "Binary",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.transfer_mode,
-                                        TransferMode::Text,
-                                        "Text",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.transfer_mode,
-                                        TransferMode::Auto,
-                                        "Auto",
-                                    );
-                                });
-
-                            // Existing file rule ComboBox
-                            egui::ComboBox::from_id_salt("local_exist_rule_cb")
-                                .selected_text(self.existing_file_rule.label(lang))
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.existing_file_rule,
-                                        ExistingFileRule::Ask,
-                                        ExistingFileRule::Ask.label(lang),
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.existing_file_rule,
-                                        ExistingFileRule::Overwrite,
-                                        ExistingFileRule::Overwrite.label(lang),
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.existing_file_rule,
-                                        ExistingFileRule::Skip,
-                                        ExistingFileRule::Skip.label(lang),
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.existing_file_rule,
-                                        ExistingFileRule::Resume,
-                                        ExistingFileRule::Resume.label(lang),
-                                    );
-                                });
                         });
-                    });
-            });
 
-            // ================= CENTER DIVIDER =================
-            ui.allocate_ui(Vec2::new(32.0, pane_h), |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(pane_h * 0.4);
-                    if ui
-                        .button("➔")
-                        .on_hover_text("Uploader la sélection vers le serveur distant")
-                        .clicked()
-                    {
-                        let paths: Vec<PathBuf> = self
-                            .local_selected
-                            .iter()
-                            .map(|n| self.local_path.join(n))
-                            .collect();
-                        if !paths.is_empty() {
+                    ui.separator();
+
+                    // Bottom Action Bar (Local)
+                    ui.horizontal(|ui| {
+                        let can_upload = !self.local_selected.is_empty();
+                        if ui
+                            .add_enabled(
+                                can_upload,
+                                egui::Button::new(RichText::new("⬆ Upload →").strong()),
+                            )
+                            .clicked()
+                        {
+                            let paths: Vec<PathBuf> = self
+                                .local_selected
+                                .iter()
+                                .map(|n| self.local_path.join(n))
+                                .collect();
                             launch_upload = Some(paths);
                         }
-                    }
-                    ui.add_space(8.0);
-                    if ui
-                        .button("⬅")
-                        .on_hover_text("Télécharger la sélection distante vers le dossier local")
-                        .clicked()
-                    {
-                        let names: Vec<String> = self.remote_selected.iter().cloned().collect();
-                        if !names.is_empty() {
-                            launch_download = Some(names);
-                        }
-                    }
+
+                        ui.checkbox(&mut self.queue_paused, "Pause");
+
+                        egui::ComboBox::from_id_salt("local_mode_cb_v2")
+                            .selected_text(self.transfer_mode.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.transfer_mode,
+                                    TransferMode::Binary,
+                                    "Binary",
+                                );
+                                ui.selectable_value(
+                                    &mut self.transfer_mode,
+                                    TransferMode::Text,
+                                    "Text",
+                                );
+                                ui.selectable_value(
+                                    &mut self.transfer_mode,
+                                    TransferMode::Auto,
+                                    "Auto",
+                                );
+                            });
+
+                        egui::ComboBox::from_id_salt("local_exist_rule_cb_v2")
+                            .selected_text(self.existing_file_rule.label(lang))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.existing_file_rule,
+                                    ExistingFileRule::Ask,
+                                    ExistingFileRule::Ask.label(lang),
+                                );
+                                ui.selectable_value(
+                                    &mut self.existing_file_rule,
+                                    ExistingFileRule::Overwrite,
+                                    ExistingFileRule::Overwrite.label(lang),
+                                );
+                                ui.selectable_value(
+                                    &mut self.existing_file_rule,
+                                    ExistingFileRule::Skip,
+                                    ExistingFileRule::Skip.label(lang),
+                                );
+                                ui.selectable_value(
+                                    &mut self.existing_file_rule,
+                                    ExistingFileRule::Resume,
+                                    ExistingFileRule::Resume.label(lang),
+                                );
+                            });
+                    });
                 });
-            });
 
-            // ================= RIGHT: REMOTE FILES =================
-            ui.allocate_ui(Vec2::new(pane_w, pane_h + 44.0), |ui| {
-                egui::Frame::NONE
-                    .fill(Color32::from_rgb(13, 17, 23))
-                    .corner_radius(4.0)
-                    .inner_margin(egui::Margin::same(6))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(38, 44, 54)))
-                    .show(ui, |ui| {
-                        // Title & Filter
-                        ui.horizontal(|ui| {
+            // ==================== RIGHT COLUMN: REMOTE FILES ====================
+            let col_right = &mut columns[1];
+            egui::Frame::NONE
+                .fill(Color32::from_rgb(13, 17, 23))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::same(6))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(38, 44, 54)))
+                .show(col_right, |ui| {
+                    // Header: Title & Filter
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Remote files")
+                                .strong()
+                                .size(13.0)
+                                .color(Color32::from_rgb(46, 160, 67)),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.remote_filter)
+                                    .hint_text("Filtrer...")
+                                    .desired_width(110.0),
+                            );
                             ui.label(
-                                RichText::new(tr(lang, "Remote files", "Remote files"))
-                                    .strong()
-                                    .color(Color32::from_rgb(46, 160, 67)),
+                                RichText::new("Filtre:")
+                                    .small()
+                                    .color(Color32::from_rgb(139, 148, 158)),
                             );
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.remote_filter)
-                                        .hint_text("Filter...")
-                                        .desired_width(120.0),
-                                );
-                                ui.label(
-                                    RichText::new("Filter:")
-                                        .small()
-                                        .color(Color32::from_rgb(139, 148, 158)),
-                                );
-                            });
-                        });
-
-                        ui.add_space(2.0);
-
-                        // Remote Toolbar: Up, New Folder, Refresh, Home, Path Box
-                        ui.horizontal(|ui| {
-                            if ui
-                                .small_button("\u{E08E}")
-                                .on_hover_text("Dossier parent")
-                                .clicked()
-                            {
-                                let parent = if let Some((p, _)) =
-                                    remote_path.trim_end_matches('/').rsplit_once('/')
-                                {
-                                    if p.is_empty() {
-                                        "/".to_string()
-                                    } else {
-                                        p.to_string()
-                                    }
-                                } else {
-                                    "/".to_string()
-                                };
-                                cd_remote_into = Some(parent);
-                            }
-                            if ui
-                                .small_button("\u{E24A}+")
-                                .on_hover_text("Nouveau dossier distant")
-                                .clicked()
-                            {
-                                self.show_remote_mkdir = !self.show_remote_mkdir;
-                            }
-                            if ui
-                                .small_button("\u{E094}")
-                                .on_hover_text("Rafraîchir")
-                                .clicked()
-                            {
-                                let _ = cmd_tx
-                                    .send(BackendCommand::SftpListDir(remote_path.to_string()));
-                            }
-                            if ui
-                                .small_button("\u{E072}")
-                                .on_hover_text("Dossier personnel (~ /root)")
-                                .clicked()
-                            {
-                                cd_remote_into = Some(".".to_string());
-                            }
-
-                            let mut path_str = remote_path.to_string();
-                            let path_resp = ui.add(
-                                egui::TextEdit::singleline(&mut path_str)
-                                    .desired_width(ui.available_width() - 36.0),
-                            );
-                            if path_resp.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                            {
-                                cd_remote_into = Some(path_str.clone());
-                            }
-                            if ui.small_button("Aller").clicked() {
-                                cd_remote_into = Some(path_str);
-                            }
-                        });
-
-                        if self.show_remote_mkdir {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("Nom :").small());
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.remote_new_folder_name)
-                                        .desired_width(120.0),
-                                );
-                                if ui.small_button("Créer").clicked()
-                                    && !self.remote_new_folder_name.trim().is_empty()
-                                {
-                                    let target = if remote_path.ends_with('/') {
-                                        format!(
-                                            "{}{}",
-                                            remote_path,
-                                            self.remote_new_folder_name.trim()
-                                        )
-                                    } else {
-                                        format!(
-                                            "{}/{}",
-                                            remote_path,
-                                            self.remote_new_folder_name.trim()
-                                        )
-                                    };
-                                    let _ = cmd_tx.send(BackendCommand::SftpMkdir(target.clone()));
-                                    self.log(format!("Création dossier distant : {target}"), false);
-                                    self.remote_new_folder_name.clear();
-                                    self.show_remote_mkdir = false;
-                                }
-                            });
-                        }
-
-                        ui.add_space(2.0);
-
-                        // Remote Table Header
-                        ui.horizontal(|ui| {
-                            let name_arrow = if self.remote_sort_col == SftpCol::Name {
-                                if self.remote_sort_asc { " ▲" } else { " ▼" }
-                            } else {
-                                ""
-                            };
-                            if ui
-                                .selectable_label(
-                                    self.remote_sort_col == SftpCol::Name,
-                                    format!("Name{name_arrow}"),
-                                )
-                                .clicked()
-                            {
-                                if self.remote_sort_col == SftpCol::Name {
-                                    self.remote_sort_asc = !self.remote_sort_asc;
-                                } else {
-                                    self.remote_sort_col = SftpCol::Name;
-                                    self.remote_sort_asc = true;
-                                }
-                            }
-
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                let date_arrow = if self.remote_sort_col == SftpCol::Date {
-                                    if self.remote_sort_asc { " ▲" } else { " ▼" }
-                                } else {
-                                    ""
-                                };
-                                if ui
-                                    .selectable_label(
-                                        self.remote_sort_col == SftpCol::Date,
-                                        format!("Date Mod{date_arrow}"),
-                                    )
-                                    .clicked()
-                                {
-                                    if self.remote_sort_col == SftpCol::Date {
-                                        self.remote_sort_asc = !self.remote_sort_asc;
-                                    } else {
-                                        self.remote_sort_col = SftpCol::Date;
-                                        self.remote_sort_asc = false;
-                                    }
-                                }
-
-                                let type_arrow = if self.remote_sort_col == SftpCol::Type {
-                                    if self.remote_sort_asc { " ▲" } else { " ▼" }
-                                } else {
-                                    ""
-                                };
-                                if ui
-                                    .selectable_label(
-                                        self.remote_sort_col == SftpCol::Type,
-                                        format!("Type{type_arrow}"),
-                                    )
-                                    .clicked()
-                                {
-                                    if self.remote_sort_col == SftpCol::Type {
-                                        self.remote_sort_asc = !self.remote_sort_asc;
-                                    } else {
-                                        self.remote_sort_col = SftpCol::Type;
-                                        self.remote_sort_asc = true;
-                                    }
-                                }
-
-                                let size_arrow = if self.remote_sort_col == SftpCol::Size {
-                                    if self.remote_sort_asc { " ▲" } else { " ▼" }
-                                } else {
-                                    ""
-                                };
-                                if ui
-                                    .selectable_label(
-                                        self.remote_sort_col == SftpCol::Size,
-                                        format!("Size{size_arrow}"),
-                                    )
-                                    .clicked()
-                                {
-                                    if self.remote_sort_col == SftpCol::Size {
-                                        self.remote_sort_asc = !self.remote_sort_asc;
-                                    } else {
-                                        self.remote_sort_col = SftpCol::Size;
-                                        self.remote_sort_asc = false;
-                                    }
-                                }
-                            });
-                        });
-
-                        ui.separator();
-
-                        // Remote Table Body
-                        ScrollArea::vertical()
-                            .id_salt("remote_files_scroll_v3")
-                            .max_height(pane_h - 78.0)
-                            .show(ui, |ui| {
-                                let filter_lc = self.remote_filter.trim().to_lowercase();
-                                for entry in remote_entries {
-                                    if !filter_lc.is_empty()
-                                        && !entry.name.to_lowercase().contains(&filter_lc)
-                                    {
-                                        continue;
-                                    }
-
-                                    let is_selected = self.remote_selected.contains(&entry.name);
-                                    let icon = if entry.is_dir {
-                                        "\u{E24A}"
-                                    } else if entry.is_symlink {
-                                        "🔗"
-                                    } else {
-                                        "📄"
-                                    };
-                                    let label_text = format!("{} {}", icon, entry.name);
-
-                                    ui.horizontal(|ui| {
-                                        let btn = ui.selectable_label(is_selected, label_text);
-                                        if btn.clicked() {
-                                            if ui.input(|i| i.modifiers.ctrl) {
-                                                if is_selected {
-                                                    self.remote_selected.remove(&entry.name);
-                                                } else {
-                                                    self.remote_selected.insert(entry.name.clone());
-                                                }
-                                            } else {
-                                                self.remote_selected.clear();
-                                                self.remote_selected.insert(entry.name.clone());
-                                            }
-                                        }
-                                        if btn.double_clicked() && entry.is_dir {
-                                            cd_remote_into = Some(entry.full_path.clone());
-                                        }
-
-                                        // ================= COMPLETE RIGHT-CLICK CONTEXT MENU (Image 3) =================
-                                        btn.context_menu(|ui| {
-                                            if ui.button("Download (Télécharger)").clicked() {
-                                                launch_download = Some(vec![entry.name.clone()]);
-                                                ui.close();
-                                            }
-                                            if ui.button("Enqueue new downloads paused").clicked() {
-                                                ui.close();
-                                            }
-                                            ui.separator();
-                                            if ui.button("Open (Ouvrir)").clicked() {
-                                                // Download to temp and open
-                                                let temp_file =
-                                                    std::env::temp_dir().join(&entry.name);
-                                                let _ = cmd_tx.send(BackendCommand::SftpDownload {
-                                                    remote_path: entry.full_path.clone(),
-                                                    local_path: temp_file.clone(),
-                                                });
-                                                let _ = open::that(&temp_file);
-                                                ui.close();
-                                            }
-                                            if ui.button("Edit (Éditer)").clicked() {
-                                                let temp_file =
-                                                    std::env::temp_dir().join(&entry.name);
-                                                let _ = cmd_tx.send(BackendCommand::SftpDownload {
-                                                    remote_path: entry.full_path.clone(),
-                                                    local_path: temp_file.clone(),
-                                                });
-                                                let _ = std::process::Command::new("notepad.exe")
-                                                    .arg(&temp_file)
-                                                    .spawn();
-                                                ui.close();
-                                            }
-                                            if ui.button("Move to... (Déplacer vers...)").clicked()
-                                            {
-                                                self.move_modal = Some(MoveModal {
-                                                    is_remote: true,
-                                                    current_full_path: entry.full_path.clone(),
-                                                    destination_dir: remote_path.to_string(),
-                                                });
-                                                ui.close();
-                                            }
-                                            if ui.button("Erase (Supprimer)").clicked() {
-                                                self.delete_confirm = Some((
-                                                    true,
-                                                    entry.full_path.clone(),
-                                                    entry.is_dir,
-                                                ));
-                                                ui.close();
-                                            }
-                                            if ui.button("Rename (Renommer)...").clicked() {
-                                                self.rename_modal = Some(RenameModal {
-                                                    is_remote: true,
-                                                    current_full_path: entry.full_path.clone(),
-                                                    new_name: entry.name.clone(),
-                                                });
-                                                ui.close();
-                                            }
-                                            if ui.button("Calculate hashes (SHA-256)").clicked() {
-                                                let _ = cmd_tx.send(BackendCommand::SftpSha256(
-                                                    entry.full_path.clone(),
-                                                ));
-                                                self.log(
-                                                    format!(
-                                                        "Calcul SHA-256 en cours pour {}",
-                                                        entry.full_path
-                                                    ),
-                                                    false,
-                                                );
-                                                ui.close();
-                                            }
-                                            ui.separator();
-                                            if ui
-                                                .button("Create link (Lien symbolique)...")
-                                                .clicked()
-                                            {
-                                                self.symlink_modal = Some(SymlinkModal {
-                                                    target_path: entry.full_path.clone(),
-                                                    link_name: format!("{}_link", entry.name),
-                                                });
-                                                ui.close();
-                                            }
-                                            if ui
-                                                .button("Copy full path (Copier le chemin)")
-                                                .clicked()
-                                            {
-                                                if let Ok(mut clip) = arboard::Clipboard::new() {
-                                                    let _ = clip.set_text(&entry.full_path);
-                                                }
-                                                ui.close();
-                                            }
-                                            ui.separator();
-                                            if ui
-                                                .button("Properties (Permissions chmod / SHA-256)")
-                                                .clicked()
-                                            {
-                                                ui.close();
-                                            }
-                                        });
-
-                                        ui.with_layout(
-                                            Layout::right_to_left(Align::Center),
-                                            |ui| {
-                                                // Date
-                                                let date_str = if entry.mtime > 0 {
-                                                    chrono::DateTime::from_timestamp(
-                                                        entry.mtime as i64,
-                                                        0,
-                                                    )
-                                                    .map(|dt| {
-                                                        dt.format("%d/%m/%y %H:%M").to_string()
-                                                    })
-                                                    .unwrap_or_else(|| "-".to_string())
-                                                } else {
-                                                    "-".to_string()
-                                                };
-                                                ui.add_sized(
-                                                    [80.0, 16.0],
-                                                    egui::Label::new(
-                                                        RichText::new(date_str).small().color(
-                                                            Color32::from_rgb(110, 118, 129),
-                                                        ),
-                                                    ),
-                                                );
-
-                                                // Type
-                                                let type_str = if entry.is_dir {
-                                                    "Dossier".to_string()
-                                                } else if entry.is_symlink {
-                                                    "Lien sym".to_string()
-                                                } else {
-                                                    "Fichier".to_string()
-                                                };
-                                                ui.add_sized(
-                                                    [90.0, 16.0],
-                                                    egui::Label::new(
-                                                        RichText::new(type_str).small().color(
-                                                            Color32::from_rgb(139, 148, 158),
-                                                        ),
-                                                    ),
-                                                );
-
-                                                // Size
-                                                let size_str = if entry.is_dir {
-                                                    "-".to_string()
-                                                } else {
-                                                    format_bytes(entry.size)
-                                                };
-                                                ui.add_sized(
-                                                    [60.0, 16.0],
-                                                    egui::Label::new(
-                                                        RichText::new(size_str)
-                                                            .small()
-                                                            .monospace()
-                                                            .color(Color32::from_rgb(
-                                                                201, 209, 217,
-                                                            )),
-                                                    ),
-                                                );
-                                            },
-                                        );
-                                    });
-                                }
-                            });
-
-                        ui.separator();
-
-                        // Bottom Action Bar (Remote)
-                        ui.horizontal(|ui| {
-                            let can_download = !self.remote_selected.is_empty();
-                            if ui
-                                .add_enabled(
-                                    can_download,
-                                    egui::Button::new(RichText::new("← Download ⬇").strong()),
-                                )
-                                .clicked()
-                            {
-                                let names: Vec<String> =
-                                    self.remote_selected.iter().cloned().collect();
-                                launch_download = Some(names);
-                            }
-
-                            ui.checkbox(&mut self.queue_paused, "Enqueue paused");
-
-                            // Mode ComboBox
-                            egui::ComboBox::from_id_salt("remote_mode_cb")
-                                .selected_text(self.transfer_mode.label())
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.transfer_mode,
-                                        TransferMode::Binary,
-                                        "Binary",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.transfer_mode,
-                                        TransferMode::Text,
-                                        "Text",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.transfer_mode,
-                                        TransferMode::Auto,
-                                        "Auto",
-                                    );
-                                });
-
-                            // Existing file rule ComboBox
-                            egui::ComboBox::from_id_salt("remote_exist_rule_cb")
-                                .selected_text(self.existing_file_rule.label(lang))
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.existing_file_rule,
-                                        ExistingFileRule::Ask,
-                                        ExistingFileRule::Ask.label(lang),
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.existing_file_rule,
-                                        ExistingFileRule::Overwrite,
-                                        ExistingFileRule::Overwrite.label(lang),
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.existing_file_rule,
-                                        ExistingFileRule::Skip,
-                                        ExistingFileRule::Skip.label(lang),
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.existing_file_rule,
-                                        ExistingFileRule::Resume,
-                                        ExistingFileRule::Resume.label(lang),
-                                    );
-                                });
                         });
                     });
-            });
+
+                    ui.add_space(2.0);
+
+                    // Remote Toolbar: Up, New Folder, Refresh, Home, Path Box
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button("\u{E08E}")
+                            .on_hover_text("Dossier parent")
+                            .clicked()
+                        {
+                            let parent = if let Some((p, _)) =
+                                remote_path.trim_end_matches('/').rsplit_once('/')
+                            {
+                                if p.is_empty() {
+                                    "/".to_string()
+                                } else {
+                                    p.to_string()
+                                }
+                            } else {
+                                "/".to_string()
+                            };
+                            cd_remote_into = Some(parent);
+                        }
+                        if ui
+                            .small_button("\u{E24A}+")
+                            .on_hover_text("Nouveau dossier distant")
+                            .clicked()
+                        {
+                            self.show_remote_mkdir = !self.show_remote_mkdir;
+                        }
+                        if ui
+                            .small_button("\u{E094}")
+                            .on_hover_text("Rafraîchir")
+                            .clicked()
+                        {
+                            let _ =
+                                cmd_tx.send(BackendCommand::SftpListDir(remote_path.to_string()));
+                        }
+                        if ui
+                            .small_button("\u{E072}")
+                            .on_hover_text("Home (~ /root)")
+                            .clicked()
+                        {
+                            cd_remote_into = Some(".".to_string());
+                        }
+
+                        let text_w = (ui.available_width() - 48.0).max(60.0);
+                        let mut p_str = remote_path.to_string();
+                        let resp =
+                            ui.add(egui::TextEdit::singleline(&mut p_str).desired_width(text_w));
+                        let enter =
+                            resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if ui.small_button("Aller").clicked() || enter {
+                            cd_remote_into = Some(p_str);
+                        }
+                    });
+
+                    if self.show_remote_mkdir {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Nom:").small());
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.remote_new_folder_name)
+                                    .desired_width(110.0),
+                            );
+                            if ui.small_button("Créer").clicked()
+                                && !self.remote_new_folder_name.trim().is_empty()
+                            {
+                                let target = if remote_path.ends_with('/') {
+                                    format!("{}{}", remote_path, self.remote_new_folder_name.trim())
+                                } else {
+                                    format!(
+                                        "{}/{}",
+                                        remote_path,
+                                        self.remote_new_folder_name.trim()
+                                    )
+                                };
+                                let _ = cmd_tx.send(BackendCommand::SftpMkdir(target.clone()));
+                                self.log(format!("Création dossier distant : {target}"), false);
+                                self.remote_new_folder_name.clear();
+                                self.show_remote_mkdir = false;
+                            }
+                        });
+                    }
+
+                    ui.add_space(2.0);
+
+                    // Column Headers (Fixed widths)
+                    let pane_avail_w = ui.available_width();
+                    let name_w = (pane_avail_w - 235.0).max(100.0);
+
+                    ui.horizontal(|ui| {
+                        let name_arr = if self.remote_sort_col == SftpCol::Name {
+                            if self.remote_sort_asc { " ▲" } else { " ▼" }
+                        } else {
+                            ""
+                        };
+                        if ui
+                            .add_sized(
+                                [name_w, 18.0],
+                                egui::Button::new(format!("Name{name_arr}"))
+                                    .selected(self.remote_sort_col == SftpCol::Name),
+                            )
+                            .clicked()
+                        {
+                            if self.remote_sort_col == SftpCol::Name {
+                                self.remote_sort_asc = !self.remote_sort_asc;
+                            } else {
+                                self.remote_sort_col = SftpCol::Name;
+                                self.remote_sort_asc = true;
+                            }
+                        }
+
+                        let size_arr = if self.remote_sort_col == SftpCol::Size {
+                            if self.remote_sort_asc { " ▲" } else { " ▼" }
+                        } else {
+                            ""
+                        };
+                        if ui
+                            .add_sized(
+                                [65.0, 18.0],
+                                egui::Button::new(format!("Size{size_arr}"))
+                                    .selected(self.remote_sort_col == SftpCol::Size),
+                            )
+                            .clicked()
+                        {
+                            if self.remote_sort_col == SftpCol::Size {
+                                self.remote_sort_asc = !self.remote_sort_asc;
+                            } else {
+                                self.remote_sort_col = SftpCol::Size;
+                                self.remote_sort_asc = false;
+                            }
+                        }
+
+                        let type_arr = if self.remote_sort_col == SftpCol::Type {
+                            if self.remote_sort_asc { " ▲" } else { " ▼" }
+                        } else {
+                            ""
+                        };
+                        if ui
+                            .add_sized(
+                                [75.0, 18.0],
+                                egui::Button::new(format!("Type{type_arr}"))
+                                    .selected(self.remote_sort_col == SftpCol::Type),
+                            )
+                            .clicked()
+                        {
+                            if self.remote_sort_col == SftpCol::Type {
+                                self.remote_sort_asc = !self.remote_sort_asc;
+                            } else {
+                                self.remote_sort_col = SftpCol::Type;
+                                self.remote_sort_asc = true;
+                            }
+                        }
+
+                        let date_arr = if self.remote_sort_col == SftpCol::Date {
+                            if self.remote_sort_asc { " ▲" } else { " ▼" }
+                        } else {
+                            ""
+                        };
+                        if ui
+                            .add_sized(
+                                [85.0, 18.0],
+                                egui::Button::new(format!("Date Mod{date_arr}"))
+                                    .selected(self.remote_sort_col == SftpCol::Date),
+                            )
+                            .clicked()
+                        {
+                            if self.remote_sort_col == SftpCol::Date {
+                                self.remote_sort_asc = !self.remote_sort_asc;
+                            } else {
+                                self.remote_sort_col = SftpCol::Date;
+                                self.remote_sort_asc = false;
+                            }
+                        }
+                    });
+
+                    ui.separator();
+
+                    // Table Body with ScrollArea
+                    let list_h = (ui.available_height() - 36.0).max(120.0);
+                    ScrollArea::vertical()
+                        .id_salt("remote_scroll_fixed")
+                        .max_height(list_h)
+                        .show(ui, |ui| {
+                            let filter_lc = self.remote_filter.trim().to_lowercase();
+                            for entry in remote_entries {
+                                if !filter_lc.is_empty()
+                                    && !entry.name.to_lowercase().contains(&filter_lc)
+                                {
+                                    continue;
+                                }
+
+                                let is_selected = self.remote_selected.contains(&entry.name);
+                                let icon = if entry.is_dir {
+                                    "\u{E24A}"
+                                } else if entry.is_symlink {
+                                    "🔗"
+                                } else {
+                                    "📄"
+                                };
+                                let label_text = format!("{} {}", icon, entry.name);
+
+                                ui.horizontal(|ui| {
+                                    let btn = ui.add_sized(
+                                        [name_w, 18.0],
+                                        egui::Button::new(RichText::new(label_text).color(
+                                            if is_selected {
+                                                Color32::from_rgb(88, 166, 255)
+                                            } else {
+                                                Color32::from_rgb(201, 209, 217)
+                                            },
+                                        ))
+                                        .frame(is_selected)
+                                        .truncate(),
+                                    );
+
+                                    if btn.clicked() {
+                                        if ui.input(|i| i.modifiers.ctrl) {
+                                            if is_selected {
+                                                self.remote_selected.remove(&entry.name);
+                                            } else {
+                                                self.remote_selected.insert(entry.name.clone());
+                                            }
+                                        } else {
+                                            self.remote_selected.clear();
+                                            self.remote_selected.insert(entry.name.clone());
+                                        }
+                                    }
+                                    if btn.double_clicked() && entry.is_dir {
+                                        cd_remote_into = Some(entry.full_path.clone());
+                                    }
+
+                                    // Context Menu
+                                    btn.context_menu(|ui| {
+                                        if ui.button("Download (Télécharger)").clicked() {
+                                            launch_download = Some(vec![entry.name.clone()]);
+                                            ui.close();
+                                        }
+                                        if ui.button("Enqueue new downloads paused").clicked() {
+                                            ui.close();
+                                        }
+                                        ui.separator();
+                                        if ui.button("Open (Ouvrir)").clicked() {
+                                            let temp_file = std::env::temp_dir().join(&entry.name);
+                                            let _ = cmd_tx.send(BackendCommand::SftpDownload {
+                                                remote_path: entry.full_path.clone(),
+                                                local_path: temp_file.clone(),
+                                            });
+                                            let _ = open::that(&temp_file);
+                                            ui.close();
+                                        }
+                                        if ui.button("Edit (Éditer)").clicked() {
+                                            let temp_file = std::env::temp_dir().join(&entry.name);
+                                            let _ = cmd_tx.send(BackendCommand::SftpDownload {
+                                                remote_path: entry.full_path.clone(),
+                                                local_path: temp_file.clone(),
+                                            });
+                                            let _ = std::process::Command::new("notepad.exe")
+                                                .arg(&temp_file)
+                                                .spawn();
+                                            ui.close();
+                                        }
+                                        if ui.button("Move to... (Déplacer vers...)").clicked() {
+                                            self.move_modal = Some(MoveModal {
+                                                is_remote: true,
+                                                current_full_path: entry.full_path.clone(),
+                                                destination_dir: remote_path.to_string(),
+                                            });
+                                            ui.close();
+                                        }
+                                        if ui.button("Erase (Supprimer)").clicked() {
+                                            self.delete_confirm =
+                                                Some((true, entry.full_path.clone(), entry.is_dir));
+                                            ui.close();
+                                        }
+                                        if ui.button("Rename (Renommer)...").clicked() {
+                                            self.rename_modal = Some(RenameModal {
+                                                is_remote: true,
+                                                current_full_path: entry.full_path.clone(),
+                                                new_name: entry.name.clone(),
+                                            });
+                                            ui.close();
+                                        }
+                                        if ui.button("Calculate hashes (SHA-256)").clicked() {
+                                            let _ = cmd_tx.send(BackendCommand::SftpSha256(
+                                                entry.full_path.clone(),
+                                            ));
+                                            self.log(
+                                                format!(
+                                                    "Calcul SHA-256 en cours pour {}",
+                                                    entry.full_path
+                                                ),
+                                                false,
+                                            );
+                                            ui.close();
+                                        }
+                                        ui.separator();
+                                        if ui.button("Create link (Lien symbolique)...").clicked() {
+                                            self.symlink_modal = Some(SymlinkModal {
+                                                target_path: entry.full_path.clone(),
+                                                link_name: format!("{}_link", entry.name),
+                                            });
+                                            ui.close();
+                                        }
+                                        if ui.button("Copy full path (Copier le chemin)").clicked()
+                                        {
+                                            if let Ok(mut clip) = arboard::Clipboard::new() {
+                                                let _ = clip.set_text(&entry.full_path);
+                                            }
+                                            ui.close();
+                                        }
+                                        ui.separator();
+                                        if ui
+                                            .button("Properties (Permissions chmod / SHA-256)")
+                                            .clicked()
+                                        {
+                                            ui.close();
+                                        }
+                                    });
+
+                                    // Size
+                                    let size_str = if entry.is_dir {
+                                        "-".to_string()
+                                    } else {
+                                        format_bytes(entry.size)
+                                    };
+                                    ui.add_sized(
+                                        [65.0, 18.0],
+                                        egui::Label::new(
+                                            RichText::new(size_str)
+                                                .small()
+                                                .monospace()
+                                                .color(Color32::from_rgb(139, 148, 158)),
+                                        ),
+                                    );
+
+                                    // Type
+                                    let type_str = if entry.is_dir {
+                                        "Dossier".to_string()
+                                    } else if entry.is_symlink {
+                                        "Lien sym".to_string()
+                                    } else {
+                                        "Fichier".to_string()
+                                    };
+                                    ui.add_sized(
+                                        [75.0, 18.0],
+                                        egui::Label::new(
+                                            RichText::new(type_str)
+                                                .small()
+                                                .color(Color32::from_rgb(110, 118, 129)),
+                                        )
+                                        .truncate(),
+                                    );
+
+                                    // Date
+                                    let date_str = if entry.mtime > 0 {
+                                        chrono::DateTime::from_timestamp(entry.mtime as i64, 0)
+                                            .map(|dt| dt.format("%d/%m/%y %H:%M").to_string())
+                                            .unwrap_or_else(|| "-".to_string())
+                                    } else {
+                                        "-".to_string()
+                                    };
+                                    ui.add_sized(
+                                        [85.0, 18.0],
+                                        egui::Label::new(
+                                            RichText::new(date_str)
+                                                .small()
+                                                .monospace()
+                                                .color(Color32::from_rgb(110, 118, 129)),
+                                        ),
+                                    );
+                                });
+                            }
+                        });
+
+                    ui.separator();
+
+                    // Bottom Action Bar (Remote)
+                    ui.horizontal(|ui| {
+                        let can_download = !self.remote_selected.is_empty();
+                        if ui
+                            .add_enabled(
+                                can_download,
+                                egui::Button::new(RichText::new("← Download ⬇").strong()),
+                            )
+                            .clicked()
+                        {
+                            let names: Vec<String> = self.remote_selected.iter().cloned().collect();
+                            launch_download = Some(names);
+                        }
+
+                        ui.checkbox(&mut self.queue_paused, "Pause");
+
+                        egui::ComboBox::from_id_salt("remote_mode_cb_v2")
+                            .selected_text(self.transfer_mode.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.transfer_mode,
+                                    TransferMode::Binary,
+                                    "Binary",
+                                );
+                                ui.selectable_value(
+                                    &mut self.transfer_mode,
+                                    TransferMode::Text,
+                                    "Text",
+                                );
+                                ui.selectable_value(
+                                    &mut self.transfer_mode,
+                                    TransferMode::Auto,
+                                    "Auto",
+                                );
+                            });
+
+                        egui::ComboBox::from_id_salt("remote_exist_rule_cb_v2")
+                            .selected_text(self.existing_file_rule.label(lang))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.existing_file_rule,
+                                    ExistingFileRule::Ask,
+                                    ExistingFileRule::Ask.label(lang),
+                                );
+                                ui.selectable_value(
+                                    &mut self.existing_file_rule,
+                                    ExistingFileRule::Overwrite,
+                                    ExistingFileRule::Overwrite.label(lang),
+                                );
+                                ui.selectable_value(
+                                    &mut self.existing_file_rule,
+                                    ExistingFileRule::Skip,
+                                    ExistingFileRule::Skip.label(lang),
+                                );
+                                ui.selectable_value(
+                                    &mut self.existing_file_rule,
+                                    ExistingFileRule::Resume,
+                                    ExistingFileRule::Resume.label(lang),
+                                );
+                            });
+                    });
+                });
         });
 
-        // Handle navigation triggers
+        // Navigation
         if let Some(target) = cd_local_into {
             self.local_path = target;
             self.local_selected.clear();
@@ -1463,7 +1385,7 @@ impl BitviseSftpState {
             self.remote_selected.clear();
         }
 
-        // Handle Upload batch
+        // Upload batch
         if let Some(paths) = launch_upload {
             for p in paths {
                 let filename = p
@@ -1508,7 +1430,7 @@ impl BitviseSftpState {
             }
         }
 
-        // Handle Download batch
+        // Download batch
         if let Some(names) = launch_download {
             for name in names {
                 let remote_src = if remote_path.ends_with('/') {
@@ -1668,7 +1590,6 @@ impl BitviseSftpState {
         _lang: UiLanguage,
         cmd_tx: &UnboundedSender<BackendCommand>,
     ) {
-        // Rename Modal
         if let Some(rename) = &mut self.rename_modal {
             let mut close = false;
             let mut execute_rename = false;
@@ -1739,7 +1660,6 @@ impl BitviseSftpState {
             }
         }
 
-        // Delete Confirm Modal
         if let Some((is_remote, path, is_dir)) = &self.delete_confirm {
             let mut close = false;
             let mut do_delete = false;
@@ -1800,7 +1720,6 @@ impl BitviseSftpState {
             }
         }
 
-        // Symlink Modal
         if let Some(sym) = &mut self.symlink_modal {
             let mut close = false;
             let mut create_sym = false;
@@ -1863,7 +1782,7 @@ mod tests {
     #[test]
     fn test_local_sorting_folders_first() {
         let mut state = BitviseSftpState {
-            active_tab: BitviseSftpTab::Browse,
+            active_tab: SftpClientTab::Browse,
             transfer_mode: TransferMode::Binary,
             existing_file_rule: ExistingFileRule::Ask,
             queue_paused: false,
@@ -1910,7 +1829,6 @@ mod tests {
             rename_modal: None,
             move_modal: None,
             symlink_modal: None,
-            collision_dialog: None,
             delete_confirm: None,
         };
 
