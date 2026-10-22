@@ -31,6 +31,7 @@
 
 It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **OpenSSH** workflows:
 - Load **PuTTY `.ppk` v2 & v3** private keys natively (including **Argon2id** passphrase encryption) alongside OpenSSH/PEM keys.
+- **Migrate from your existing tools in 1 click**: import sessions from the **PuTTY Registry**, portable **KiTTY** folders, **Bitvise SSH Client** profiles (`.tlp` / `.bscp`), and `~/.ssh/config` (with `ProxyJump` and port-forwarding tunnels).
 - Authenticate transparently via **Pageant** (Windows shared memory) **and** the native **Windows OpenSSH Agent** (`\\.\pipe\openssh-ssh-agent`).
 - Provision new servers in **1 click (`ssh-copy-id`)**: connect once with a password, deploy your Primary SSH Key to `~/.ssh/authorized_keys`, and let Cuty-SSH automatically switch the saved session profile to passwordless key authentication while wiping the stored password.
 - Route sessions through **SSH Bastions / Jump Hosts (`-J` / `ProxyJump`)**, manage **TOFU `known_hosts` SHA-256 fingerprints**, encrypt credentials at rest with **Windows DPAPI**, transfer files via **Drag-and-Drop streaming SFTP**, and monitor live remote server telemetry (`CPU load`, `RAM`, `Disk`, `Uptime`).
