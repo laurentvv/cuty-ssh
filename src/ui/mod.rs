@@ -1600,6 +1600,11 @@ impl CutySshApp {
                                 }
                                 tab.sftp_client.refresh_local();
                             }
+                            tab.sftp_client.check_watched_files(
+                                ctx,
+                                &tab.handle.cmd_tx,
+                                self.config.language,
+                            );
                             tab.sftp_client
                                 .log(format!("Transfert terminé : {filename}"), false);
                         } else {
@@ -1830,6 +1835,11 @@ impl eframe::App for CutySshApp {
         let ctx = ui.ctx().clone();
         self.poll_backend_events(&ctx);
         self.process_auto_reconnect(&ctx);
+
+        for tab in &mut self.tabs {
+            tab.sftp_client
+                .check_watched_files(&ctx, &tab.handle.cmd_tx, self.config.language);
+        }
 
         // Global Ctrl+K shortcut for the Command & Session Palette
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::K)) {
