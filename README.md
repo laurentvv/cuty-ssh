@@ -59,7 +59,7 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 | **Dual Agent: Pageant + Windows OpenSSH Agent** | Pageant only | OpenSSH Agent only | ✅ **Both queried automatically** |
 | **1-Click `ssh-copy-id` + Auto Password ➡ Key Switch** | ❌ | ❌ Manual CLI | ✅ **1-Click button + auto profile migration** |
 | **SSH Bastion / Jump Host (`-J` / `ProxyJump`)** | Complex proxy cmd | ✅ `-J` flag | ✅ **Visual selector + inline `ProxyJump`** |
-| **Integrated Streaming SFTP + Explorer Drag & Drop** | ❌ Separate `psftp` | ❌ | ✅ **Built-in side panel + 64 KB streaming** |
+| **Integrated Streaming SFTP + Explorer Drag & Drop** | ❌ Separate `psftp` | ❌ | ✅ **Dual-pane Bitvise/WinSCP SFTP, editor watcher, chmod, collision & mirror** |
 | **Live Remote Telemetry Bar (`Load` / `RAM` / `Disk`)** | ❌ | ❌ | ✅ **Non-intrusive header bar** |
 | **Windows DPAPI Hardware-Bound Secret Encryption** | ❌ Plaintext registry | ❌ | ✅ **`CryptProtectData` + `zeroize`** |
 | **TOFU `known_hosts` SHA-256 Fingerprint Manager** | Registry popup | Text file only | ✅ **Visual `Tools ▾ → Known Hosts` modal + MITM alert** |
@@ -127,13 +127,18 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 
 ---
 
-### 3. Split View, SFTP Drag & Drop & High-Performance Terminal
+### 3. Split View, Advanced SFTP Client (Bitvise/WinSCP Parity) & High-Performance Terminal
 - **Split-Screen Terminal Panes (`◫ Split V` / `⊟ Split H`)**:
   - View and interact with two active terminal tabs simultaneously in **Side-by-Side Vertical** or **Top-Bottom Horizontal** split mode, with independent PTY resizing and click-to-focus.
-- **Streaming SFTP Explorer with Drag & Drop & Progress Bar**:
-  - Drag and drop files directly from **Windows Explorer** onto the Cuty-SSH window to upload them to the active SFTP directory.
-  - Asynchronous chunked streaming (`64 KB` buffers) for large uploads and downloads with a live transfer progress bar.
-  - **Integrated Bitvise dual-pane SFTP client** (local & remote files side-by-side, upload/download queues, full right-click context menu: Open, Edit, Move to, Erase, Rename, SHA-256 hashes, symlinks) replacing any need for external WinSCP.
+- **Full Dual-Pane SFTP Client (Clean-Room Parity with Bitvise SSH Client 9.66 & WinSCP 6.7)**:
+  - **Dual-Pane Cockpit**: Local file tree and remote SFTP server side-by-side with independent sorting (**Name**, **Size**, **Type**, **Modified Date**, **Folders First**), left-aligned filenames, full timestamp rendering, and quick path navigation bar.
+  - **Drag & Drop & Asynchronous Queues**: Drag and drop files from Windows Explorer directly into Cuty-SSH. Transfers run over chunked async pipelines (`64 KB` buffers) with live percentage progress, bytes transferred, and pause/resume controls.
+  - **Permissions & Chmod Modal (Bitvise `#355`)**: Right-click any remote file or folder and select **`Propriétés / Permissions`** to inspect Owner/Group/Size/Date and toggle interactive `rwx` checkboxes (Read, Write, Execute for Owner, Group, Others) with real-time octal calculation (`0755`, `0644`) executed over SFTP `SETSTAT`.
+  - **External Editor Configuration & Auto-Upload Watcher (Bitvise `#450`)**: Click **`⚙ Editor`** in the SFTP toolbar to pick your favorite editor (**Notepad**, **VS Code**, **Notepad++**, or custom binary via file dialog). Editing a remote file automatically downloads it into a sandboxed cache, opens the selected editor, and watches file timestamps/sizes in the background to automatically re-upload changes to the remote server on save.
+  - **Collision Resolution Engine (Bitvise `#415`)**: Configurable transfer collision policy (**Ask**, **Overwrite**, **Resume**, **Skip**). In `Ask` mode, a side-by-side comparison modal displays exact file sizes and modification dates between Source and Destination with 4 instant actions: **Overwrite**, **Resume** (resumable `.cutypart`), **Rename** (with inline new name input), and **Skip**.
+  - **Directory Mirror / Synchronization (Bitvise `#477`)**: One-click **`🔄 Mirror`** button in the SFTP toolbar pre-fills active local and remote paths, calculates delta plans, and executes safe one-way directory mirroring.
+  - **Directory Bookmarks (WinSCP Style)**: Dedicated **`📑`** bookmark menus on both local and remote panes with 1-click addition (**`➕ Bookmark current folder`**) and deletion (**`✖`**) for instant folder navigation.
+  - **Full Context Menus**: Right-click menu for Open, Edit, Move to, Erase, Rename, New Folder, Symlink creation, and SHA-256 integrity calculation.
 - **High-Throughput Batched Terminal Renderer**:
   - Run-length text batching of adjacent cells sharing foreground color (`painter.text` per contiguous run instead of per cell).
   - Compact 1-byte bitflag `TerminalCell` attributes (`CELL_FLAG_*`), alternate screen buffer (`?1049h` for `vim`, `htop`, `tmux`), 256-color & 24-bit TrueColor SGR, and Ctrl+Click URL opening.
@@ -195,7 +200,6 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 ### 7. Resilience, Scripting & Tunnels
 
 - **Auto-reconnect**: tick *Reconnect automatically* in the session editor, or use the `↻ Auto-reconnect` toggle on a tab. A dropped connection retries with back-off (2 s → 30 s, 10 attempts); the status bar shows the countdown, and `↻ Reconnect` forces an immediate retry.
-- **Command line**: `cuty-ssh --session "Prod Web"` opens a saved session at startup (name, unique name fragment or UUID); `cuty-ssh --list` prints the saved sessions.
 - **One-click SOCKS5 / HTTP proxy**: the `SOCKS5/HTTP` button of an SSH tab starts a local proxy (port editable, default `1080`) that accepts both SOCKS5 and HTTP `CONNECT` clients through the session; a `SOCKS5 (-D)` rule can also be saved in the *Port Forwarding* tab.
 - **Keyboard-interactive fallback**: when a server refuses `password` but offers keyboard-interactive (PAM / 2FA), Cuty-SSH continues with it automatically.
 - **SFTP properties & mirror**: `…` on a remote entry opens chmod (rwx grid + octal), symlink creation and SHA-256; `Mirror` previews and runs a one-way local/remote sync.
@@ -205,6 +209,66 @@ Connect to isolated private or DMZ servers transparently through an intermediate
 | SFTP properties (chmod, symlink, SHA-256) | SFTP mirror (preview, then sync) | Auto-reconnect |
 |---|---|---|
 | ![SFTP properties](assets/screenshot_sftp_properties.png) | ![SFTP mirror](assets/screenshot_sftp_mirror.png) | ![Auto-reconnect](assets/screenshot_auto_reconnect.png) |
+
+---
+
+### 8. Universal CLI Launcher, URI Schemes & DevOps Automation
+
+Cuty-SSH includes a complete, high-performance command-line launcher (`cuty-ssh.exe`) designed for DevOps workflows, shell integration, Windows desktop shortcuts, and browser protocol handlers:
+
+```text
+Usage: cuty-ssh.exe [OPTIONS] [TARGET]
+
+Arguments:
+  [TARGET]                   Saved session name/UUID, [user@]host[:port], or URI (ssh://, sftp://, telnet://)
+
+Options:
+  -s, --session <NAME|UUID>  Open a saved session at startup
+  -load <NAME|UUID>          Alias for --session (PuTTY/KiTTY drop-in compatibility)
+  -shell, --shell            Open a local ConPTY PowerShell shell tab immediately
+  -ssh [USER@]HOST           Connect via SSH2
+  -telnet HOST               Connect via Telnet
+  -raw HOST                  Connect via Raw TCP
+  -P, --port <PORT>          Target port number
+  -l, --user <USER>          SSH username
+  -pw <PASSWORD>             SSH/Telnet login password
+  -i <KEYFILE>               SSH private key path (.ppk v2/v3, OpenSSH, PEM)
+  -passphrase <PASSPHRASE>   SSH private key passphrase
+  -J <BASTION>               Bastion / ProxyJump (user@bastion:port)
+      --list                 List saved sessions with protocol and connection details
+  -V, --version              Print version information
+  -h, --help                 Print help information
+```
+
+#### Practical CLI Examples
+
+- **Ad-hoc OpenSSH connection**:
+  ```powershell
+  cuty-ssh.exe root@192.168.1.50
+  cuty-ssh.exe admin@srv.domain.lan:2222
+  cuty-ssh.exe 10.0.0.1
+  ```
+- **Direct Dual-Pane SFTP Explorer (`sftp://`)**:
+  ```powershell
+  # Connects over SSH and immediately reveals the dual-pane SFTP client
+  cuty-ssh.exe sftp://deploy@192.168.1.10:22
+  ```
+- **Key-based authentication with passphrase**:
+  ```powershell
+  # Connect using a PuTTY .ppk key and optional passphrase
+  cuty-ssh.exe -ssh admin@10.0.0.1:22 -i "D:\keys\prod.ppk" -passphrase "secret"
+  ```
+- **PuTTY & KiTTY drop-in replacement**:
+  ```powershell
+  cuty-ssh.exe -load "Production Database"
+  cuty-ssh.exe "Production Database"
+  ```
+- **Local ConPTY PowerShell Tab**:
+  ```powershell
+  cuty-ssh.exe -shell
+  ```
+- **Browser & Wiki integration**:
+  Register Cuty-SSH as the default handler for `ssh://` and `sftp://` URLs in Windows. Clicking any `<a href="ssh://root@router.lan">Router</a>` in your internal wiki or inventory (GLPI, NetBox, phpIPAM) opens the connected session in Cuty-SSH automatically.
 
 ---
 
@@ -251,7 +315,7 @@ Requires the **Rust 2024 toolchain** (`rustup` stable on Windows 10/11 x64):
 git clone https://github.com/laurentvv/cuty-ssh.git
 cd cuty-ssh
 
-# Format check, Clippy linter, and unit tests (21 tests)
+# Format check, Clippy linter, and unit tests (42 tests)
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
@@ -270,13 +334,14 @@ The compiled executable is generated at `target/release/cuty-ssh.exe`.
 
 | Module | File | Responsibility |
 | :--- | :--- | :--- |
-| **Entrypoint & Native Viewport** | [`src/main.rs`](src/main.rs) | Native `eframe 0.37` viewport bootstrap (`1320×820`), DirectX 12 `wgpu` backend, embedded cyber-cat icon, Tokio runtime setup, and integration test suite. |
+| **Entrypoint & CLI Launcher** | [`src/main.rs`](src/main.rs) | Universal CLI connection launcher (`CliTarget` ad-hoc SSH/SFTP/Telnet/Shell, URI scheme router, PuTTY compatibility flags), parent console attacher, native `eframe 0.37` viewport bootstrap (`1320×820`), DirectX 12 `wgpu` backend, Tokio runtime setup, and test suite. |
 | **Config, DPAPI Vault & Audit Storage** | [`src/config/mod.rs`](src/config/mod.rs) | `SessionProfile`, `AppConfig`, `UiLanguage` (`English` / `French`), Windows DPAPI encryption (`CryptProtectData`), TOFU `known_hosts.json` store, `AuditLogEntry` append-only engine, Edge Gateway presets, `~/.ssh/config` parser, and Registry PuTTY importer. |
 | **PuTTY `.ppk`, Agents & `ssh-copy-id`** | [`src/ssh/ppk.rs`](src/ssh/ppk.rs) | `.ppk` v2/v3 & OpenSSH/PEM/`.pub` inspection, `zeroize`-hardened decoding, `.ppk` v3 encoder, Primary Key resolver/generator, `ssh-copy-id` POSIX script builder, and Pageant/OpenSSH Agent client helpers. |
 | **VT100 Terminal Engine & Fast Selection** | [`src/terminal/mod.rs`](src/terminal/mod.rs) | `vte 0.15`-backed terminal grid, compact 1-byte bitflag `TerminalCell`, alternate screen (`?1049h`), 256-color/TrueColor SGR, scrollback, double-click word/token and triple-click line selection, search, and URL detection. |
 | **Asciinema v2 Session Recorder & Player** | [`src/terminal/recording.rs`](src/terminal/recording.rs) | Standard `.cast` JSON Lines session recorder, event parser, and interactive playback engine. |
 | **Async Protocols, Bastion & SFTP** | [`src/protocols/mod.rs`](src/protocols/mod.rs) | Async SSH2 (`russh`), `ProxyJump` (`direct-tcpip`), TOFU host key check, `DeployPublicKey` (`ssh-copy-id` exec channel), streaming SFTP (`russh-sftp`), Telnet RFC 854, Raw TCP, Windows ConPTY (`portable-pty`), live SSH telemetry, and IPv4 CIDR calculator. |
-| **Desktop UI & SysAdmin Cockpit** | [`src/ui/mod.rs`](src/ui/mod.rs) | `egui 0.37` / `eframe 0.37` desktop interface: Dark-Tech theme, bilingual EN/FR localization, interactive Cockpit dashboard, Command Palette (`Ctrl+K`), 1-click Password-to-Key migration, Fleet Health check, Network Toolkit, and SFTP side panel. |
+| **Desktop UI & SysAdmin Cockpit** | [`src/ui/mod.rs`](src/ui/mod.rs) | `egui 0.37` / `eframe 0.37` desktop interface: Dark-Tech theme, bilingual EN/FR localization, interactive Cockpit dashboard, Command Palette (`Ctrl+K`), 1-click Password-to-Key migration, Fleet Health check, and Network Toolkit. |
+| **Advanced Dual-Pane SFTP Client** | [`src/ui/sftp_client.rs`](src/ui/sftp_client.rs) | Dual-pane SFTP client (Bitvise SSH Client 9.66 & WinSCP 6.7 clean-room parity), external editor configuration with auto-upload file watcher, collision resolution modal, directory bookmarks (`📑`), interactive chmod permissions modal (`rwx` & octal), and transfer queues. |
 | **Batched Terminal & Split View** | [`src/ui/terminal_view.rs`](src/ui/terminal_view.rs) | Run-length batched terminal renderer, Horizontal/Vertical Split View panes, Broadcast Input mode, and VT key encoder. |
 | **Local Audit Trail Modal** | [`src/ui/audit_modal.rs`](src/ui/audit_modal.rs) | Full-text audit log explorer, event filters, duration tracking, and 1-click CSV/JSON export. |
 | **Asciinema Replay Player Modal** | [`src/ui/replay_modal.rs`](src/ui/replay_modal.rs) | In-app session replay player with interactive timeline scrubber and speed multiplier (`0.5x`–`4x`). |
