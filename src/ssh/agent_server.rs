@@ -46,12 +46,17 @@ pub struct NativeAgentServer {
     shutdown_tx: watch::Sender<bool>,
     alive: Arc<AtomicBool>,
     pub pipe_name: String,
+    /// WM_COPYDATA compatibility window (PuTTY/KiTTY/WinSCP legacy clients).
+    pub wm: Option<super::agent_wmcopydata::WmAgentServer>,
+    pub wm_status: Arc<std::sync::Mutex<super::agent_wmcopydata::WmCompatStatus>>,
 }
 
 impl NativeAgentServer {
     /// Starts the agent server on the given runtime. The first pipe instance
     /// is created synchronously so a name conflict (another cuty-ssh agent
-    /// already listening) is reported immediately.
+    /// already listening) is reported immediately. The WM_COPYDATA
+    /// compatibility window starts too, but a conflict there (external
+    /// pageant.exe running) only degrades that transport — never the pipe.
     pub fn start(rt: &tokio::runtime::Handle) -> Result<Self, String> {
         let core = Arc::new(NativeAgentCore::new());
         let pipe_name = pipe_name();
@@ -67,11 +72,23 @@ impl NativeAgentServer {
         rt.spawn(async move {
             run_accept_loop(first, core_task, name_task, shutdown_rx, alive_task).await
         });
+
+        let (wm, wm_status) = super::agent_wmcopydata::WmAgentServer::start(core.clone());
+        if let Some(err) = match &*wm_status.lock().unwrap() {
+            super::agent_wmcopydata::WmCompatStatus::Conflict(m)
+            | super::agent_wmcopydata::WmCompatStatus::Failed(m) => Some(m.clone()),
+            _ => None,
+        } {
+            tracing::warn!("native agent: WM_COPYDATA compatibility inactive: {err}");
+        }
+
         Ok(Self {
             core,
             shutdown_tx,
             alive,
             pipe_name,
+            wm,
+            wm_status,
         })
     }
 
@@ -81,13 +98,19 @@ impl NativeAgentServer {
 
     /// Stops accepting new connections. In-flight requests finish; keys stay
     /// in memory only until the core is dropped.
-    pub fn stop(self) {
+    pub fn stop(mut self) {
+        if let Some(mut wm) = self.wm.take() {
+            wm.stop();
+        }
         let _ = self.shutdown_tx.send(true);
     }
 }
 
 impl Drop for NativeAgentServer {
     fn drop(&mut self) {
+        if let Some(mut wm) = self.wm.take() {
+            wm.stop();
+        }
         let _ = self.shutdown_tx.send(true);
     }
 }

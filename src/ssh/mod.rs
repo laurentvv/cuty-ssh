@@ -4,4 +4,6 @@
 pub mod agent;
 #[cfg(windows)]
 pub mod agent_server;
+#[cfg(windows)]
+pub mod agent_wmcopydata;
 pub mod ppk;

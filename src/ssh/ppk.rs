@@ -10,7 +10,6 @@ use russh::keys::{PublicKeyBase64, decode_secret_key, parse_public_key_base64};
 use sha2::Sha256;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -473,51 +472,6 @@ pub fn resolve_pageant_executable_with_hints(
 }
 
 /// Resolves the path to `pageant.exe`, prioritizing `configured_path` then standard paths.
-pub fn resolve_pageant_executable(configured_path: &str) -> Option<PathBuf> {
-    resolve_pageant_executable_with_hints(configured_path, &[])
-}
-
-/// Launches Pageant with an optional list of `.ppk` key files.
-pub fn launch_pageant_with_keys(configured_path: &str, ppk_files: &[String]) -> Result<String> {
-    let mut hints: Vec<&str> = Vec::new();
-    for f in ppk_files {
-        hints.push(f.as_str());
-    }
-    let exe = resolve_pageant_executable_with_hints(configured_path, &hints).unwrap_or_else(|| {
-        if configured_path.trim().is_empty() {
-            PathBuf::from(r"C:\Program Files\PuTTY\pageant.exe")
-        } else {
-            PathBuf::from(configured_path)
-        }
-    });
-
-    if !exe.exists() {
-        anyhow::bail!(
-            "Pageant executable not found at \"{}\". Install PuTTY (winget install SimonTatham.PuTTY) or download from https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html",
-            exe.display()
-        );
-    }
-
-    let mut cmd = Command::new(&exe);
-    for f in ppk_files {
-        if !f.trim().is_empty() {
-            cmd.arg(f);
-        }
-    }
-    cmd.spawn()
-        .with_context(|| format!("Failed to launch {}", exe.display()))?;
-
-    if ppk_files.is_empty() {
-        Ok(format!("Pageant démarré ({})", exe.display()))
-    } else {
-        Ok(format!(
-            "Pageant ({}) invoqué avec {} clé(s) .ppk",
-            exe.display(),
-            ppk_files.len()
-        ))
-    }
-}
-
 /// Per-agent diagnostic for the key list query. An empty key list is ambiguous
 /// ("no keys loaded" vs "agent unreachable") — this carries the why.
 #[derive(Debug, Clone, Default)]
