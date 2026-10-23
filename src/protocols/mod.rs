@@ -1264,12 +1264,36 @@ async fn run_ssh_session(
                         tokio::spawn(async move {
                             let guard = sftp_ref.lock().await;
                             if let Some(sftp) = guard.as_ref() {
-                                match upload_sftp_file(sftp, &local_path, &remote_path, &evt_c).await {
+                                let is_dir = tokio::fs::metadata(&local_path)
+                                    .await
+                                    .map(|m| m.is_dir())
+                                    .unwrap_or(false);
+                                let result = if is_dir {
+                                    upload_sftp_tree(sftp, &local_path, &remote_path, &evt_c).await
+                                } else {
+                                    upload_sftp_file(sftp, &local_path, &remote_path, &evt_c).await
+                                };
+                                match result {
                                     Ok(bytes_len) => {
                                         let _ = evt_c.send(BackendEvent::SftpStatus(format!(
                                             "Upload réussi : {} ({} octets)",
                                             remote_path, bytes_len
                                         )));
+                                        if is_dir {
+                                            // Mark the folder's queue entry as completed;
+                                            // its children were reported individually.
+                                            let _ = evt_c.send(BackendEvent::SftpProgress {
+                                                filename: remote_path
+                                                    .rsplit('/')
+                                                    .next()
+                                                    .unwrap_or(&remote_path)
+                                                    .to_string(),
+                                                transferred: bytes_len,
+                                                total: bytes_len,
+                                                is_upload: true,
+                                                done: true,
+                                            });
+                                        }
                                         if let Some((parent_dir, _)) = remote_path.rsplit_once('/') {
                                             let dir = if parent_dir.is_empty() { "/" } else { parent_dir };
                                             if let Ok(entries) = list_sftp_directory(sftp, dir).await {
@@ -1296,13 +1320,38 @@ async fn run_ssh_session(
                         tokio::spawn(async move {
                             let guard = sftp_ref.lock().await;
                             if let Some(sftp) = guard.as_ref() {
-                                match download_sftp_file(sftp, &remote_path, &local_path, &evt_c).await {
+                                let is_dir = sftp
+                                    .metadata(&remote_path)
+                                    .await
+                                    .map(|m| m.is_dir())
+                                    .unwrap_or(false);
+                                let result = if is_dir {
+                                    download_sftp_tree(sftp, &remote_path, &local_path, &evt_c).await
+                                } else {
+                                    download_sftp_file(sftp, &remote_path, &local_path, &evt_c).await
+                                };
+                                match result {
                                     Ok(bytes_len) => {
                                         let _ = evt_c.send(BackendEvent::SftpStatus(format!(
                                             "Téléchargé vers {} ({} octets)",
                                             local_path.display(),
                                             bytes_len
                                         )));
+                                        if is_dir {
+                                            // Mark the folder's queue entry as completed;
+                                            // its children were reported individually.
+                                            let _ = evt_c.send(BackendEvent::SftpProgress {
+                                                filename: remote_path
+                                                    .rsplit('/')
+                                                    .next()
+                                                    .unwrap_or(&remote_path)
+                                                    .to_string(),
+                                                transferred: bytes_len,
+                                                total: bytes_len,
+                                                is_upload: false,
+                                                done: true,
+                                            });
+                                        }
                                     }
                                     Err(e) => {
                                         let _ = evt_c.send(BackendEvent::SftpStatus(format!(
@@ -1918,6 +1967,93 @@ async fn download_sftp_file(
         done: true,
     });
     Ok(transferred)
+}
+
+/// Joins a remote directory path and a name with a single `/` separator.
+pub(crate) fn join_remote(dir: &str, name: &str) -> String {
+    if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// Recursively downloads a remote directory tree into `local_dir`.
+/// Symlinks are skipped, like the mirror tool. Returns the bytes transferred.
+/// A failed child is reported and skipped so one unreadable file does not
+/// abort the whole folder. Iterative with an explicit stack: async recursion
+/// would need boxing.
+pub(crate) async fn download_sftp_tree(
+    sftp: &SftpSession,
+    remote_root: &str,
+    local_root: &Path,
+    evt_tx: &UnboundedSender<BackendEvent>,
+) -> Result<u64> {
+    tokio::fs::create_dir_all(local_root).await?;
+    let mut total = 0u64;
+    let mut stack = vec![(remote_root.to_string(), local_root.to_path_buf())];
+    while let Some((remote_dir, local_dir)) = stack.pop() {
+        for entry in list_sftp_directory(sftp, &remote_dir).await? {
+            if entry.name == "." || entry.name == ".." || entry.is_symlink {
+                continue;
+            }
+            let local_child = local_dir.join(&entry.name);
+            if entry.is_dir {
+                tokio::fs::create_dir_all(&local_child).await?;
+                stack.push((entry.full_path.clone(), local_child));
+            } else {
+                match download_sftp_file(sftp, &entry.full_path, &local_child, evt_tx).await {
+                    Ok(n) => total += n,
+                    Err(e) => {
+                        let _ = evt_tx.send(BackendEvent::SftpStatus(format!(
+                            "Erreur téléchargement {} : {e}",
+                            entry.full_path
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// Recursively uploads a local directory tree to `remote_dir`
+/// (symlinks are skipped). Returns the bytes transferred. A failed child is
+/// reported and skipped so one locked file does not abort the whole folder.
+pub(crate) async fn upload_sftp_tree(
+    sftp: &SftpSession,
+    local_root: &Path,
+    remote_root: &str,
+    evt_tx: &UnboundedSender<BackendEvent>,
+) -> Result<u64> {
+    // Missing parents are common when the target folder is new on the server;
+    // a real permission failure surfaces on the first file transfer.
+    let _ = sftp.create_dir(remote_root).await;
+    let mut total = 0u64;
+    let mut stack = vec![(local_root.to_path_buf(), remote_root.to_string())];
+    while let Some((local_dir, remote_dir)) = stack.pop() {
+        let mut rd = tokio::fs::read_dir(&local_dir).await?;
+        while let Some(entry) = rd.next_entry().await? {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let remote_child = join_remote(&remote_dir, &name);
+            let ft = entry.file_type().await?;
+            if ft.is_dir() {
+                let _ = sftp.create_dir(&remote_child).await;
+                stack.push((entry.path(), remote_child));
+            } else if ft.is_file() {
+                match upload_sftp_file(sftp, &entry.path(), &remote_child, evt_tx).await {
+                    Ok(n) => total += n,
+                    Err(e) => {
+                        let _ = evt_tx.send(BackendEvent::SftpStatus(format!(
+                            "Erreur envoi {} : {e}",
+                            entry.path().display()
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(total)
 }
 
 /// Telnet connection (RFC 854 IAC, NAWS, TTYPE, SGA + Auto-login) and Raw TCP

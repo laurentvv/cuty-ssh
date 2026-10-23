@@ -563,6 +563,11 @@ impl CutySshApp {
                     "4. Client Double-Volet Bitvise : Cliquez sur « 📁 SFTP » pour ouvrir le client Bitvise complet (fichiers locaux à gauche, distants à droite, files d'attente d'upload/download et menu contextuel clic-droit complet : Open, Edit, Move to, Erase, Rename, Hashes SHA-256, Symlinks, Copy full path).",
                     "4. Dual-Pane Bitvise Client: Click '📁 SFTP' to open the complete Bitvise client (local files on left, remote on right, upload/download queues, and full right-click context menu: Open, Edit, Move to, Erase, Rename, Hashes SHA-256, Symlinks, Copy full path).",
                 ),
+                tr(
+                    lang,
+                    "5. Glisser entre les deux volets : faites glisser un fichier, un dossier ou toute la sélection du volet local vers le volet distant pour l'envoyer, et du volet distant vers le volet local pour le télécharger. Les dossiers entiers sont transférés récursivement (liens symboliques ignorés) ; le panneau cible s'illumine pendant le survol, et les fichiers des dossiers existants suivent les règles de collision habituelles.",
+                    "5. Drag between the two panes: drag a file, a folder, or the whole selection from the local pane to the remote pane to upload it, and from the remote pane to the local pane to download it. Whole folders transfer recursively (symlinks skipped); the target pane lights up on hover, and files inside existing folders follow the usual collision rules.",
+                ),
             ],
         );
 
@@ -1054,8 +1059,8 @@ impl CutySshApp {
             ),
             c6_b1 = tr(
                 lang,
-                "<strong>📂 SFTP</strong> : glissez-déposez des fichiers depuis l'Explorateur Windows directement vers le panneau SFTP avec barre de progression temps réel.",
-                "<strong>📂 SFTP</strong>: drag and drop files from Windows Explorer directly onto the SFTP panel with a real-time transfer progress bar."
+                "<strong>📂 SFTP</strong> : glissez-déposez des fichiers depuis l'Explorateur Windows vers le panneau SFTP, ou entre les deux volets pour envoyer/télécharger (dossiers entiers compris), avec barre de progression temps réel.",
+                "<strong>📂 SFTP</strong>: drag and drop files from Windows Explorer onto the SFTP panel, or between the two panes to upload/download (whole folders included), with a real-time transfer progress bar."
             ),
             c6_b2 = tr(
                 lang,

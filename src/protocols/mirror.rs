@@ -1,6 +1,6 @@
 //! SFTP directory mirroring (one-way sync): planning, local/remote walkers and execution.
 
-use super::{BackendEvent, download_sftp_file, list_sftp_directory, upload_sftp_file};
+use super::{BackendEvent, download_sftp_file, join_remote, list_sftp_directory, upload_sftp_file};
 use anyhow::Result;
 use russh_sftp::client::SftpSession;
 use std::collections::BTreeMap;
@@ -59,14 +59,6 @@ pub fn plan_mirror(
         }
     }
     actions
-}
-
-fn join_remote(dir: &str, rel: &str) -> String {
-    if dir.ends_with('/') {
-        format!("{dir}{rel}")
-    } else {
-        format!("{dir}/{rel}")
-    }
 }
 
 /// Recursively lists regular files under `root` (symlinks are skipped).

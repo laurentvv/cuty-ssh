@@ -101,6 +101,27 @@ pub struct QueueTask {
     pub status: QueueTaskStatus,
 }
 
+/// Payload carried by an egui drag-and-drop between the two file panes.
+#[derive(Debug, Clone)]
+pub struct SftpDragPayload {
+    /// Entry names being dragged (the whole selection when the dragged row is part of it).
+    pub names: Vec<String>,
+    /// `true` when the drag started from the remote pane (drop = download).
+    pub from_remote: bool,
+}
+
+/// Names a drag should carry: the whole selection when the dragged entry is
+/// part of it, otherwise just the dragged entry (file-manager behaviour).
+fn dragged_names(selected: &HashSet<String>, name: &str) -> Vec<String> {
+    if selected.contains(name) {
+        let mut names: Vec<String> = selected.iter().cloned().collect();
+        names.sort();
+        names
+    } else {
+        vec![name.to_string()]
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SftpLogEntry {
     pub timestamp: String,
@@ -735,7 +756,7 @@ impl SftpClientState {
             // ==================== LEFT COLUMN: LOCAL FILES ====================
             let col_left = &mut columns[0];
             col_left.set_max_width(half_w);
-            egui::Frame::NONE
+            let left_pane = egui::Frame::NONE
                 .fill(Color32::from_rgb(13, 17, 23))
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::same(6))
@@ -1012,7 +1033,8 @@ impl SftpClientState {
                                             ))
                                             .frame(is_selected)
                                             .selected(is_selected)
-                                            .truncate(),
+                                            .truncate()
+                                            .sense(egui::Sense::click_and_drag()),
                                     );
 
                                     if btn.clicked() {
@@ -1030,6 +1052,18 @@ impl SftpClientState {
                                     if btn.double_clicked() && entry.is_dir {
                                         cd_local_into = Some(entry.path.clone());
                                     }
+
+                                    // Drag & drop to the remote pane = upload.
+                                    // A click stays a click: egui only decides "drag"
+                                    // once the pointer moved past the click threshold.
+                                    if btn.drag_started() && !is_selected {
+                                        self.local_selected.clear();
+                                        self.local_selected.insert(entry.name.clone());
+                                    }
+                                    btn.dnd_set_drag_payload(SftpDragPayload {
+                                        names: dragged_names(&self.local_selected, &entry.name),
+                                        from_remote: false,
+                                    });
 
                                     // Right-click context menu (Local file) - Strict FR / EN, zero mixed text
                                     btn.context_menu(|ui| {
@@ -1214,10 +1248,46 @@ impl SftpClientState {
                     });
                 });
 
+            // Drop zone: entries dragged from the remote pane are downloaded here.
+            if let Some(payload) = left_pane
+                .response
+                .dnd_release_payload::<SftpDragPayload>()
+                && payload.from_remote
+            {
+                let names: Vec<String> = payload.names.clone();
+                self.log(
+                    tr(
+                        lang,
+                        &format!(
+                            "Dépôt détecté : {} élément(s) distant(s) → téléchargement",
+                            names.len()
+                        ),
+                        &format!(
+                            "Drop detected: {} remote item(s) → downloading",
+                            names.len()
+                        ),
+                    ),
+                    false,
+                );
+                launch_download = Some(names);
+            }
+            if left_pane
+                .response
+                .dnd_hover_payload::<SftpDragPayload>()
+                .is_some_and(|p| p.from_remote)
+            {
+                col_left.painter().rect_stroke(
+                    left_pane.response.rect,
+                    4.0,
+                    Stroke::new(2.0, Color32::from_rgb(88, 166, 255)),
+                    egui::StrokeKind::Inside,
+                );
+            }
+
             // ==================== RIGHT COLUMN: REMOTE FILES ====================
             let col_right = &mut columns[1];
             col_right.set_max_width(half_w);
-            egui::Frame::NONE
+            let right_pane = egui::Frame::NONE
                 .fill(Color32::from_rgb(13, 17, 23))
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::same(6))
@@ -1509,7 +1579,8 @@ impl SftpClientState {
                                             ))
                                             .frame(is_selected)
                                             .selected(is_selected)
-                                            .truncate(),
+                                            .truncate()
+                                            .sense(egui::Sense::click_and_drag()),
                                     );
 
                                     if btn.clicked() {
@@ -1527,6 +1598,18 @@ impl SftpClientState {
                                     if btn.double_clicked() && entry.is_dir {
                                         cd_remote_into = Some(entry.full_path.clone());
                                     }
+
+                                    // Drag & drop to the local pane = download.
+                                    // A click stays a click: egui only decides "drag"
+                                    // once the pointer moved past the click threshold.
+                                    if btn.drag_started() && !is_selected {
+                                        self.remote_selected.clear();
+                                        self.remote_selected.insert(entry.name.clone());
+                                    }
+                                    btn.dnd_set_drag_payload(SftpDragPayload {
+                                        names: dragged_names(&self.remote_selected, &entry.name),
+                                        from_remote: true,
+                                    });
 
                                     // Context Menu (Remote file) - Strict FR / EN, zero mixed text
                                     btn.context_menu(|ui| {
@@ -1792,6 +1875,48 @@ impl SftpClientState {
                             });
                     });
                 });
+
+            // Drop zone: entries dragged from the local pane are uploaded here.
+            if let Some(payload) = right_pane
+                .response
+                .dnd_release_payload::<SftpDragPayload>()
+                && !payload.from_remote
+            {
+                let paths: Vec<PathBuf> = payload
+                    .names
+                    .iter()
+                    .filter_map(|n| {
+                        let p = self.local_path.join(n);
+                        p.exists().then_some(p)
+                    })
+                    .collect();
+                if !paths.is_empty() {
+                    self.log(
+                        tr(
+                            lang,
+                            &format!(
+                                "Dépôt détecté : {} élément(s) local(s) → envoi",
+                                paths.len()
+                            ),
+                            &format!("Drop detected: {} local item(s) → uploading", paths.len()),
+                        ),
+                        false,
+                    );
+                    launch_upload = Some(paths);
+                }
+            }
+            if right_pane
+                .response
+                .dnd_hover_payload::<SftpDragPayload>()
+                .is_some_and(|p| !p.from_remote)
+            {
+                col_right.painter().rect_stroke(
+                    right_pane.response.rect,
+                    4.0,
+                    Stroke::new(2.0, Color32::from_rgb(46, 160, 67)),
+                    egui::StrokeKind::Inside,
+                );
+            }
         });
 
         // Navigation
@@ -1820,6 +1945,7 @@ impl SftpClientState {
 
                 let meta = std::fs::metadata(&p).ok();
                 let local_size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let local_is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
                 let local_mtime = meta
                     .as_ref()
                     .and_then(|m| m.modified().ok())
@@ -1827,9 +1953,11 @@ impl SftpClientState {
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
 
-                // Collision check against remote entries
+                // Collision check against remote entries.
+                // Directories merge silently: their children go through the same
+                // collision rules one by one during the recursive transfer.
                 let existing_remote = remote_entries.iter().find(|e| e.name == filename);
-                if let Some(existing) = existing_remote {
+                if let (false, Some(existing)) = (local_is_dir, existing_remote) {
                     match self.existing_file_rule {
                         ExistingFileRule::Skip => {
                             self.log(
@@ -1908,8 +2036,11 @@ impl SftpClientState {
                 let existing_remote = remote_entries.iter().find(|e| e.name == name);
                 let remote_size = existing_remote.map(|e| e.size).unwrap_or(0);
                 let remote_mtime = existing_remote.map(|e| e.mtime).unwrap_or(0);
+                let remote_is_dir = existing_remote.map(|e| e.is_dir).unwrap_or(false);
 
-                if local_dst.exists() {
+                // Directories merge silently: their children go through the same
+                // collision rules one by one during the recursive transfer.
+                if local_dst.exists() && !remote_is_dir {
                     let meta = std::fs::metadata(&local_dst).ok();
                     let local_size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                     let local_mtime = meta
@@ -2850,5 +2981,32 @@ mod tests {
         assert_eq!(state.editor_path, "notepad.exe");
         state.editor_path = "code".to_string();
         assert_eq!(state.editor_path, "code");
+    }
+
+    #[test]
+    fn dragged_entry_outside_selection_carries_only_itself() {
+        let selected: HashSet<String> = ["a.txt".to_string(), "b.txt".to_string()]
+            .into_iter()
+            .collect();
+        assert_eq!(dragged_names(&selected, "c.txt"), vec!["c.txt".to_string()]);
+    }
+
+    #[test]
+    fn dragged_entry_inside_selection_carries_whole_selection_sorted() {
+        let selected: HashSet<String> = [
+            "c.txt".to_string(),
+            "a.txt".to_string(),
+            "b.txt".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            dragged_names(&selected, "a.txt"),
+            vec![
+                "a.txt".to_string(),
+                "b.txt".to_string(),
+                "c.txt".to_string()
+            ]
+        );
     }
 }
