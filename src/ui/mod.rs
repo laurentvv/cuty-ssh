@@ -180,9 +180,9 @@ fn agent_status_text(keys_len: usize, report: &AgentProbeReport, lang: UiLanguag
     let fr = lang == UiLanguage::French;
     if keys_len > 0 {
         return if fr {
-            format!("Pageant/Agent : {} clé(s) prête(s)", keys_len)
+            format!("Agents SSH : {} clé(s) prête(s)", keys_len)
         } else {
-            format!("Pageant/Agent: {} key(s) ready", keys_len)
+            format!("SSH Agents: {} key(s) ready", keys_len)
         };
     }
     if !report.pageant_running {
@@ -206,9 +206,9 @@ fn agent_status_text(keys_len: usize, report: &AgentProbeReport, lang: UiLanguag
         };
     }
     if fr {
-        "Pageant actif, 0 clé chargée".to_string()
+        "Agent Pageant actif, 0 clé chargée (utilisez l'agent intégré ci-dessus)".to_string()
     } else {
-        "Pageant alive, 0 keys loaded".to_string()
+        "External Pageant alive, 0 keys loaded (use the integrated agent above)".to_string()
     }
 }
 
@@ -2441,8 +2441,8 @@ impl CutySshApp {
                     if theme::tool_button(ui, theme::icons::KEY, &keys_label)
                         .on_hover_text(tr(
                             lang,
-                            "Gestionnaire de clés PuTTY (.ppk v2/v3), Pageant, conversion et génération",
-                            "PuTTY (.ppk v2/v3) & Pageant key manager, converter and key generator",
+                            "Agent SSH intégré, clés PuTTY (.ppk v2/v3), conversion et génération",
+                            "Key manager: integrated SSH agent, .ppk v2/v3 inspector, converter and key generator",
                         ))
                         .clicked()
                     {
@@ -2862,8 +2862,8 @@ impl CutySshApp {
                             .small_button(format!("🔐 {}", pageant_status))
                             .on_hover_text(tr(
                                 lang,
-                                "Cliquer pour ouvrir le gestionnaire Pageant & clés .ppk",
-                                "Click to open the Pageant & .ppk Key Manager",
+                                "Cliquer pour ouvrir le gestionnaire de clés & agent intégré",
+                                "Click to open the Key Manager & Integrated Agent",
                             ))
                             .clicked()
                         {
@@ -3445,7 +3445,7 @@ impl CutySshApp {
                                                         .add_sized(
                                                             [pageant_w, 23.0],
                                                             egui::Button::new(
-                                                                RichText::new("\u{E2D6} Pageant")
+                                                                RichText::new("\u{E868} Agent")
                                                                     .size(10.5)
                                                                     .color(Color32::from_rgb(210, 153, 34)),
                                                             ),
@@ -5054,8 +5054,8 @@ impl CutySshApp {
                     ui.label(
                         RichText::new(tr(
                             lang,
-                            "SSH2 • Bastion (-J) • Telnet • Raw TCP • SFTP • ConPTY • Clés PuTTY (.ppk v2/v3) & Pageant • Télémétrie Live",
-                            "SSH2 • Bastion (-J) • Telnet • Raw TCP • SFTP • ConPTY • PuTTY Keys (.ppk v2/v3) & Pageant • Live Telemetry",
+                            "SSH2 • Bastion (-J) • Telnet • Raw TCP • SFTP • ConPTY • Clés PuTTY (.ppk v2/v3) & Agent SSH Intégré • Télémétrie Live",
+                            "SSH2 • Bastion (-J) • Telnet • Raw TCP • SFTP • ConPTY • PuTTY Keys (.ppk v2/v3) & Integrated SSH Agent • Live Telemetry",
                         ))
                         .size(13.5)
                         .color(Color32::from_rgb(139, 148, 158)),
@@ -6691,7 +6691,7 @@ impl CutySshApp {
                         tr(
                             lang,
                             "🔌 Connexion & Clé .PPK / Pageant",
-                            "🔌 Connection & .PPK / Pageant Key",
+                            "🔌 Connection & Key (.ppk / Agent)",
                         ),
                     );
                     ui.selectable_value(
