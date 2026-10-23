@@ -5863,18 +5863,12 @@ impl CutySshApp {
                             ui.label(
                                 RichText::new(tr(
                                     lang,
-                                    "Cuty Agent actif — vos sessions SSH l'utilisent en priorité :",
-                                    "Cuty Agent active — your SSH sessions use it first:",
+                                    "Cuty Agent actif — vos sessions SSH l'utilisent en priorité.",
+                                    "Cuty Agent active — your SSH sessions use it first.",
                                 ))
                                 .color(Color32::from_rgb(63, 185, 80))
                                 .strong(),
                             );
-                            ui.monospace(&native_pipe)
-                                .on_hover_text(tr(
-                                    lang,
-                                    "Canal nommé sécurisé : seuls les processus de votre compte Windows peuvent y accéder",
-                                    "Secured named pipe: only processes of your Windows account can access it",
-                                ));
                             ui.label(
                                 RichText::new(format!(
                                     "· {} {}",
@@ -5885,6 +5879,18 @@ impl CutySshApp {
                                 .color(Color32::from_rgb(139, 148, 158)),
                             );
                         });
+                        // Pipe name on its own line: the monospace string has no
+                        // break point and would clip the row instead of wrapping.
+                        ui.monospace(
+                            RichText::new(&native_pipe)
+                                .small()
+                                .color(Color32::from_rgb(139, 148, 158)),
+                        )
+                        .on_hover_text(tr(
+                            lang,
+                            "Canal nommé sécurisé : seuls les processus de votre compte Windows peuvent y accéder",
+                            "Secured named pipe: only processes of your Windows account can access it",
+                        ));
                     } else {
                         ui.label(
                             RichText::new(tr(
@@ -6054,7 +6060,10 @@ impl CutySshApp {
                         if !native_keys.is_empty() {
                             ui.add_space(4.0);
                             for k in &native_keys {
-                                ui.horizontal(|ui| {
+                                // Wrapped row: long fingerprints/paths contain
+                                // spaces to break on; a plain horizontal would
+                                // clip instead.
+                                ui.horizontal_wrapped(|ui| {
                                     ui.label(
                                         RichText::new(format!(
                                             "• [{}] {} — {} ({})",
