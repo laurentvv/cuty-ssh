@@ -173,6 +173,48 @@ fn reconnect_delay_secs(attempt: u32) -> u64 {
     (2u64 << attempt.saturating_sub(1).min(4)).min(30)
 }
 
+/// Left-edge dismissal: when the window has been dragged so far left that its
+/// right edge is 120 physical px past the left edge of the screen holding its
+/// center, returns the on-screen position to park it at (work area, in egui
+/// points) — the caller minimizes and repositions so a taskbar restore never
+/// brings the window back off-screen. `None` while the window is on-screen.
+#[cfg(windows)]
+fn left_dismiss_park_position(outer: egui::Rect, ppp: f32) -> Option<Pos2> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    };
+
+    unsafe {
+        let center = POINT {
+            x: ((outer.left() + outer.right()) * 0.5 * ppp) as i32,
+            y: ((outer.top() + outer.bottom()) * 0.5 * ppp) as i32,
+        };
+        let monitor = MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_null() {
+            return None;
+        }
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return None;
+        }
+        let right_px = (outer.right() * ppp) as i32;
+        if right_px >= info.rcMonitor.left - 120 {
+            return None;
+        }
+        Some(Pos2::new(
+            (info.rcWork.left as f32 + 80.0) / ppp,
+            (info.rcWork.top as f32 + 40.0) / ppp,
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+fn left_dismiss_park_position(_outer: egui::Rect, _ppp: f32) -> Option<Pos2> {
+    None
+}
+
 /// Honest Pageant/agent status text: distinguishes "no keys loaded" from
 /// "agent unreachable" (window not found vs query failure) instead of pinning
 /// every empty result to a generic "0 keys" verdict.
@@ -2064,6 +2106,25 @@ impl CutySshApp {
 impl eframe::App for CutySshApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
+        // Drag-far-left gesture: pulled fully past the left edge of its
+        // current screen, the window hides to the taskbar instead of
+        // dangling off-screen, and is parked back on-screen so restoring it
+        // never resurrects it out of view. Sessions keep running — this is a
+        // dismissal gesture, not an exit.
+        if ctx.input(|i| i.viewport().minimized) != Some(true)
+            && let Some(outer) = ctx.input(|i| i.viewport().outer_rect)
+        {
+            let ppp = ctx
+                .input(|i| i.viewport().native_pixels_per_point)
+                .unwrap_or(1.0)
+                .max(0.1);
+            if let Some(park) = left_dismiss_park_position(outer, ppp) {
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(park));
+                ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+            }
+        }
+
         self.poll_backend_events(&ctx);
         self.process_auto_reconnect(&ctx);
 
