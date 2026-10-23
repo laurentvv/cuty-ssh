@@ -5009,9 +5009,10 @@ impl CutySshApp {
 
                 ui.add_space(18.0);
 
-                // Quick actions: the other tools live in the top toolbar and the palette.
-                ui.horizontal_wrapped(|ui| {
-                    ui.add_space(16.0);
+                // Quick actions: centered under the centered hero title; the
+                // other tools live in the top toolbar and the palette.
+                ui.vertical_centered(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_sized(
                             [170.0, 36.0],
@@ -5038,8 +5039,8 @@ impl CutySshApp {
                             [170.0, 36.0],
                             egui::Button::new(tr(
                                 lang,
-                                "\u{E2D6}  Clés .ppk & Pageant",
-                                "\u{E2D6}  .ppk Keys & Pageant",
+                                "\u{E2D6}  Clés & Cuty Agent",
+                                "\u{E2D6}  Keys & Cuty Agent",
                             )),
                         )
                         .clicked()
@@ -5053,16 +5054,16 @@ impl CutySshApp {
                             egui::Button::new(
                                 RichText::new(tr(
                                     lang,
-                                    "\u{E20C}  Charger .ppk → Pageant",
-                                    "\u{E20C}  Load .ppk → Pageant",
+                                    "\u{E20C}  Charger les clés",
+                                    "\u{E20C}  Load Session Keys",
                                 ))
                                 .color(Color32::from_rgb(210, 153, 34)),
                             ),
                         )
                         .on_hover_text(tr(
                             lang,
-                            "Charge en 1 clic toutes les clés de vos sessions sauvegardées dans l'agent intégré (tout format)",
-                            "1-click load every key from your saved sessions into the integrated agent (any format)",
+                            "Charge en 1 clic toutes les clés de vos sessions sauvegardées dans Cuty Agent (tout format)",
+                            "1-click load every key from your saved sessions into Cuty Agent (any format)",
                         ))
                         .clicked()
                     {
@@ -5082,6 +5083,7 @@ impl CutySshApp {
                     {
                         self.probe_all_sessions();
                     }
+                    });
                 });
 
                 ui.add_space(20.0);
