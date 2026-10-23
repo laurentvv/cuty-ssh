@@ -6106,18 +6106,40 @@ impl CutySshApp {
                             ui.add_space(2.0);
                             ui.label(
                                 RichText::new(format!(
-                                    "\u{E8B8} {} chiffrée(s) en attente : {} — {}",
+                                    "\u{E8B8} {} chiffrée(s) en attente : {}",
                                     native_pending.len(),
-                                    native_pending.join(", "),
-                                    tr(
-                                        lang,
-                                        "tapez la passphrase dans l'inspecteur ci-dessous puis re-cliquez sur « Charger toutes les clés »",
-                                        "type the passphrase in the inspector below, then click \"Load All Session Keys\" again"
-                                    )
+                                    native_pending.join(", ")
                                 ))
                                 .small()
                                 .color(Color32::from_rgb(227, 179, 65)),
                             );
+                            // Passphrase input right where the pending keys are
+                            // listed — no hunting through the inspector section.
+                            ui.horizontal(|ui| {
+                                ui.label(tr(lang, "Passphrase :", "Passphrase:"));
+                                let submit = ui.add(
+                                    egui::TextEdit::singleline(&mut self.key_manager_passphrase)
+                                        .password(true)
+                                        .desired_width(220.0)
+                                        .hint_text(tr(
+                                            lang,
+                                            "celle de la clé chiffrée",
+                                            "the encrypted key's passphrase",
+                                        )),
+                                );
+                                if ui
+                                    .button(tr(
+                                        lang,
+                                        "\u{E8B7} Déverrouiller et charger",
+                                        "\u{E8B7} Unlock & Load",
+                                    ))
+                                    .clicked()
+                                    || (submit.lost_focus()
+                                        && ui.input(|i| i.key_pressed(Key::Enter)))
+                                {
+                                    self.load_keys_into_native_agent();
+                                }
+                            });
                         }
 
                         if !native_keys.is_empty() {
