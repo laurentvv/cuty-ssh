@@ -73,6 +73,10 @@ mod mirror;
 /// Disconnect reason emitted when the user asked for the disconnection (never auto-reconnected).
 pub const USER_DISCONNECT_REASON: &str = "Déconnecté par l'utilisateur";
 
+/// Prefix of the disconnect reason emitted when the remote shell exited on its
+/// own (exit status received). A deliberate close, never auto-reconnected.
+pub const REMOTE_EXIT_REASON: &str = "Session terminée";
+
 #[derive(Debug)]
 pub enum BackendCommand {
     SendInput(Vec<u8>),
@@ -1097,7 +1101,7 @@ async fn run_ssh_session(
                     }
                     Some(ChannelMsg::ExitStatus { exit_status }) => {
                         let _ = evt_tx.send(BackendEvent::Disconnected(format!(
-                            "Session terminée (code de sortie : {})",
+                            "{REMOTE_EXIT_REASON} (code de sortie : {})",
                             exit_status
                         )));
                         break;

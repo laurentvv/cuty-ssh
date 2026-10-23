@@ -518,48 +518,82 @@ pub fn launch_pageant_with_keys(configured_path: &str, ppk_files: &[String]) -> 
     }
 }
 
-/// Queries Pageant and the Windows OpenSSH Agent to list all public keys currently loaded in memory.
-pub async fn list_agent_keys(check_pageant: bool, check_openssh: bool) -> Vec<AgentKeyEntry> {
+/// Per-agent diagnostic for the key list query. An empty key list is ambiguous
+/// ("no keys loaded" vs "agent unreachable") — this carries the why.
+#[derive(Debug, Clone, Default)]
+pub struct AgentProbeReport {
+    /// Pageant hidden window visible in this session (WM-message transport probe).
+    pub pageant_running: bool,
+    /// Pageant connect/query failure, when the agent is visible but the query failed.
+    pub pageant_error: Option<String>,
+    /// Windows OpenSSH Agent connect/query failure (pipe absent when service stopped).
+    pub openssh_error: Option<String>,
+}
+
+/// Queries Pageant and the Windows OpenSSH Agent to list all public keys currently
+/// loaded in memory, plus a diagnostic report for honest status rendering.
+pub async fn list_agent_keys(
+    check_pageant: bool,
+    check_openssh: bool,
+) -> (Vec<AgentKeyEntry>, AgentProbeReport) {
     let mut entries = Vec::new();
+    let mut report = AgentProbeReport::default();
 
     #[cfg(windows)]
-    if check_pageant
-        && let Ok(mut agent) = russh::keys::agent::client::AgentClient::connect_pageant().await
-        && let Ok(identities) = agent.request_identities().await
     {
-        for id in identities {
-            let pubkey = id.public_key();
-            entries.push(AgentKeyEntry {
-                algorithm: pubkey.algorithm().to_string(),
-                fingerprint_sha256: pubkey.fingerprint(HashAlg::Sha256).to_string(),
-                comment: id.comment().to_string(),
-                openssh_public_key: format_openssh_pubkey(&pubkey),
-                source_agent: "Pageant (PuTTY Agent)".to_string(),
-            });
+        report.pageant_running = pageant::wmmessage::is_pageant_running();
+        if check_pageant {
+            match russh::keys::agent::client::AgentClient::connect_pageant().await {
+                Ok(mut agent) => match agent.request_identities().await {
+                    Ok(identities) => {
+                        for id in identities {
+                            let pubkey = id.public_key();
+                            entries.push(AgentKeyEntry {
+                                algorithm: pubkey.algorithm().to_string(),
+                                fingerprint_sha256: pubkey.fingerprint(HashAlg::Sha256).to_string(),
+                                comment: id.comment().to_string(),
+                                openssh_public_key: format_openssh_pubkey(&pubkey),
+                                source_agent: "Pageant (PuTTY Agent)".to_string(),
+                            });
+                        }
+                    }
+                    Err(e) => report.pageant_error = Some(format!("request: {e}")),
+                },
+                Err(e) => report.pageant_error = Some(format!("connect: {e}")),
+            }
+        }
+
+        if check_openssh {
+            match russh::keys::agent::client::AgentClient::connect_named_pipe(
+                r"\\.\pipe\openssh-ssh-agent",
+            )
+            .await
+            {
+                Ok(mut agent) => match agent.request_identities().await {
+                    Ok(identities) => {
+                        for id in identities {
+                            let pubkey = id.public_key();
+                            entries.push(AgentKeyEntry {
+                                algorithm: pubkey.algorithm().to_string(),
+                                fingerprint_sha256: pubkey.fingerprint(HashAlg::Sha256).to_string(),
+                                comment: id.comment().to_string(),
+                                openssh_public_key: format_openssh_pubkey(&pubkey),
+                                source_agent: "Windows OpenSSH Agent".to_string(),
+                            });
+                        }
+                    }
+                    Err(e) => report.openssh_error = Some(format!("request: {e}")),
+                },
+                // Service stopped = pipe absent; normal state, keep quiet unless asked.
+                Err(e) => report.openssh_error = Some(format!("connect: {e}")),
+            }
         }
     }
 
-    #[cfg(windows)]
-    if check_openssh
-        && let Ok(mut agent) = russh::keys::agent::client::AgentClient::connect_named_pipe(
-            r"\\.\pipe\openssh-ssh-agent",
-        )
-        .await
-        && let Ok(identities) = agent.request_identities().await
-    {
-        for id in identities {
-            let pubkey = id.public_key();
-            entries.push(AgentKeyEntry {
-                algorithm: pubkey.algorithm().to_string(),
-                fingerprint_sha256: pubkey.fingerprint(HashAlg::Sha256).to_string(),
-                comment: id.comment().to_string(),
-                openssh_public_key: format_openssh_pubkey(&pubkey),
-                source_agent: "Windows OpenSSH Agent".to_string(),
-            });
-        }
-    }
+    #[cfg(not(windows))]
+    let _ = (check_pageant, check_openssh);
 
-    entries
+    (entries, report)
 }
 
 /// Resolves the user's Primary SSH Key from `configured_primary_path` or standard fallback locations,

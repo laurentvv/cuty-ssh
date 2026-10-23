@@ -42,6 +42,10 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Wi
 winreg = "0.56.0"
 zeroize = "1.9"
 
+[target.'cfg(windows)'.dependencies]
+# Pageant agent transport diagnostics (is_pageant_running) — same crate russh uses.
+pageant = "0.2"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

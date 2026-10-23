@@ -1033,6 +1033,7 @@ dependencies = [
  "hmac",
  "image",
  "open",
+ "pageant",
  "portable-pty",
  "rfd",
  "russh",

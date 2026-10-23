@@ -677,8 +677,8 @@ impl CutySshApp {
             &[
                 tr(
                     lang,
-                    "• Reconnexion automatique : case dans l'éditeur de session ou bouton « \u{E094} Auto-reconnexion » de l'onglet. Après une coupure, nouvel essai avec délai croissant (2 s → 30 s, 10 essais) ; la barre d'état affiche le compte à rebours et « \u{E094} Reconnecter » force un essai immédiat.",
-                    "• Auto-reconnect: checkbox in the session editor or the '\u{E094} Auto-reconnect' tab button. After a drop, retries with back-off (2 s → 30 s, 10 attempts); the status bar shows the countdown and '\u{E094} Reconnect' forces an immediate retry.",
+                    "• Reconnexion automatique : case dans l'éditeur de session ou bouton « \u{E094} Auto-reconnexion » de l'onglet (l'état est enregistré dans la session). Après une coupure, nouvel essai avec délai croissant (2 s → 30 s, 10 essais) ; la barre d'état affiche le compte à rebours et « \u{E094} Reconnecter » force un essai immédiat. Une fermeture volontaire (bouton Déconnecter ou « exit » dans le shell) ne déclenche pas de reconnexion.",
+                    "• Auto-reconnect: checkbox in the session editor or the '\u{E094} Auto-reconnect' tab button (the state is saved with the session). After a drop, retries with back-off (2 s → 30 s, 10 attempts); the status bar shows the countdown and '\u{E094} Reconnect' forces an immediate retry. A deliberate close (Disconnect button or 'exit' in the shell) does not trigger a reconnection.",
                 ),
                 tr(
                     lang,

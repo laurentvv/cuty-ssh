@@ -654,7 +654,7 @@ impl SftpClientState {
                         // Mirror / Sync Tool Button
                         if ui
                             .button(RichText::new(tr(lang, "🔄 Miroir / Synchro", "🔄 Mirror / Sync")).color(Color32::from_rgb(56, 189, 248)))
-                            .on_hover_text(tr(lang, "Ouvrir l'outil de synchronisation miroir (Bitvise #477)", "Open folder mirror sync tool (Bitvise #477)"))
+                            .on_hover_text(tr(lang, "Ouvrir l'outil de synchronisation miroir", "Open folder mirror sync tool"))
                             .clicked()
                         {
                             self.mirror_request = true;
@@ -663,7 +663,7 @@ impl SftpClientState {
                         // External Editor Button
                         if ui
                             .small_button(tr(lang, "⚙ Éditeur", "⚙ Editor"))
-                            .on_hover_text(tr(lang, "Configurer l'éditeur externe (Bitvise #450)", "Configure external editor (Bitvise #450)"))
+                            .on_hover_text(tr(lang, "Configurer l'éditeur externe", "Configure external editor"))
                             .clicked()
                         {
                             self.show_editor_modal = true;
@@ -2734,6 +2734,7 @@ impl SftpClientState {
 
         // 6. External Editor Settings Modal (Bitvise #450)
         if self.show_editor_modal {
+            let mut open = self.show_editor_modal;
             let mut close = false;
             let mut current_ed = self.editor_path.clone();
 
@@ -2742,6 +2743,7 @@ impl SftpClientState {
                 "⚙ Configuration de l'éditeur externe (Bitvise #450)",
                 "⚙ External Editor Configuration (Bitvise #450)",
             ))
+            .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .default_width(420.0)
@@ -2805,8 +2807,9 @@ impl SftpClientState {
             });
 
             if close {
-                self.show_editor_modal = false;
+                open = false;
             }
+            self.show_editor_modal = open;
         }
     }
 }

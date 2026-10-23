@@ -12,14 +12,14 @@ use crate::config::{
     append_audit_entry, load_audit_log, load_known_hosts, split_user_and_host,
 };
 use crate::protocols::{
-    BackendCommand, BackendEvent, CidrCalculation, HostProbeResult, RemoteServerMetrics,
-    SessionHandle, SftpFileEntry, USER_DISCONNECT_REASON, calculate_ipv4_cidr,
+    BackendCommand, BackendEvent, CidrCalculation, HostProbeResult, REMOTE_EXIT_REASON,
+    RemoteServerMetrics, SessionHandle, SftpFileEntry, USER_DISCONNECT_REASON, calculate_ipv4_cidr,
     probe_tcp_and_banner,
 };
 use crate::ssh::ppk::{
-    AgentKeyEntry, KeyInspection, export_to_openssh_pem, export_to_ppk_v3, format_openssh_pubkey,
-    generate_new_ssh_key, inspect_key_file, launch_pageant_with_keys, list_agent_keys,
-    load_private_key_any, resolve_or_create_primary_key,
+    AgentKeyEntry, AgentProbeReport, KeyInspection, export_to_openssh_pem, export_to_ppk_v3,
+    format_openssh_pubkey, generate_new_ssh_key, inspect_key_file, launch_pageant_with_keys,
+    list_agent_keys, load_private_key_any, resolve_or_create_primary_key,
 };
 use crate::terminal::{TerminalEmulator, TerminalTheme};
 use crate::ui::help_modal::{HelpTopic, tr};
@@ -172,6 +172,46 @@ fn reconnect_delay_secs(attempt: u32) -> u64 {
     (2u64 << attempt.saturating_sub(1).min(4)).min(30)
 }
 
+/// Honest Pageant/agent status text: distinguishes "no keys loaded" from
+/// "agent unreachable" (window not found vs query failure) instead of pinning
+/// every empty result to a generic "0 keys" verdict.
+fn agent_status_text(keys_len: usize, report: &AgentProbeReport, lang: UiLanguage) -> String {
+    let fr = lang == UiLanguage::French;
+    if keys_len > 0 {
+        return if fr {
+            format!("Pageant/Agent : {} clé(s) prête(s)", keys_len)
+        } else {
+            format!("Pageant/Agent: {} key(s) ready", keys_len)
+        };
+    }
+    if !report.pageant_running {
+        return if fr {
+            "Pageant non détecté (fenêtre introuvable dans cette session) — démarrer Pageant"
+                .to_string()
+        } else {
+            "Pageant not detected (window not found in this session) — start Pageant".to_string()
+        };
+    }
+    if let Some(err) = &report.pageant_error {
+        return if fr {
+            format!(
+                "Pageant détecté mais requête échouée ({}) — vérifier élévation/session",
+                err
+            )
+        } else {
+            format!(
+                "Pageant visible but query failed ({}) — check elevation/session",
+                err
+            )
+        };
+    }
+    if fr {
+        "Pageant actif, 0 clé chargée".to_string()
+    } else {
+        "Pageant alive, 0 keys loaded".to_string()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SftpSortColumn {
     Name,
@@ -314,7 +354,9 @@ pub struct CutySshApp {
     pub keygen_algo: String,
     pub keygen_comment: String,
     pub agent_keys: Vec<AgentKeyEntry>,
-    pub agent_keys_rx: Option<tokio::sync::oneshot::Receiver<Vec<AgentKeyEntry>>>,
+    pub agent_report: AgentProbeReport,
+    pub agent_keys_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<(Vec<AgentKeyEntry>, AgentProbeReport)>>,
 
     // Known Hosts (TOFU) Manager
     pub show_known_hosts: bool,
@@ -467,6 +509,7 @@ impl CutySshApp {
             keygen_algo: "ed25519".to_string(),
             keygen_comment: "devops@cuty-ssh".to_string(),
             agent_keys: Vec::new(),
+            agent_report: AgentProbeReport::default(),
             agent_keys_rx: None,
             show_known_hosts: false,
             known_hosts,
@@ -1097,11 +1140,32 @@ impl CutySshApp {
     }
 
     pub fn refresh_agent_keys(&mut self) {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.spawn_agent_probe(2);
+    }
+
+    /// Polling variant for key-load actions: Pageant asks one passphrase dialog
+    /// per key, which takes as long as the user needs typing — keep re-probing
+    /// every 2 s (up to `probes` rounds) until keys show up or the budget ends.
+    pub fn refresh_agent_keys_awaiting_load(&mut self) {
+        self.spawn_agent_probe(45);
+    }
+
+    fn spawn_agent_probe(&mut self, probes: u32) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         self.agent_keys_rx = Some(rx);
         self.rt.spawn(async move {
-            let keys = list_agent_keys(true, true).await;
-            let _ = tx.send(keys);
+            for i in 0..probes {
+                let (keys, report) = list_agent_keys(true, true).await;
+                let loaded = !keys.is_empty();
+                let _ = tx.send((keys, report));
+                if loaded || i + 1 == probes {
+                    break;
+                }
+                // Immediate first probe plus delayed re-probes: a Pageant that
+                // was just started or just handed keys needs a moment before
+                // its hidden window answers queries.
+                tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+            }
         });
     }
 
@@ -1179,41 +1243,75 @@ impl CutySshApp {
     }
 
     /// Collects all `.ppk` files configured across saved sessions, primary key, and loads them into Pageant.
+    /// Pageant's command line only accepts `.ppk` — OpenSSH/PEM private keys and `.pub` files are
+    /// skipped (they would pop one error dialog each inside Pageant); convert them in the key manager.
     pub fn load_all_session_ppks_into_pageant(&mut self) {
         let mut paths: Vec<String> = Vec::new();
-        if !self.config.primary_key_path.trim().is_empty() {
-            let pk = self.config.primary_key_path.trim();
-            if PathBuf::from(pk).exists() && !paths.iter().any(|p| p.eq_ignore_ascii_case(pk)) {
-                paths.push(pk.to_string());
+        let mut skipped_non_ppk: Vec<String> = Vec::new();
+        let mut collect = |raw: &str| {
+            let p = raw.trim();
+            if p.is_empty() || !PathBuf::from(p).exists() {
+                return;
             }
+            if !p.to_ascii_lowercase().ends_with(".ppk") {
+                if !skipped_non_ppk.iter().any(|s| s.eq_ignore_ascii_case(p)) {
+                    skipped_non_ppk.push(p.to_string());
+                }
+                return;
+            }
+            if !paths.iter().any(|s| s.eq_ignore_ascii_case(p)) {
+                paths.push(p.to_string());
+            }
+        };
+        if !self.config.primary_key_path.trim().is_empty() {
+            collect(&self.config.primary_key_path);
         }
         if !self.quick_ppk_path.trim().is_empty() {
-            let mk = self.quick_ppk_path.trim();
-            if PathBuf::from(mk).exists() && !paths.iter().any(|p| p.eq_ignore_ascii_case(mk)) {
-                paths.push(mk.to_string());
-            }
+            collect(&self.quick_ppk_path);
         }
         for s in &self.config.sessions {
             if let SshAuthMethod::PrivateKeyFile { key_path, .. } = &s.ssh_auth {
-                let trimmed = key_path.trim();
-                if !trimmed.is_empty()
-                    && PathBuf::from(trimmed).exists()
-                    && !paths.iter().any(|p| p.eq_ignore_ascii_case(trimmed))
-                {
-                    paths.push(trimmed.to_string());
-                }
+                collect(key_path);
             }
         }
         if paths.is_empty() {
-            self.set_toast("Aucun fichier clé .ppk existant trouvé dans vos sessions.");
+            if skipped_non_ppk.is_empty() {
+                self.set_toast("Aucun fichier clé .ppk existant trouvé dans vos sessions.");
+            } else {
+                self.set_toast(tr(
+                    self.config.language,
+                    &format!(
+                        "Aucun .ppk à charger — {} clé(s) au format non-.ppk ignorée(s) (OpenSSH/PEM/.pub) : convertissez-les dans le gestionnaire de clés.",
+                        skipped_non_ppk.len()
+                    ),
+                    &format!(
+                        "No .ppk to load — {} non-.ppk format key(s) skipped (OpenSSH/PEM/.pub): convert them in the key manager.",
+                        skipped_non_ppk.len()
+                    ),
+                ));
+            }
             return;
         }
         let pageant_exe = self.resolve_pageant_path();
         match launch_pageant_with_keys(&pageant_exe, &paths) {
             Ok(msg) => {
-                self.key_manager_status = msg.clone();
-                self.set_toast(msg);
-                self.refresh_agent_keys();
+                let full = if skipped_non_ppk.is_empty() {
+                    msg
+                } else {
+                    format!(
+                        "{} | {} {}",
+                        msg,
+                        skipped_non_ppk.len(),
+                        tr(
+                            self.config.language,
+                            "clé(s) ignorée(s) (format non-.ppk)",
+                            "key(s) skipped (non-.ppk format)"
+                        )
+                    )
+                };
+                self.key_manager_status = full.clone();
+                self.set_toast(full);
+                self.refresh_agent_keys_awaiting_load();
             }
             Err(e) => {
                 self.set_toast(format!("Erreur Pageant : {}", e));
@@ -1370,11 +1468,20 @@ impl CutySshApp {
     }
 
     fn poll_backend_events(&mut self, ctx: &Context) {
-        if let Some(rx) = &mut self.agent_keys_rx
-            && let Ok(keys) = rx.try_recv()
-        {
-            self.agent_keys = keys;
-            self.agent_keys_rx = None;
+        if let Some(rx) = &mut self.agent_keys_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok((keys, report)) => {
+                        self.agent_keys = keys;
+                        self.agent_report = report;
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        self.agent_keys_rx = None;
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
         }
 
         let mut any_activity = false;
@@ -1705,8 +1812,12 @@ impl CutySshApp {
                         tab.terminal
                             .feed_str(&format!("\r\n\x1b[1;33m⚠ {}\x1b[0m\r\n", reason));
 
+                        // A shell that exited on its own is a deliberate close: shown in the
+                        // terminal but never respawned by auto-reconnect.
+                        let deliberate_close = reason == USER_DISCONNECT_REASON
+                            || reason.starts_with(REMOTE_EXIT_REASON);
                         let dropped = tab.was_connected
-                            && reason != USER_DISCONNECT_REASON
+                            && !deliberate_close
                             && matches!(
                                 tab.profile.protocol,
                                 ProtocolType::Ssh | ProtocolType::Telnet | ProtocolType::RawTcp
@@ -1714,7 +1825,7 @@ impl CutySshApp {
                         tab.was_connected = false;
                         if tab.profile.auto_reconnect
                             && (dropped || tab.reconnect_attempt > 0)
-                            && reason != USER_DISCONNECT_REASON
+                            && !deliberate_close
                             && tab.reconnect_attempt < MAX_RECONNECT_ATTEMPTS
                         {
                             tab.reconnect_attempt += 1;
@@ -2320,8 +2431,8 @@ impl CutySshApp {
                             if theme::tool_button(ui, theme::icons::FOLDER, "Bitvise…")
                                 .on_hover_text(tr(
                                     lang,
-                                    "Importer des profils Bitvise SSH Client (.tlp / .bscp) : hôte, port, utilisateur",
-                                    "Import Bitvise SSH Client profiles (.tlp / .bscp): host, port, user",
+                                    "Importer des profils SSH Client (.tlp / .bscp) : hôte, port, utilisateur",
+                                    "Import SSH Client profiles (.tlp / .bscp): host, port, user",
                                 ))
                                 .clicked()
                             {
@@ -2628,18 +2739,8 @@ impl CutySshApp {
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let pageant_status = if self.agent_keys.is_empty() {
-                            tr(
-                                lang,
-                                "Pageant: 0 clé (ou inactif)",
-                                "Pageant: 0 keys (or inactive)",
-                            )
-                            .to_string()
-                        } else if lang == UiLanguage::French {
-                            format!("Pageant/Agent: {} clé(s) prête(s)", self.agent_keys.len())
-                        } else {
-                            format!("Pageant/Agent: {} key(s) ready", self.agent_keys.len())
-                        };
+                        let pageant_status =
+                            agent_status_text(self.agent_keys.len(), &self.agent_report, lang);
                         if ui
                             .small_button(format!("🔐 {}", pageant_status))
                             .on_hover_text(tr(
@@ -3540,6 +3641,8 @@ impl CutySshApp {
                     let mut deploy_key_for_active = false;
                     let mut toggle_rec = false;
                     let mut toggle_broadcast = false;
+                    // (session id, new value): write the toolbar toggle through to the saved profile.
+                    let mut persist_reconnect: Option<(Uuid, bool)> = None;
                     if let Some(active_tab) = self.tabs.get_mut(self.active_tab_idx) {
                         ui.horizontal_wrapped(|ui| {
                             if ui
@@ -3611,6 +3714,10 @@ impl CutySshApp {
                                     if !active_tab.profile.auto_reconnect {
                                         active_tab.reconnect_at = None;
                                     }
+                                    persist_reconnect = Some((
+                                        active_tab.profile.id,
+                                        active_tab.profile.auto_reconnect,
+                                    ));
                                 }
                                 if matches!(active_tab.state, TabConnectionState::Disconnected(_))
                                     && ui
@@ -3847,6 +3954,16 @@ impl CutySshApp {
                         });
                     }
                     self.split_mode = next_split_mode;
+                    if let Some((session_id, value)) = persist_reconnect
+                        && let Some(saved) = self
+                            .config
+                            .sessions
+                            .iter_mut()
+                            .find(|s| s.id == session_id)
+                    {
+                        saved.auto_reconnect = value;
+                        let _ = self.config.save();
+                    }
                     if reconnect_now {
                         let idx = self.active_tab_idx;
                         if let Some(t) = self.tabs.get_mut(idx) {
@@ -5830,7 +5947,7 @@ impl CutySshApp {
                             match launch_pageant_with_keys(&pageant_exe, &[]) {
                                 Ok(msg) => {
                                     self.key_manager_status = msg;
-                                    self.refresh_agent_keys();
+                                    self.refresh_agent_keys_awaiting_load();
                                 }
                                 Err(e) => {
                                     self.key_manager_status = format!(
@@ -5866,7 +5983,7 @@ impl CutySshApp {
                             match launch_pageant_with_keys(&pageant_exe, &paths) {
                                 Ok(msg) => {
                                     self.key_manager_status = msg;
-                                    self.refresh_agent_keys();
+                                    self.refresh_agent_keys_awaiting_load();
                                 }
                                 Err(e) => {
                                     self.key_manager_status = format!(
@@ -5908,10 +6025,10 @@ impl CutySshApp {
                     ui.add_space(6.0);
                     if self.agent_keys.is_empty() {
                         ui.label(
-                            RichText::new(tr(
+                            RichText::new(agent_status_text(
+                                self.agent_keys.len(),
+                                &self.agent_report,
                                 lang,
-                                "Aucune clé détectée dans Pageant / OpenSSH Agent (Assurez-vous que Pageant est lancé et possède au moins une clé .ppk).",
-                                "No keys detected in Pageant / OpenSSH Agent (Ensure Pageant is running and has at least one .ppk key loaded).",
                             ))
                             .small()
                             .color(Color32::from_rgb(210, 153, 34)),
@@ -7335,6 +7452,12 @@ impl CutySshApp {
             .find(|s| s.id == self.editing_session.id)
         {
             *existing = self.editing_session.clone();
+        }
+        // Keep the auto-reconnect state of open tabs in sync with the saved profile.
+        for tab in &mut self.tabs {
+            if tab.profile.id == self.editing_session.id {
+                tab.profile.auto_reconnect = self.editing_session.auto_reconnect;
+            }
         }
         let _ = self.config.save();
     }
