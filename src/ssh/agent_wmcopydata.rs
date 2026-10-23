@@ -74,7 +74,7 @@ impl WmAgentServer {
         let thread_status = status.clone();
 
         let join = std::thread::Builder::new()
-            .name("cuty-ssh-agent-wm".to_string())
+            .name("cuty-agent-wm".to_string())
             .spawn(move || wm_thread_main(core, &thread_status, &tx))
             .expect("spawn WM agent thread");
 

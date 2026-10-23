@@ -20,7 +20,7 @@ use crate::ssh::agent_wmcopydata::WmCompatStatus;
 use crate::ssh::ppk::{
     AgentKeyEntry, AgentProbeReport, KeyInspection, export_to_openssh_pem, export_to_ppk_v3,
     format_openssh_pubkey, generate_new_ssh_key, inspect_key_file, list_agent_keys,
-    load_private_key_any, query_exe_file_version, resolve_or_create_primary_key,
+    load_private_key_any, resolve_or_create_primary_key,
 };
 use crate::terminal::{TerminalEmulator, TerminalTheme};
 use crate::ui::help_modal::{HelpTopic, tr};
@@ -180,35 +180,25 @@ fn agent_status_text(keys_len: usize, report: &AgentProbeReport, lang: UiLanguag
     let fr = lang == UiLanguage::French;
     if keys_len > 0 {
         return if fr {
-            format!("Agents SSH : {} clé(s) prête(s)", keys_len)
+            format!("Agents SSH : {} cl\u{e9}(s) pr\u{ea}te(s)", keys_len)
         } else {
             format!("SSH Agents: {} key(s) ready", keys_len)
-        };
-    }
-    if !report.pageant_running {
-        return if fr {
-            "Aucune clé chargée — chargez vos clés dans l'agent intégré ci-dessus".to_string()
-        } else {
-            "No key loaded — load your keys into the integrated agent above".to_string()
         };
     }
     if let Some(err) = &report.pageant_error {
         return if fr {
             format!(
-                "Pageant détecté mais requête échouée ({}) — vérifier élévation/session",
+                "Pageant externe visible mais requ\u{ea}te \u{e9}chou\u{e9}e ({})",
                 err
             )
         } else {
-            format!(
-                "Pageant visible but query failed ({}) — check elevation/session",
-                err
-            )
+            format!("External Pageant visible but query failed ({})", err)
         };
     }
     if fr {
-        "Agent Pageant actif, 0 clé chargée (utilisez l'agent intégré ci-dessus)".to_string()
+        "Aucune cl\u{e9} charg\u{e9}e \u{2014} chargez vos cl\u{e9}s dans Cuty Agent".to_string()
     } else {
-        "External Pageant alive, 0 keys loaded (use the integrated agent above)".to_string()
+        "No key loaded \u{2014} load your keys into Cuty Agent".to_string()
     }
 }
 
@@ -557,7 +547,6 @@ impl CutySshApp {
         if let Some(stage) = demo_stage {
             app.apply_demo_stage(&stage);
         } else {
-            app.resolve_pageant_path();
             if app.config.native_agent_enabled
                 && let Ok(server) = crate::ssh::agent_server::NativeAgentServer::start(&app.rt)
             {
@@ -1204,50 +1193,6 @@ impl CutySshApp {
         });
     }
 
-    /// Resolves the Pageant executable path, auto-detecting portable KiTTY / PuTTY installations
-    /// and updating `self.config.pageant_path` if the currently configured path does not exist.
-    pub fn resolve_pageant_path(&mut self) -> String {
-        if !self.config.pageant_path.trim().is_empty()
-            && Path::new(&self.config.pageant_path).exists()
-        {
-            return self.config.pageant_path.clone();
-        }
-        let mut hints: Vec<&str> = Vec::new();
-        if !self.config.kitty_dir.trim().is_empty() {
-            hints.push(self.config.kitty_dir.as_str());
-        }
-        if !self.config.primary_key_path.trim().is_empty() {
-            hints.push(self.config.primary_key_path.as_str());
-        }
-        if !self.quick_ppk_path.trim().is_empty() {
-            hints.push(self.quick_ppk_path.as_str());
-        }
-        let inspected_path_str;
-        if let Some(ref info) = self.inspected_key {
-            inspected_path_str = info.path.clone();
-            if !inspected_path_str.trim().is_empty() {
-                hints.push(inspected_path_str.as_str());
-            }
-        }
-        for s in &self.config.sessions {
-            if let SshAuthMethod::PrivateKeyFile { key_path, .. } = &s.ssh_auth
-                && !key_path.trim().is_empty()
-            {
-                hints.push(key_path.as_str());
-            }
-        }
-        if let Some(found) = crate::ssh::ppk::resolve_pageant_executable_with_hints(
-            &self.config.pageant_path,
-            &hints,
-        ) {
-            let p_str = found.to_string_lossy().to_string();
-            self.config.pageant_path = p_str.clone();
-            let _ = self.config.save();
-            return p_str;
-        }
-        self.config.pageant_path.clone()
-    }
-
     /// Loads every key configured across saved sessions, primary key, and
     /// quick connect into the native integrated agent (any format — the agent
     /// decodes `.ppk` v2/v3, OpenSSH, PEM and PKCS#8 itself, no external
@@ -1266,8 +1211,8 @@ impl CutySshApp {
             Ok(server) => {
                 self.key_manager_status = tr(
                     self.config.language,
-                    "Agent intégré démarré — les clés chargées servent vos sessions SSH.",
-                    "Integrated agent started — loaded keys now serve your SSH sessions.",
+                    "Cuty Agent démarré — les clés chargées servent vos sessions SSH.",
+                    "Cuty Agent started — loaded keys now serve your SSH sessions.",
                 )
                 .to_string();
                 self.native_agent = Some(server);
@@ -1278,7 +1223,7 @@ impl CutySshApp {
                     "{} {}",
                     tr(
                         self.config.language,
-                        "Erreur agent intégré :",
+                        "Erreur Cuty Agent :",
                         "Integrated agent error:"
                     ),
                     e
@@ -1294,8 +1239,8 @@ impl CutySshApp {
             self.native_agent_pending.clear();
             self.set_toast(tr(
                 self.config.language,
-                "Agent intégré arrêté — clés effacées de la mémoire.",
-                "Integrated agent stopped — keys wiped from memory.",
+                "Cuty Agent arrêté — clés effacées de la mémoire.",
+                "Cuty Agent stopped — keys wiped from memory.",
             ));
             self.refresh_agent_keys();
         }
@@ -1398,7 +1343,7 @@ impl CutySshApp {
                 loaded,
                 tr(
                     lang,
-                    "clé(s) chargée(s) dans l'agent intégré",
+                    "clé(s) chargée(s) dans Cuty Agent",
                     "key(s) loaded into the integrated agent"
                 )
             ));
@@ -2441,7 +2386,7 @@ impl CutySshApp {
                     if theme::tool_button(ui, theme::icons::KEY, &keys_label)
                         .on_hover_text(tr(
                             lang,
-                            "Agent SSH intégré, clés PuTTY (.ppk v2/v3), conversion et génération",
+                            "Cuty Agent, clés PuTTY (.ppk v2/v3), conversion et génération",
                             "Key manager: integrated SSH agent, .ppk v2/v3 inspector, converter and key generator",
                         ))
                         .clicked()
@@ -2862,8 +2807,8 @@ impl CutySshApp {
                             .small_button(format!("🔐 {}", pageant_status))
                             .on_hover_text(tr(
                                 lang,
-                                "Cliquer pour ouvrir le gestionnaire de clés & agent intégré",
-                                "Click to open the Key Manager & Integrated Agent",
+                                "Cliquer pour ouvrir le gestionnaire de clés & Cuty Agent",
+                                "Click to open the Key Manager & Cuty Agent",
                             ))
                             .clicked()
                         {
@@ -5892,16 +5837,16 @@ impl CutySshApp {
                     ui.heading(
                         RichText::new(tr(
                             lang,
-                            "\u{E868} Agent SSH Intégré (remplacement natif de Pageant)",
-                            "\u{E868} Integrated SSH Agent (native Pageant replacement)",
+                            "\u{E868} Cuty Agent — agent SSH intégré (remplace Pageant)",
+                            "\u{E868} Cuty Agent — built-in SSH agent (replaces Pageant)",
                         ))
                         .color(Color32::from_rgb(86, 211, 100)),
                     );
                     ui.label(
                         RichText::new(tr(
                             lang,
-                            "cuty-ssh embarque son propre agent SSH : vos clés sont déchiffrées en mémoire vive (jamais écrites sur disque) et servent vos sessions sans pageant.exe.",
-                            "cuty-ssh embeds its own SSH agent: keys are decrypted in memory only (never written to disk) and serve your sessions without pageant.exe.",
+                            "cuty-ssh embarque son propre agent SSH, Cuty Agent : vos clés sont déchiffrées en mémoire vive (jamais écrites sur disque) et servent vos sessions sans pageant.exe.",
+                            "cuty-ssh embeds its own SSH agent, Cuty Agent: keys are decrypted in memory only (never written to disk) and serve your sessions without pageant.exe.",
                         ))
                         .small()
                         .color(Color32::from_rgb(139, 148, 158)),
@@ -5918,8 +5863,8 @@ impl CutySshApp {
                             ui.label(
                                 RichText::new(tr(
                                     lang,
-                                    "Agent actif — vos sessions SSH l'utilisent en priorité :",
-                                    "Agent active — your SSH sessions use it first:",
+                                    "Cuty Agent actif — vos sessions SSH l'utilisent en priorité :",
+                                    "Cuty Agent active — your SSH sessions use it first:",
                                 ))
                                 .color(Color32::from_rgb(63, 185, 80))
                                 .strong(),
@@ -5944,8 +5889,8 @@ impl CutySshApp {
                         ui.label(
                             RichText::new(tr(
                                 lang,
-                                "○ Agent arrêté — aucune clé n'est conservée en mémoire.",
-                                "○ Agent stopped — no key is held in memory.",
+                                "○ Cuty Agent arrêté — aucune clé n'est conservée en mémoire.",
+                                "○ Cuty Agent stopped — no key is held in memory.",
                             ))
                             .color(Color32::from_rgb(227, 179, 65)),
                         );
@@ -5957,8 +5902,8 @@ impl CutySshApp {
                             WmCompatStatus::Running => (
                                 tr(
                                     lang,
-                                    "● Compatibilité Pageant active — PuTTY, KiTTY et WinSCP voient vos clés sans configuration.",
-                                    "● Pageant compatibility active — PuTTY, KiTTY and WinSCP see your keys with zero configuration.",
+                                    "● Mode Pageant actif (compatibilité) — PuTTY, KiTTY et WinSCP voient les clés de Cuty Agent sans configuration.",
+                                    "● Pageant compatibility mode active — PuTTY, KiTTY and WinSCP see Cuty Agent's keys with zero configuration.",
                                 )
                                 .to_string(),
                                 Color32::from_rgb(63, 185, 80),
@@ -6002,8 +5947,8 @@ impl CutySshApp {
                             if ui
                                 .button(tr(
                                     lang,
-                                    "\u{E8AC} Arrêter l'agent (efface les clés)",
-                                    "\u{E8AC} Stop Agent (wipes keys)",
+                                    "\u{E8AC} Arrêter Cuty Agent (efface les clés)",
+                                    "\u{E8AC} Stop Cuty Agent (wipes keys)",
                                 ))
                                 .clicked()
                             {
@@ -6013,8 +5958,8 @@ impl CutySshApp {
                             .button(
                                 RichText::new(tr(
                                     lang,
-                                    "\u{E3FE} Démarrer l'agent intégré",
-                                    "\u{E3FE} Start Integrated Agent",
+                                    "\u{E3FE} Démarrer Cuty Agent",
+                                    "\u{E3FE} Start Cuty Agent",
                                 ))
                                 .color(Color32::from_rgb(86, 211, 100)),
                             )
@@ -6049,12 +5994,18 @@ impl CutySshApp {
                                 )
                                 .on_hover_text(tr(
                                     lang,
-                                    "Déchiffre et charge la clé principale, la clé rapide et toutes les clés des sessions (tout format : .ppk, OpenSSH, PEM) dans l'agent intégré",
-                                    "Decrypts and loads the primary key, quick-connect key and every session key (any format: .ppk, OpenSSH, PEM) into the integrated agent",
+                                    "Déchiffre et charge la clé principale, la clé rapide et toutes les clés des sessions (tout format : .ppk, OpenSSH, PEM) dans Cuty Agent",
+                                    "Decrypts and loads the primary key, quick-connect key and every session key (any format: .ppk, OpenSSH, PEM) into Cuty Agent",
                                 ))
                                 .clicked()
                             {
                                 self.load_keys_into_native_agent();
+                            }
+                            if ui
+                                .button(tr(lang, "\u{E094} Rafraîchir", "\u{E094} Refresh"))
+                                .clicked()
+                            {
+                                self.refresh_agent_keys();
                             }
                             if !native_keys.is_empty()
                                 && ui
@@ -6129,169 +6080,6 @@ impl CutySshApp {
                                     }
                                 });
                             }
-                        }
-                    }
-                });
-
-            ui.add_space(6.0);
-
-            // Auto-resolve pageant path if current configured path does not exist on disk
-            if !Path::new(&self.config.pageant_path).exists() {
-                self.resolve_pageant_path();
-            }
-
-            // Section 2: External Pageant — read-only diagnostic; the
-            // integrated agent above replaced it (no launch, no download).
-            egui::Frame::NONE
-                .fill(Color32::from_rgb(18, 22, 29))
-                .corner_radius(6.0)
-                .inner_margin(egui::Margin::same(10))
-                .stroke(Stroke::new(1.0, Color32::from_rgb(38, 44, 54)))
-                .show(ui, |ui| {
-                    ui.heading(tr(
-                        lang,
-                        "\u{E40C} Pageant externe (diagnostic)",
-                        "\u{E40C} External Pageant (diagnostic)",
-                    ));
-                    ui.label(
-                        RichText::new(tr(
-                            lang,
-                            "cuty-ssh n'utilise plus pageant.exe : l'agent intégré ci-dessus charge vos clés et signe vos connexions, y compris pour PuTTY/KiTTY/WinSCP. Un Pageant externe déjà lancé reste interrogé en secours.",
-                            "cuty-ssh no longer uses pageant.exe: the integrated agent above loads your keys and signs your connections, including for PuTTY/KiTTY/WinSCP. An already-running external Pageant is still queried as a fallback.",
-                        ))
-                        .small()
-                        .color(Color32::from_rgb(139, 148, 158)),
-                    );
-                    ui.add_space(4.0);
-
-                    let pageant_path_buf = PathBuf::from(&self.config.pageant_path);
-                    let pageant_found =
-                        !self.config.pageant_path.trim().is_empty() && pageant_path_buf.is_file();
-
-                    if pageant_found {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                RichText::new(tr(
-                                    lang,
-                                    "✔ Exécutable Pageant présent :",
-                                    "✔ Pageant executable present:",
-                                ))
-                                .color(Color32::from_rgb(76, 175, 80))
-                                .strong(),
-                            );
-                            ui.monospace(&self.config.pageant_path);
-                            if let Some(version) = query_exe_file_version(&pageant_path_buf) {
-                                ui.label(
-                                    RichText::new(format!("· {version}"))
-                                        .small()
-                                        .color(Color32::from_rgb(139, 148, 158)),
-                                );
-                            }
-                            ui.label(
-                                RichText::new(if self.agent_report.pageant_running {
-                                    tr(lang, "● en cours d'exécution", "● currently running")
-                                } else {
-                                    tr(lang, "○ non lancé", "○ not running")
-                                })
-                                .small()
-                                .color(if self.agent_report.pageant_running {
-                                    Color32::from_rgb(63, 185, 80)
-                                } else {
-                                    Color32::from_rgb(139, 148, 158)
-                                }),
-                            );
-                            if let Some(parent) = pageant_path_buf.parent()
-                                && ui
-                                    .small_button(tr(lang, "📁 Ouvrir dossier", "📁 Open Folder"))
-                                    .clicked()
-                            {
-                                let _ = open::that(parent);
-                            }
-                            if ui
-                                .small_button(tr(lang, "🔄 Re-détecter", "🔄 Re-detect"))
-                                .clicked()
-                            {
-                                self.config.pageant_path.clear();
-                                self.resolve_pageant_path();
-                            }
-                        });
-                    } else {
-                        ui.label(
-                            RichText::new(tr(
-                                lang,
-                                "○ Aucun exécutable Pageant détecté — aucun besoin : l'agent intégré le remplace entièrement.",
-                                "○ No Pageant executable detected — none needed: the integrated agent fully replaces it.",
-                            ))
-                            .color(Color32::from_rgb(139, 148, 158)),
-                        );
-                    }
-
-                    ui.add_space(6.0);
-                    ui.horizontal_wrapped(|ui| {
-                        if ui
-                            .button(tr(lang, "\u{E094} Rafraîchir l'Agent", "\u{E094} Refresh Agent"))
-                            .clicked()
-                        {
-                            self.refresh_agent_keys();
-                        }
-                    });
-
-                    ui.add_space(6.0);
-                    if self.agent_keys.is_empty() {
-                        ui.label(
-                            RichText::new(agent_status_text(
-                                self.agent_keys.len(),
-                                &self.agent_report,
-                                lang,
-                            ))
-                            .small()
-                            .color(Color32::from_rgb(210, 153, 34)),
-                        );
-                    } else {
-                        ui.label(
-                            RichText::new(format!(
-                                "\u{E182} {} {}",
-                                self.agent_keys.len(),
-                                tr(
-                                    lang,
-                                    "clé(s) disponible(s) via les Agents SSH :",
-                                    "key(s) available via SSH Agents:"
-                                )
-                            ))
-                            .color(Color32::from_rgb(63, 185, 80)),
-                        );
-                        for k in &self.agent_keys {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "• [{}] {} — {} ({})",
-                                        k.source_agent,
-                                        k.algorithm,
-                                        k.fingerprint_sha256,
-                                        k.comment
-                                    ))
-                                    .monospace()
-                                    .small(),
-                                );
-                                if ui
-                                    .small_button(tr(
-                                        lang,
-                                        "\u{E196} Copier clé publique",
-                                        "\u{E196} Copy Public Key",
-                                    ))
-                                    .clicked()
-                                {
-                                    if let Ok(mut cb) = Clipboard::new() {
-                                        let _ = cb.set_text(k.openssh_public_key.clone());
-                                    }
-                                    self.key_manager_status = tr(
-                                        lang,
-                                        "Clé publique copiée dans le presse-papiers !",
-                                        "Public key copied to clipboard!",
-                                    )
-                                    .to_string();
-                                }
-                            });
                         }
                     }
                 });

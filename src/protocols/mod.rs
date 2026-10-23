@@ -369,20 +369,29 @@ pub(crate) fn rsa_hash_candidates(preferred: Option<HashAlg>) -> Vec<Option<Hash
 }
 
 #[cfg(windows)]
+/// Tries the integrated Cuty Agent pipe. Returns `(agent_reachable, authenticated_via)`
+/// — `agent_reachable` is true whenever the pipe answered (even with 0 keys or failed
+/// auth), which lets the caller skip the WM "Pageant" fallback: when our agent runs,
+/// the hidden "Pageant" window IS this same vault, and re-trying it would only burn
+/// the server's `MaxAuthTries` budget with duplicate attempts.
 async fn try_authenticate_with_native_agent(
     session: &mut client::Handle<SshClientHandler>,
     username: &str,
     evt_tx: &UnboundedSender<BackendEvent>,
-) -> Option<String> {
+) -> (bool, Option<String>) {
     if let Ok(mut agent) = russh::keys::agent::client::AgentClient::connect_named_pipe(
         crate::ssh::agent_server::pipe_name(),
     )
     .await
-        && let Ok(identities) = agent.request_identities().await
-        && !identities.is_empty()
     {
+        let Ok(identities) = agent.request_identities().await else {
+            return (true, None);
+        };
+        if identities.is_empty() {
+            return (true, None);
+        }
         let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
-            "Agent cuty-ssh intégré détecté ({} clé(s))...",
+            "Cuty Agent détecté ({} clé(s))...",
             identities.len()
         )));
         let rsa_hash = session
@@ -407,20 +416,24 @@ async fn try_authenticate_with_native_agent(
                     .await
                     && res.success()
                 {
-                    return Some(format!(
-                        "Agent cuty-ssh (intégré) — clé {} [{}]",
-                        if comment.is_empty() {
-                            "sans nom"
-                        } else {
-                            &comment
-                        },
-                        fp
-                    ));
+                    return (
+                        true,
+                        Some(format!(
+                            "Cuty Agent — clé {} [{}]",
+                            if comment.is_empty() {
+                                "sans nom"
+                            } else {
+                                &comment
+                            },
+                            fp
+                        )),
+                    );
                 }
             }
         }
+        return (true, None);
     }
-    None
+    (false, None)
 }
 
 #[cfg(windows)]
@@ -637,15 +650,21 @@ async fn authenticate_ssh_handle(
 
     let mut authenticated_via: Option<String> = None;
 
-    // 1. Try the integrated agent, Pageant, and/or Windows OpenSSH Agent
-    // automatically when enabled — in that priority order.
+    // 1. Try the integrated Cuty Agent first. Only when it is NOT reachable do
+    // the external fallbacks apply (external pageant.exe window / Windows
+    // OpenSSH Agent) — when our agent runs, the hidden "Pageant" window is our
+    // own vault, and querying the fallbacks would duplicate the exact same
+    // failed auth attempts on the server (it disconnects after ~6 attempts).
     #[cfg(windows)]
     {
         let should_try_agents =
             profile.try_pageant || matches!(profile.ssh_auth, SshAuthMethod::Agent { .. });
+        let mut native_reachable = false;
         if should_try_agents {
-            authenticated_via =
+            let (reachable, authed) =
                 try_authenticate_with_native_agent(session, &username, evt_tx).await;
+            native_reachable = reachable;
+            authenticated_via = authed;
         }
 
         let should_try_pageant = should_try_agents
@@ -656,7 +675,7 @@ async fn authenticate_ssh_handle(
                     ..
                 }
             );
-        if authenticated_via.is_none() && should_try_pageant {
+        if authenticated_via.is_none() && should_try_pageant && !native_reachable {
             authenticated_via = try_authenticate_with_pageant(session, &username, evt_tx).await;
         }
 

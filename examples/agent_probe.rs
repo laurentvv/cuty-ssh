@@ -5,7 +5,7 @@
 //! a key into the running agent first.
 //!
 //! Queries both transports exactly like external clients would:
-//! - named pipe `\\.\pipe\cuty-ssh-agent.<user>` (russh agent client)
+//! - named pipe `\\.\pipe\cuty-agent.<user>` (russh agent client)
 //! - legacy `Pageant` window via WM_COPYDATA (pageant crate client)
 //!
 //! Prints the identities seen on each transport; useful for diagnosing the
@@ -167,5 +167,5 @@ fn cuty_ssh_pipe_name() -> String {
         })
         .collect();
     let clean = if clean.is_empty() { "user" } else { &clean };
-    format!(r"\\.\pipe\cuty-ssh-agent.{clean}")
+    format!(r"\\.\pipe\cuty-agent.{clean}")
 }

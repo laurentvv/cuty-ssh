@@ -289,8 +289,8 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
-                    "③ Cockpit central & Cartes de sessions : Chaque carte affiche le protocole (SSH2, TELNET, CONPTY), la pastille d'état réseau, la clé .ppk associée, les badges #tag, le badge violet Bastion, et les boutons 🚀 Connecter / 🔑 → Agent intégré / ⚙ Modifier. Une bordure bleue met la carte en évidence au survol.",
-                    "③ Central Cockpit & Session Cards: Each card displays the protocol badge (SSH2, TELNET, CONPTY), live health status dot, attached .ppk key, #tag pills, purple Bastion badge, and 🚀 Connect / 🔑 → Integrated Agent / ⚙ Edit buttons. A blue border highlights the card on hover.",
+                    "③ Cockpit central & Cartes de sessions : Chaque carte affiche le protocole (SSH2, TELNET, CONPTY), la pastille d'état réseau, la clé .ppk associée, les badges #tag, le badge violet Bastion, et les boutons 🚀 Connecter / 🔑 → Cuty Agent / ⚙ Modifier. Une bordure bleue met la carte en évidence au survol.",
+                    "③ Central Cockpit & Session Cards: Each card displays the protocol badge (SSH2, TELNET, CONPTY), live health status dot, attached .ppk key, #tag pills, purple Bastion badge, and 🚀 Connect / 🔑 → Cuty Agent / ⚙ Edit buttons. A blue border highlights the card on hover.",
                 ),
                 tr(
                     lang,
@@ -428,8 +428,8 @@ impl CutySshApp {
     fn render_help_keys(&self, ui: &mut egui::Ui, lang: UiLanguage) {
         ui.heading(tr(
             lang,
-            "🔑 4. Clés PuTTY (.ppk v2/v3), Agent SSH Intégré & compatibilité Pageant",
-            "🔑 4. PuTTY Keys (.ppk v2/v3), Integrated SSH Agent & Pageant compatibility",
+            "🔑 4. Clés PuTTY (.ppk v2/v3), Cuty Agent & compatibilité Pageant",
+            "🔑 4. PuTTY Keys (.ppk v2/v3), Cuty Agent & Pageant compatibility",
         ));
         ui.add_space(6.0);
 
@@ -437,8 +437,8 @@ impl CutySshApp {
             ui,
             tr(
                 lang,
-                "Gestion native des clés .ppk et Agent SSH intégré (remplacement de Pageant)",
-                "Native .ppk Key Handling & Integrated SSH Agent (Pageant replacement)",
+                "Gestion native des clés .ppk et Cuty Agent (remplacement de Pageant)",
+                "Native .ppk Key Handling & Cuty Agent (Pageant replacement)",
             ),
             &[
                 tr(
@@ -448,8 +448,8 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
-                    "• Agent SSH intégré : Cuty-SSH embarque son propre agent — plus besoin de pageant.exe. Vos clés sont déchiffrées en mémoire vive (jamais écrites sur disque, effacées à l'arrêt) et servent vos sessions via un canal nommé sécurisé réservé à votre compte Windows (\\\\.\\pipe\\cuty-ssh-agent.<utilisateur>). Démarrage automatique au lancement ; tout format de clé est accepté (.ppk, OpenSSH, PEM, PKCS#8).",
-                    "• Integrated SSH agent: Cuty-SSH embeds its own agent — no pageant.exe needed. Keys are decrypted in RAM only (never written to disk, wiped on stop) and serve your sessions through a named pipe restricted to your Windows account (\\\\.\\pipe\\cuty-ssh-agent.<user>). Auto-starts with the app; accepts every key format (.ppk, OpenSSH, PEM, PKCS#8).",
+                    "• Cuty Agent : cuty-ssh embarque son propre agent SSH, Cuty Agent — plus besoin de pageant.exe. Vos clés sont déchiffrées en mémoire vive (jamais écrites sur disque, effacées à l'arrêt) et servent vos sessions via un canal nommé sécurisé réservé à votre compte Windows (\\\\.\\pipe\\cuty-agent.<utilisateur>). Démarrage automatique au lancement ; tout format de clé est accepté (.ppk, OpenSSH, PEM, PKCS#8).",
+                    "• Cuty Agent: cuty-ssh embeds its own SSH agent, named Cuty Agent — no pageant.exe needed. Keys are decrypted in RAM only (never written to disk, wiped on stop) and serve your sessions through a named pipe restricted to your Windows account (\\\\.\\pipe\\cuty-agent.<user>). Auto-starts with the app; accepts every key format (.ppk, OpenSSH, PEM, PKCS#8).",
                 ),
                 tr(
                     lang,
@@ -832,8 +832,8 @@ impl CutySshApp {
         );
         let subtitle = tr(
             lang,
-            "Client SSH2, Bastion (-J), SFTP Drag & Drop, Split View, Clés PuTTY (.ppk v2/v3), Agent SSH Intégré & Sécurité TOFU/DPAPI",
-            "SSH2 Client, Bastion (-J), SFTP Drag & Drop, Split View, PuTTY Keys (.ppk v2/v3), Integrated SSH Agent & TOFU/DPAPI Security",
+            "Client SSH2, Bastion (-J), SFTP Drag & Drop, Split View, Clés PuTTY (.ppk v2/v3), Cuty Agent & Sécurité TOFU/DPAPI",
+            "SSH2 Client, Bastion (-J), SFTP Drag & Drop, Split View, PuTTY Keys (.ppk v2/v3), Cuty Agent & TOFU/DPAPI Security",
         );
 
         let html = format!(
@@ -947,7 +947,7 @@ impl CutySshApp {
       </ul>
     </div>
     <div class="card">
-      <h2>4. 🔑 PuTTY (<code>.ppk</code> v2/v3), Integrated SSH Agent &amp; Pageant compatibility</h2>
+      <h2>4. 🔑 PuTTY (<code>.ppk</code> v2/v3), Cuty Agent &amp; Pageant compatibility</h2>
       <ul>
         <li>{c4_b1}</li>
         <li>{c4_b2}</li>
@@ -1049,8 +1049,8 @@ impl CutySshApp {
             ),
             c4_b2 = tr(
                 lang,
-                "Authentification sans saisie via l'\u{E868} <strong>Agent SSH intégré</strong> (remplacement de Pageant, compatible PuTTY/KiTTY/WinSCP) ; Pageant externe et <strong>Windows OpenSSH Agent</strong> en secours.",
-                "Zero-prompt authentication via the <strong>Integrated SSH Agent</strong> (Pageant replacement, PuTTY/KiTTY/WinSCP compatible); external Pageant and the <strong>Windows OpenSSH Agent</strong> as fallbacks."
+                "Authentification sans saisie via \u{E868} <strong>Cuty Agent</strong> (remplacement de Pageant, compatible PuTTY/KiTTY/WinSCP) ; Pageant externe et <strong>Windows OpenSSH Agent</strong> en secours.",
+                "Zero-prompt authentication via <strong>Cuty Agent</strong> (Pageant replacement, PuTTY/KiTTY/WinSCP compatible); external Pageant and the <strong>Windows OpenSSH Agent</strong> as fallbacks."
             ),
             c5_b1 = tr(
                 lang,

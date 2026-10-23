@@ -1,6 +1,6 @@
 //! Named-pipe transport and lifecycle controller for the native integrated agent.
 //!
-//! Serves the ssh-agent wire protocol on `\\.\pipe\cuty-ssh-agent.<user>` —
+//! Serves the ssh-agent wire protocol on `\\.\pipe\cuty-agent.<user>` —
 //! the same transport modern PuTTY Pageant uses. The pipe is created with an
 //! explicit DACL granting access to the current user's SID only: unlike the
 //! `CreateNamedPipeW` default descriptor (which lets every local account read
@@ -177,7 +177,7 @@ async fn handle_client(mut stream: NamedPipeServer, core: &NativeAgentCore) -> i
     }
 }
 
-/// `\\.\pipe\cuty-ssh-agent.<sanitized username>` (SAM name, before any `@`).
+/// `\\.\pipe\cuty-agent.<sanitized username>` (SAM name, before any `@`).
 pub fn pipe_name() -> String {
     let user = current_username();
     let clean: String = user
@@ -196,7 +196,7 @@ pub fn pipe_name() -> String {
     } else {
         clean
     };
-    format!(r"\\.\pipe\cuty-ssh-agent.{clean}")
+    format!(r"\\.\pipe\cuty-agent.{clean}")
 }
 
 fn current_username() -> String {
@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn pipe_name_contains_sanitized_user() {
         let name = pipe_name();
-        assert!(name.starts_with(r"\\.\pipe\cuty-ssh-agent."), "{name}");
+        assert!(name.starts_with(r"\\.\pipe\cuty-agent."), "{name}");
         assert!(!name.ends_with('.'), "name must not end with a dot: {name}");
     }
 }

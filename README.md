@@ -32,7 +32,7 @@
 It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **OpenSSH** workflows:
 - Load **PuTTY `.ppk` v2 & v3** private keys natively (including **Argon2id** passphrase encryption) alongside OpenSSH/PEM keys.
 - **Migrate from your existing tools in 1 click**: import sessions from the **PuTTY Registry**, portable **KiTTY** folders, **Bitvise SSH Client** profiles (`.tlp` / `.bscp`), and `~/.ssh/config` (with `ProxyJump` and port-forwarding tunnels).
-- Authenticate transparently via the **integrated SSH agent** (in-process Pageant replacement, WM_COPYDATA-compatible with PuTTY/KiTTY/WinSCP), with **external Pageant** (Windows shared memory) and the **Windows OpenSSH Agent** (`\\.\pipe\openssh-ssh-agent`) as automatic fallbacks.
+- Authenticate transparently via **Cuty Agent**, the built-in SSH agent (in-process Pageant replacement, WM_COPYDATA-compatible with PuTTY/KiTTY/WinSCP), with **external Pageant** (Windows shared memory) and the **Windows OpenSSH Agent** (`\\.\pipe\openssh-ssh-agent`) as automatic fallbacks.
 - Provision new servers in **1 click (`ssh-copy-id`)**: connect once with a password, deploy your Primary SSH Key to `~/.ssh/authorized_keys`, and let Cuty-SSH automatically switch the saved session profile to passwordless key authentication while wiping the stored password.
 - Route sessions through **SSH Bastions / Jump Hosts (`-J` / `ProxyJump`)**, manage **TOFU `known_hosts` SHA-256 fingerprints**, encrypt credentials at rest with **Windows DPAPI**, transfer files via **Drag-and-Drop streaming SFTP**, and monitor live remote server telemetry (`CPU load`, `RAM`, `Disk`, `Uptime`).
 
@@ -45,7 +45,7 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 1. [Screenshots & Animated Tour](#screenshots--animated-tour)
 2. [Feature Matrix: Why Cuty-SSH?](#feature-matrix-why-cuty-ssh)
 3. [Key Features](#key-features)
-   - [1. Native PuTTY Key (`.ppk`), Integrated SSH Agent & Pageant Compatibility](#1-native-putty-key-ppk-integrated-ssh-agent--pageant-compatibility)
+   - [1. Native PuTTY Key (`.ppk`), Cuty Agent & Pageant Compatibility](#1-native-putty-key-ppk-cuty-agent--pageant-compatibility)
    - [2. Multi-Protocol Engine, Bastion (`ProxyJump`) & Security Vault](#2-multi-protocol-engine-bastion-proxyjump--security-vault)
    - [3. Split View, Advanced SFTP Client (Bitvise/WinSCP Parity) & High-Performance Terminal](#3-split-view-advanced-sftp-client-bitvisewinscp-parity--high-performance-terminal)
    - [4. Session Organization, Tags (`#tag`) & SysAdmin Network Toolkit](#4-session-organization-tags-tag--sysadmin-network-toolkit)
@@ -70,7 +70,7 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 ## Screenshots & Animated Tour
 
 ### Animated Feature Tour (`assets/cuty_ssh_demo.gif`)
-> Live walkthrough of the **SysAdmin Cockpit**, **Bastion / Jump Host (`-J`) Session Editor**, **Built-in Illustrated User Guide (`📖 Help`)**, **Network & IPv4 CIDR Toolkit**, **TOFU Known Hosts (`🛡 Hosts`)**, and **PuTTY `.ppk` Key Inspector & Integrated SSH Agent**:
+> Live walkthrough of the **SysAdmin Cockpit**, **Bastion / Jump Host (`-J`) Session Editor**, **Built-in Illustrated User Guide (`📖 Help`)**, **Network & IPv4 CIDR Toolkit**, **TOFU Known Hosts (`🛡 Hosts`)**, and **PuTTY `.ppk` Key Inspector & Cuty Agent**:
 
 ![Cuty-SSH Animated Feature Tour](assets/cuty_ssh_demo.gif)
 
@@ -86,7 +86,7 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 | :--- | :---: | :---: | :---: |
 | **Pure Rust Async SSH2 Engine (`russh`)** | ❌ C legacy | ❌ External process | ✅ **Built-in (`russh 0.64`)** |
 | **Native PuTTY `.ppk` v2 & v3 (Argon2id) Keys** | ✅ | ❌ Requires conversion | ✅ **Direct load & inspection** |
-| **Integrated SSH Agent (Pageant replacement)** | External `pageant.exe` | OpenSSH Agent only | ✅ **Built-in agent + Pageant/WM_COPYDATA & OpenSSH Agent fallbacks** |
+| **Cuty Agent (integrated SSH agent, Pageant replacement)** | External `pageant.exe` | OpenSSH Agent only | ✅ **Built-in Cuty Agent + Pageant/WM_COPYDATA & OpenSSH Agent fallbacks** |
 | **1-Click `ssh-copy-id` + Auto Password ➡ Key Switch** | ❌ | ❌ Manual CLI | ✅ **1-Click button + auto profile migration** |
 | **SSH Bastion / Jump Host (`-J` / `ProxyJump`)** | Complex proxy cmd | ✅ `-J` flag | ✅ **Visual selector + inline `ProxyJump`** |
 | **Headless CLI Automation & Scripting (`plink` / `ssh` drop-in)** | Limited (`plink.exe`) | OpenSSH CLI | ✅ **Built-in (`--exec`, `--batch`, `-m`, `--sftp-put/get`, `--tunnel`)** |
@@ -107,13 +107,13 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 
 ## Key Features
 
-### 1. Native PuTTY Key (`.ppk`), Integrated SSH Agent & Pageant Compatibility
+### 1. Native PuTTY Key (`.ppk`), Cuty Agent & Pageant Compatibility
 - **Direct `.ppk` v2 & v3 Support**: Load PuTTY private keys (`PuTTY-User-Key-File-2` and `PuTTY-User-Key-File-3`) directly without conversion.
   - Supports **Ed25519**, **RSA**, **ECDSA (`nistp256` / `nistp384` / `nistp521`)**, and **DSA**.
   - Supports unencrypted (`Encryption: none`) and passphrase-encrypted keys (`aes256-cbc`, **Argon2id / Argon2d / Argon2i** KDF in `.ppk` v3, and SHA-1 KDF in `.ppk` v2).
   - Automatic memory wiping (`zeroize`) of decrypted key material and seeds.
-- **Integrated SSH Agent (native Pageant replacement)**:
-  - cuty-ssh embeds a full ssh-agent server — no external `pageant.exe` process. Keys are decrypted **in RAM only** (`zeroize` on unload, never written to disk) and served over a named pipe restricted to your Windows account (`\\.\pipe\cuty-ssh-agent.<user>`).
+- **Cuty Agent (integrated SSH agent, native Pageant replacement)**:
+  - cuty-ssh embeds a full ssh-agent server, **Cuty Agent** — no external `pageant.exe` process. Keys are decrypted **in RAM only** (`zeroize` on unload, never written to disk) and served over a named pipe restricted to your Windows account (`\\.\pipe\cuty-agent.<user>`).
   - **PuTTY / KiTTY / WinSCP compatible**: the agent also exposes the legacy `Pageant` hidden window (`WM_COPYDATA` IPC with owner-SID security check, mirroring PuTTY's `pageant.c`), so those tools see your keys with zero configuration. If a real Pageant is already running, cuty-ssh stands down and reports the conflict.
   - **1-Click Session Key Loader**: push the primary key, quick-connect key and every saved session key (`.ppk`, OpenSSH, PEM, PKCS#8 — any format) into the integrated agent; encrypted keys wait for a passphrase and load on retry. RSA `rsa-sha2-256/512` signature flags are honoured.
   - External agents remain automatic fallbacks: a running **Pageant** (Windows shared-memory IPC) and the native **Windows OpenSSH Authentication Agent** service (`\\.\pipe\openssh-ssh-agent`).
@@ -438,7 +438,7 @@ The compiled executable is generated at `target/release/cuty-ssh.exe`.
 | :--- | :--- | :--- |
 | **Entrypoint & CLI Launcher** | [`src/main.rs`](src/main.rs) | Universal CLI connection launcher (`CliTarget` ad-hoc SSH/SFTP/Telnet/Shell, URI scheme router, PuTTY compatibility flags), parent console attacher, native `eframe 0.37` viewport bootstrap (`1320×820`), DirectX 12 `wgpu` backend, Tokio runtime setup, and test suite. |
 | **Config, DPAPI Vault & Audit Storage** | [`src/config/mod.rs`](src/config/mod.rs) | `SessionProfile`, `AppConfig`, `UiLanguage` (`English` / `French`), Windows DPAPI encryption (`CryptProtectData`), TOFU `known_hosts.json` store, `AuditLogEntry` append-only engine, Edge Gateway presets, `~/.ssh/config` parser, and Registry PuTTY importer. |
-| **PuTTY `.ppk`, Agents & `ssh-copy-id`** | [`src/ssh/mod.rs`](src/ssh/mod.rs), [`src/ssh/ppk.rs`](src/ssh/ppk.rs), [`src/ssh/agent.rs`](src/ssh/agent.rs), [`src/ssh/agent_server.rs`](src/ssh/agent_server.rs), [`src/ssh/agent_wmcopydata.rs`](src/ssh/agent_wmcopydata.rs) | `.ppk` v2/v3 & OpenSSH/PEM/`.pub` inspection, `zeroize`-hardened decoding, `.ppk` v3 encoder, Primary Key resolver/generator, `ssh-copy-id` POSIX script builder, and the **native integrated agent** (ssh-agent core, user-DACL named pipe, WM_COPYDATA Pageant window). |
+| **PuTTY `.ppk`, Agents & `ssh-copy-id`** | [`src/ssh/mod.rs`](src/ssh/mod.rs), [`src/ssh/ppk.rs`](src/ssh/ppk.rs), [`src/ssh/agent.rs`](src/ssh/agent.rs), [`src/ssh/agent_server.rs`](src/ssh/agent_server.rs), [`src/ssh/agent_wmcopydata.rs`](src/ssh/agent_wmcopydata.rs) | `.ppk` v2/v3 & OpenSSH/PEM/`.pub` inspection, `zeroize`-hardened decoding, `.ppk` v3 encoder, Primary Key resolver/generator, `ssh-copy-id` POSIX script builder, and **Cuty Agent**, the native integrated agent (ssh-agent core, user-DACL named pipe `\\.\pipe\cuty-agent.<user>`, WM_COPYDATA Pageant window). |
 | **VT100 Terminal Engine & Fast Selection** | [`src/terminal/mod.rs`](src/terminal/mod.rs) | `vte 0.15`-backed terminal grid, compact 1-byte bitflag `TerminalCell`, alternate screen (`?1049h`), 256-color/TrueColor SGR, scrollback, double-click word/token and triple-click line selection, search, and URL detection. |
 | **Asciinema v2 Session Recorder & Player** | [`src/terminal/recording.rs`](src/terminal/recording.rs) | Standard `.cast` JSON Lines session recorder, event parser, and interactive playback engine. |
 | **Async Protocols, Bastion & SFTP** | [`src/protocols/mod.rs`](src/protocols/mod.rs) | Async SSH2 (`russh`), `ProxyJump` (`direct-tcpip`), TOFU host key check, `DeployPublicKey` (`ssh-copy-id` exec channel), streaming SFTP (`russh-sftp`), Telnet RFC 854, Raw TCP, Windows ConPTY (`portable-pty`), live SSH telemetry, and IPv4 CIDR calculator. |

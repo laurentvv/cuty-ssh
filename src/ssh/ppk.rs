@@ -484,9 +484,12 @@ pub struct AgentProbeReport {
     pub openssh_error: Option<String>,
 }
 
-/// Queries the native integrated agent, Pageant, and the Windows OpenSSH Agent
-/// to list all public keys currently loaded in memory, plus a diagnostic report
-/// for honest status rendering.
+/// Queries the integrated Cuty Agent and the external fallback agents
+/// (pageant.exe window, Windows OpenSSH Agent) to list all public keys
+/// currently loaded in memory, plus a diagnostic report for honest status
+/// rendering. When Cuty Agent answers, the Pageant probe is skipped: the
+/// hidden "Pageant" window then belongs to cuty-ssh itself, so probing it
+/// would list the very same keys twice.
 pub async fn list_agent_keys(
     check_native: bool,
     check_pageant: bool,
@@ -497,12 +500,14 @@ pub async fn list_agent_keys(
 
     #[cfg(windows)]
     {
+        let mut native_reachable = false;
         if check_native
             && let Ok(mut agent) = russh::keys::agent::client::AgentClient::connect_named_pipe(
                 crate::ssh::agent_server::pipe_name(),
             )
             .await
         {
+            native_reachable = true;
             match agent.request_identities().await {
                 Ok(identities) => {
                     for id in identities {
@@ -512,7 +517,7 @@ pub async fn list_agent_keys(
                             fingerprint_sha256: pubkey.fingerprint(HashAlg::Sha256).to_string(),
                             comment: id.comment().to_string(),
                             openssh_public_key: format_openssh_pubkey(&pubkey),
-                            source_agent: "cuty-ssh Agent (intégré)".to_string(),
+                            source_agent: "Cuty Agent (intégré)".to_string(),
                         });
                     }
                 }
@@ -522,8 +527,8 @@ pub async fn list_agent_keys(
             }
         }
 
-        report.pageant_running = pageant::wmmessage::is_pageant_running();
-        if check_pageant {
+        if check_pageant && !native_reachable {
+            report.pageant_running = pageant::wmmessage::is_pageant_running();
             match russh::keys::agent::client::AgentClient::connect_pageant().await {
                 Ok(mut agent) => match agent.request_identities().await {
                     Ok(identities) => {
