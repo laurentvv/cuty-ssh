@@ -558,7 +558,13 @@ fn render_single_terminal_pane(
     };
 
     if response.drag_started_by(egui::PointerButton::Primary) {
-        if let Some(pos) = response.interact_pointer_pos() {
+        // With `Sense::click_and_drag`, egui only reports the drag once the pointer moved past
+        // its 6 pt click threshold, so `interact_pointer_pos()` already sits past the pressed
+        // cell; anchor the selection start at the press origin instead.
+        let pos = ctx
+            .input(|i| i.pointer.press_origin())
+            .or_else(|| response.interact_pointer_pos());
+        if let Some(pos) = pos {
             let cell = pos_to_cell(pos);
             tab.terminal.state.selection_start = Some(cell);
             tab.terminal.state.selection_end = Some(cell);
