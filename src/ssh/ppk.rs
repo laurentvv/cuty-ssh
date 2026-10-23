@@ -596,6 +596,95 @@ pub async fn list_agent_keys(
     (entries, report)
 }
 
+/// Reads the executable's embedded FileVersion version resource (e.g. PuTTY's
+/// « Release 0.78 ») through the Windows version APIs — a pure metadata probe:
+/// the file is never launched. Returns None when the file is unreadable or
+/// carries no version info.
+#[cfg(windows)]
+pub fn query_exe_file_version(path: &Path) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        let size = GetFileVersionInfoSizeW(wide.as_ptr(), std::ptr::null_mut());
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        if GetFileVersionInfoW(wide.as_ptr(), 0, size, data.as_mut_ptr() as *mut _) == 0 {
+            return None;
+        }
+
+        // Resolves a \Block\ path inside the version resource; the returned
+        // pointer aliases `data`, which outlives every use below.
+        let query_ptr = |subblock: &str| -> Option<(*const u8, u32)> {
+            let key: Vec<u16> = subblock.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let mut len = 0u32;
+            if VerQueryValueW(data.as_ptr() as *const _, key.as_ptr(), &mut ptr, &mut len) != 0
+                && !ptr.is_null()
+            {
+                Some((ptr as *const u8, len))
+            } else {
+                None
+            }
+        };
+
+        // Language/code page pairs actually embedded in the resource.
+        let mut lang_keys: Vec<String> = match query_ptr("\\VarFileInfo\\Translation") {
+            Some((ptr, len)) => {
+                let bytes = std::slice::from_raw_parts(ptr, len as usize);
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| {
+                        let lang = u16::from_le_bytes([c[0], c[1]]);
+                        let codepage = u16::from_le_bytes([c[2], c[3]]);
+                        format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileVersion")
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        // Common US-English fallbacks (Unicode then ANSI code page).
+        lang_keys.push("\\StringFileInfo\\040904b0\\FileVersion".to_string());
+        lang_keys.push("\\StringFileInfo\\040904e4\\FileVersion".to_string());
+
+        for key in lang_keys {
+            if let Some((ptr, _)) = query_ptr(&key) {
+                let mut units: Vec<u16> = Vec::new();
+                let mut i = 0;
+                loop {
+                    let u = *(ptr as *const u16).add(i);
+                    if u == 0 || i > 512 {
+                        break;
+                    }
+                    units.push(u);
+                    i += 1;
+                }
+                let s = String::from_utf16_lossy(&units).trim().to_string();
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+pub fn query_exe_file_version(_path: &Path) -> Option<String> {
+    None
+}
+
 /// Resolves the user's Primary SSH Key from `configured_primary_path` or standard fallback locations,
 /// or automatically generates a new Ed25519 Primary Key (`cuty-ssh-portable/keys/id_cuty_primary.ppk`)
 /// if none exists yet. Returns `(private_key_path, KeyInspection, newly_generated)`.
@@ -684,6 +773,23 @@ pub fn build_ssh_copy_id_script(openssh_pubkey: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_exe_version_probe_reads_system_binary_and_rejects_missing() {
+        // A Windows system binary always carries a version resource.
+        let notepad = std::path::Path::new(r"C:\Windows\System32\notepad.exe");
+        if notepad.exists() {
+            let version = query_exe_file_version(notepad);
+            assert!(version.is_some(), "notepad.exe must expose a FileVersion");
+            assert!(!version.unwrap().trim().is_empty());
+        }
+        assert!(
+            query_exe_file_version(std::path::Path::new(
+                r"C:\definitely\missing\cuty-probe.exe"
+            ))
+            .is_none()
+        );
+    }
 
     #[test]
     fn test_resolve_pageant_executable_with_hints_finds_in_key_dir() {

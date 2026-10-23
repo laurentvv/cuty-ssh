@@ -19,7 +19,7 @@ use crate::protocols::{
 use crate::ssh::ppk::{
     AgentKeyEntry, AgentProbeReport, KeyInspection, export_to_openssh_pem, export_to_ppk_v3,
     format_openssh_pubkey, generate_new_ssh_key, inspect_key_file, launch_pageant_with_keys,
-    list_agent_keys, load_private_key_any, resolve_or_create_primary_key,
+    list_agent_keys, load_private_key_any, query_exe_file_version, resolve_or_create_primary_key,
 };
 use crate::terminal::{TerminalEmulator, TerminalTheme};
 use crate::ui::help_modal::{HelpTopic, tr};
@@ -5789,6 +5789,18 @@ impl CutySshApp {
                                 .strong(),
                             );
                             ui.monospace(&self.config.pageant_path);
+                            if let Some(version) = query_exe_file_version(&pageant_path_buf) {
+                                ui.label(
+                                    RichText::new(format!("· {}", version))
+                                        .small()
+                                        .color(Color32::from_rgb(139, 148, 158)),
+                                )
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Version embarquée de l'exécutable Pageant. Les builds Pageant récents (PuTTY/KiTTY) améliorent la communication agent — mise à jour : chiark.greenend.org.uk/~sgtatham/putty/latest.html",
+                                    "Embedded version of the Pageant executable. Recent PuTTY/KiTTY builds improve agent communication — update from: chiark.greenend.org.uk/~sgtatham/putty/latest.html",
+                                ));
+                            }
                             if let Some(parent) = pageant_path_buf.parent()
                                 && ui
                                     .small_button(tr(lang, "📁 Ouvrir dossier", "📁 Open Folder"))
