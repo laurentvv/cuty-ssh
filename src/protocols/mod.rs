@@ -369,6 +369,61 @@ pub(crate) fn rsa_hash_candidates(preferred: Option<HashAlg>) -> Vec<Option<Hash
 }
 
 #[cfg(windows)]
+async fn try_authenticate_with_native_agent(
+    session: &mut client::Handle<SshClientHandler>,
+    username: &str,
+    evt_tx: &UnboundedSender<BackendEvent>,
+) -> Option<String> {
+    if let Ok(mut agent) = russh::keys::agent::client::AgentClient::connect_named_pipe(
+        crate::ssh::agent_server::pipe_name(),
+    )
+    .await
+        && let Ok(identities) = agent.request_identities().await
+        && !identities.is_empty()
+    {
+        let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
+            "Agent cuty-ssh intégré détecté ({} clé(s))...",
+            identities.len()
+        )));
+        let rsa_hash = session
+            .best_supported_rsa_hash()
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+        for id in identities {
+            let pubkey: PublicKey = id.public_key().into_owned();
+            let alg_is_rsa = pubkey.algorithm().is_rsa();
+            let candidates = if alg_is_rsa {
+                rsa_hash_candidates(rsa_hash)
+            } else {
+                vec![None]
+            };
+            let comment = id.comment().to_string();
+            let fp = pubkey.fingerprint(HashAlg::Sha256).to_string();
+            for hash_alg in candidates {
+                if let Ok(res) = session
+                    .authenticate_publickey_with(username, pubkey.clone(), hash_alg, &mut agent)
+                    .await
+                    && res.success()
+                {
+                    return Some(format!(
+                        "Agent cuty-ssh (intégré) — clé {} [{}]",
+                        if comment.is_empty() {
+                            "sans nom"
+                        } else {
+                            &comment
+                        },
+                        fp
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
 async fn try_authenticate_with_pageant(
     session: &mut client::Handle<SshClientHandler>,
     username: &str,
@@ -582,10 +637,18 @@ async fn authenticate_ssh_handle(
 
     let mut authenticated_via: Option<String> = None;
 
-    // 1. Try Pageant and/or Windows OpenSSH Agent automatically when enabled
+    // 1. Try the integrated agent, Pageant, and/or Windows OpenSSH Agent
+    // automatically when enabled — in that priority order.
     #[cfg(windows)]
     {
-        let should_try_pageant = profile.try_pageant
+        let should_try_agents =
+            profile.try_pageant || matches!(profile.ssh_auth, SshAuthMethod::Agent { .. });
+        if should_try_agents {
+            authenticated_via =
+                try_authenticate_with_native_agent(session, &username, evt_tx).await;
+        }
+
+        let should_try_pageant = should_try_agents
             || matches!(
                 profile.ssh_auth,
                 SshAuthMethod::Agent {
@@ -593,11 +656,11 @@ async fn authenticate_ssh_handle(
                     ..
                 }
             );
-        if should_try_pageant {
+        if authenticated_via.is_none() && should_try_pageant {
             authenticated_via = try_authenticate_with_pageant(session, &username, evt_tx).await;
         }
 
-        let should_try_openssh_agent = profile.try_pageant
+        let should_try_openssh_agent = should_try_agents
             || matches!(
                 profile.ssh_auth,
                 SshAuthMethod::Agent {

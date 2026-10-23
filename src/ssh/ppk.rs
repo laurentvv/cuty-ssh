@@ -530,9 +530,11 @@ pub struct AgentProbeReport {
     pub openssh_error: Option<String>,
 }
 
-/// Queries Pageant and the Windows OpenSSH Agent to list all public keys currently
-/// loaded in memory, plus a diagnostic report for honest status rendering.
+/// Queries the native integrated agent, Pageant, and the Windows OpenSSH Agent
+/// to list all public keys currently loaded in memory, plus a diagnostic report
+/// for honest status rendering.
 pub async fn list_agent_keys(
+    check_native: bool,
     check_pageant: bool,
     check_openssh: bool,
 ) -> (Vec<AgentKeyEntry>, AgentProbeReport) {
@@ -541,6 +543,31 @@ pub async fn list_agent_keys(
 
     #[cfg(windows)]
     {
+        if check_native
+            && let Ok(mut agent) = russh::keys::agent::client::AgentClient::connect_named_pipe(
+                crate::ssh::agent_server::pipe_name(),
+            )
+            .await
+        {
+            match agent.request_identities().await {
+                Ok(identities) => {
+                    for id in identities {
+                        let pubkey = id.public_key();
+                        entries.push(AgentKeyEntry {
+                            algorithm: pubkey.algorithm().to_string(),
+                            fingerprint_sha256: pubkey.fingerprint(HashAlg::Sha256).to_string(),
+                            comment: id.comment().to_string(),
+                            openssh_public_key: format_openssh_pubkey(&pubkey),
+                            source_agent: "cuty-ssh Agent (intégré)".to_string(),
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("native agent query failed: {e}");
+                }
+            }
+        }
+
         report.pageant_running = pageant::wmmessage::is_pageant_running();
         if check_pageant {
             match russh::keys::agent::client::AgentClient::connect_pageant().await {
@@ -591,7 +618,7 @@ pub async fn list_agent_keys(
     }
 
     #[cfg(not(windows))]
-    let _ = (check_pageant, check_openssh);
+    let _ = (check_native, check_pageant, check_openssh);
 
     (entries, report)
 }

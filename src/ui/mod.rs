@@ -358,6 +358,11 @@ pub struct CutySshApp {
     pub agent_keys_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<(Vec<AgentKeyEntry>, AgentProbeReport)>>,
 
+    // Native integrated agent (in-process Pageant replacement)
+    pub native_agent: Option<crate::ssh::agent_server::NativeAgentServer>,
+    /// Key paths that failed to load because they need a passphrase.
+    pub native_agent_pending: Vec<String>,
+
     // Known Hosts (TOFU) Manager
     pub show_known_hosts: bool,
     pub known_hosts: Vec<KnownHostEntry>,
@@ -511,6 +516,8 @@ impl CutySshApp {
             agent_keys: Vec::new(),
             agent_report: AgentProbeReport::default(),
             agent_keys_rx: None,
+            native_agent: None,
+            native_agent_pending: Vec::new(),
             show_known_hosts: false,
             known_hosts,
             known_hosts_filter: String::new(),
@@ -551,6 +558,11 @@ impl CutySshApp {
             app.apply_demo_stage(&stage);
         } else {
             app.resolve_pageant_path();
+            if app.config.native_agent_enabled
+                && let Ok(server) = crate::ssh::agent_server::NativeAgentServer::start(&app.rt)
+            {
+                app.native_agent = Some(server);
+            }
             app.refresh_agent_keys();
             app.probe_all_sessions();
         }
@@ -1151,11 +1163,12 @@ impl CutySshApp {
     }
 
     fn spawn_agent_probe(&mut self, probes: u32) {
+        let check_native = self.native_agent.is_some();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         self.agent_keys_rx = Some(rx);
         self.rt.spawn(async move {
             for i in 0..probes {
-                let (keys, report) = list_agent_keys(true, true).await;
+                let (keys, report) = list_agent_keys(check_native, true, true).await;
                 let loaded = !keys.is_empty();
                 let _ = tx.send((keys, report));
                 if loaded || i + 1 == probes {
@@ -1317,6 +1330,180 @@ impl CutySshApp {
                 self.set_toast(format!("Erreur Pageant : {}", e));
             }
         }
+    }
+
+    /// Starts the native integrated agent (named-pipe SSH agent server).
+    pub fn start_native_agent(&mut self) {
+        if self.native_agent.is_some() {
+            return;
+        }
+        match crate::ssh::agent_server::NativeAgentServer::start(&self.rt) {
+            Ok(server) => {
+                self.key_manager_status = tr(
+                    self.config.language,
+                    "Agent intégré démarré — les clés chargées servent vos sessions SSH.",
+                    "Integrated agent started — loaded keys now serve your SSH sessions.",
+                )
+                .to_string();
+                self.native_agent = Some(server);
+                self.refresh_agent_keys();
+            }
+            Err(e) => {
+                self.set_toast(format!(
+                    "{} {}",
+                    tr(
+                        self.config.language,
+                        "Erreur agent intégré :",
+                        "Integrated agent error:"
+                    ),
+                    e
+                ));
+            }
+        }
+    }
+
+    /// Stops the native integrated agent and drops every loaded key from memory.
+    pub fn stop_native_agent(&mut self) {
+        if let Some(server) = self.native_agent.take() {
+            server.stop();
+            self.native_agent_pending.clear();
+            self.set_toast(tr(
+                self.config.language,
+                "Agent intégré arrêté — clés effacées de la mémoire.",
+                "Integrated agent stopped — keys wiped from memory.",
+            ));
+            self.refresh_agent_keys();
+        }
+    }
+
+    /// Key files configured across the primary key, quick connect, and saved
+    /// sessions — any supported format (unlike Pageant's `.ppk`-only rule).
+    fn collect_session_key_paths(&self) -> Vec<String> {
+        let mut paths: Vec<String> = Vec::new();
+        let mut collect = |raw: &str| {
+            let p = raw.trim();
+            if !p.is_empty()
+                && PathBuf::from(p).exists()
+                && !paths.iter().any(|s| s.eq_ignore_ascii_case(p))
+            {
+                paths.push(p.to_string());
+            }
+        };
+        collect(&self.config.primary_key_path);
+        collect(&self.quick_ppk_path);
+        for s in &self.config.sessions {
+            if let SshAuthMethod::PrivateKeyFile { key_path, .. } = &s.ssh_auth {
+                collect(key_path);
+            }
+        }
+        paths
+    }
+
+    /// Decrypts and loads every session key into the native integrated agent.
+    /// Encrypted keys whose passphrase was not entered (or was wrong) are kept
+    /// in `native_agent_pending` for a retry with the passphrase field filled.
+    pub fn load_keys_into_native_agent(&mut self) {
+        let Some(agent) = self.native_agent.as_ref() else {
+            self.set_toast(tr(
+                self.config.language,
+                "Démarrez d'abord l'agent intégré.",
+                "Start the integrated agent first.",
+            ));
+            return;
+        };
+        let lang = self.config.language;
+        let passphrase = zeroize::Zeroizing::new(self.key_manager_passphrase.clone());
+        let pass_opt: Option<&str> = if passphrase.is_empty() {
+            None
+        } else {
+            Some(&passphrase)
+        };
+        let paths: Vec<String> = if self.native_agent_pending.is_empty() {
+            self.collect_session_key_paths()
+        } else {
+            std::mem::take(&mut self.native_agent_pending)
+        };
+        if paths.is_empty() {
+            self.set_toast(tr(
+                lang,
+                "Aucun fichier clé existant trouvé dans vos sessions.",
+                "No existing key file found in your sessions.",
+            ));
+            return;
+        }
+
+        let mut loaded = 0usize;
+        let mut pending: Vec<String> = Vec::new();
+        let mut wrong_pass: Vec<String> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
+        for p in paths {
+            let path = PathBuf::from(&p);
+            match load_private_key_any(&path, pass_opt) {
+                Ok(key) => {
+                    let comment = key.public_key().comment().to_string();
+                    agent.core.add_key(key, &comment, &p);
+                    loaded += 1;
+                }
+                Err(e) => {
+                    let msg = e.to_string().to_lowercase();
+                    if msg.contains("passphrase") || msg.contains("déchiffrée") {
+                        if pass_opt.is_some() {
+                            wrong_pass.push(p);
+                        } else {
+                            pending.push(p);
+                        }
+                    } else {
+                        errors.push(format!("{p}: {e}"));
+                    }
+                }
+            }
+        }
+        let pending_count = pending.len();
+        self.native_agent_pending = pending;
+
+        let mut parts: Vec<String> = Vec::new();
+        if loaded > 0 {
+            parts.push(format!(
+                "{} {}",
+                loaded,
+                tr(
+                    lang,
+                    "clé(s) chargée(s) dans l'agent intégré",
+                    "key(s) loaded into the integrated agent"
+                )
+            ));
+        }
+        if pending_count > 0 {
+            parts.push(format!(
+                "{} {}",
+                pending_count,
+                tr(
+                    lang,
+                    "clé(s) chiffrée(s) en attente — tapez la passphrase ci-dessous puis rechargez",
+                    "encrypted key(s) waiting — type the passphrase below and reload"
+                )
+            ));
+        }
+        if !wrong_pass.is_empty() {
+            self.native_agent_pending.extend(wrong_pass.iter().cloned());
+            parts.push(format!(
+                "{} {}",
+                wrong_pass.len(),
+                tr(lang, "passphrase incorrecte", "wrong passphrase")
+            ));
+        }
+        if !errors.is_empty() {
+            parts.push(tr(lang, "erreurs de lecture", "read errors").to_string());
+            tracing::warn!("native agent load errors: {errors:?}");
+        }
+        let summary = parts.join(" · ");
+        self.key_manager_status = summary.clone();
+        self.set_toast(if summary.is_empty() {
+            tr(lang, "Aucune nouvelle clé chargée.", "No new key loaded.").to_string()
+        } else {
+            summary
+        });
+        self.refresh_agent_keys();
     }
 
     pub fn launch_session(&mut self, mut profile: SessionProfile) {
@@ -5755,12 +5942,232 @@ impl CutySshApp {
 
             ui.add_space(6.0);
 
+            // Section 1: Native integrated agent — in-process Pageant replacement
+            let native_running = self.native_agent.as_ref().is_some_and(|a| a.is_alive());
+            let native_pipe = self
+                .native_agent
+                .as_ref()
+                .map(|a| a.pipe_name.clone())
+                .unwrap_or_else(crate::ssh::agent_server::pipe_name);
+            let native_keys = self
+                .native_agent
+                .as_ref()
+                .map(|a| a.core.list())
+                .unwrap_or_default();
+            let native_pending = self.native_agent_pending.clone();
+            egui::Frame::NONE
+                .fill(Color32::from_rgb(16, 28, 22))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::same(10))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(46, 160, 67)))
+                .show(ui, |ui| {
+                    ui.heading(
+                        RichText::new(tr(
+                            lang,
+                            "\u{E868} Agent SSH Intégré (remplacement natif de Pageant)",
+                            "\u{E868} Integrated SSH Agent (native Pageant replacement)",
+                        ))
+                        .color(Color32::from_rgb(86, 211, 100)),
+                    );
+                    ui.label(
+                        RichText::new(tr(
+                            lang,
+                            "cuty-ssh embarque son propre agent SSH : vos clés sont déchiffrées en mémoire vive (jamais écrites sur disque) et servent vos sessions sans pageant.exe.",
+                            "cuty-ssh embeds its own SSH agent: keys are decrypted in memory only (never written to disk) and serve your sessions without pageant.exe.",
+                        ))
+                        .small()
+                        .color(Color32::from_rgb(139, 148, 158)),
+                    );
+                    ui.add_space(4.0);
+
+                    if native_running {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new("●")
+                                    .color(Color32::from_rgb(63, 185, 80))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new(tr(
+                                    lang,
+                                    "Agent actif — vos sessions SSH l'utilisent en priorité :",
+                                    "Agent active — your SSH sessions use it first:",
+                                ))
+                                .color(Color32::from_rgb(63, 185, 80))
+                                .strong(),
+                            );
+                            ui.monospace(&native_pipe)
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Canal nommé sécurisé : seuls les processus de votre compte Windows peuvent y accéder",
+                                    "Secured named pipe: only processes of your Windows account can access it",
+                                ));
+                            ui.label(
+                                RichText::new(format!(
+                                    "· {} {}",
+                                    native_keys.len(),
+                                    tr(lang, "clé(s) en mémoire", "key(s) in memory")
+                                ))
+                                .small()
+                                .color(Color32::from_rgb(139, 148, 158)),
+                            );
+                        });
+                    } else {
+                        ui.label(
+                            RichText::new(tr(
+                                lang,
+                                "○ Agent arrêté — aucune clé n'est conservée en mémoire.",
+                                "○ Agent stopped — no key is held in memory.",
+                            ))
+                            .color(Color32::from_rgb(227, 179, 65)),
+                        );
+                    }
+
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if native_running {
+                            if ui
+                                .button(tr(
+                                    lang,
+                                    "\u{E8AC} Arrêter l'agent (efface les clés)",
+                                    "\u{E8AC} Stop Agent (wipes keys)",
+                                ))
+                                .clicked()
+                            {
+                                self.stop_native_agent();
+                            }
+                        } else if ui
+                            .button(
+                                RichText::new(tr(
+                                    lang,
+                                    "\u{E3FE} Démarrer l'agent intégré",
+                                    "\u{E3FE} Start Integrated Agent",
+                                ))
+                                .color(Color32::from_rgb(86, 211, 100)),
+                            )
+                            .clicked()
+                        {
+                            self.start_native_agent();
+                        }
+                        let mut autostart = self.config.native_agent_enabled;
+                        if ui
+                            .checkbox(
+                                &mut autostart,
+                                tr(lang, "Démarrer au lancement", "Start at launch"),
+                            )
+                            .changed()
+                        {
+                            self.config.native_agent_enabled = autostart;
+                            let _ = self.config.save();
+                        }
+                    });
+
+                    if native_running {
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .button(
+                                    RichText::new(tr(
+                                        lang,
+                                        "\u{E20C} Charger toutes les clés des sessions",
+                                        "\u{E20C} Load All Session Keys",
+                                    ))
+                                    .color(Color32::from_rgb(210, 153, 34)),
+                                )
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Déchiffre et charge la clé principale, la clé rapide et toutes les clés des sessions (tout format : .ppk, OpenSSH, PEM) dans l'agent intégré",
+                                    "Decrypts and loads the primary key, quick-connect key and every session key (any format: .ppk, OpenSSH, PEM) into the integrated agent",
+                                ))
+                                .clicked()
+                            {
+                                self.load_keys_into_native_agent();
+                            }
+                            if !native_keys.is_empty()
+                                && ui
+                                    .button(tr(
+                                        lang,
+                                        "\u{E872} Tout décharger",
+                                        "\u{E872} Unload All",
+                                    ))
+                                    .on_hover_text(tr(
+                                        lang,
+                                        "Retire toutes les clés de la mémoire de l'agent",
+                                        "Removes every key from the agent's memory",
+                                    ))
+                                    .clicked()
+                                    && let Some(agent) = self.native_agent.as_ref()
+                            {
+                                let n = agent.core.remove_all();
+                                self.native_agent_pending.clear();
+                                self.set_toast(format!(
+                                    "{} {}",
+                                    n,
+                                    tr(lang, "clé(s) retirée(s) de la mémoire.", "key(s) removed from memory.")
+                                ));
+                                self.refresh_agent_keys();
+                            }
+                        });
+
+                        if !native_pending.is_empty() {
+                            ui.add_space(2.0);
+                            ui.label(
+                                RichText::new(format!(
+                                    "\u{E8B8} {} chiffrée(s) en attente : {} — {}",
+                                    native_pending.len(),
+                                    native_pending.join(", "),
+                                    tr(
+                                        lang,
+                                        "tapez la passphrase dans l'inspecteur ci-dessous puis re-cliquez sur « Charger toutes les clés »",
+                                        "type the passphrase in the inspector below, then click \"Load All Session Keys\" again"
+                                    )
+                                ))
+                                .small()
+                                .color(Color32::from_rgb(227, 179, 65)),
+                            );
+                        }
+
+                        if !native_keys.is_empty() {
+                            ui.add_space(4.0);
+                            for k in &native_keys {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "• [{}] {} — {} ({})",
+                                            k.algorithm,
+                                            k.fingerprint_sha256,
+                                            k.comment,
+                                            if k.source_path.is_empty() {
+                                                tr(lang, "ajout externe", "external add")
+                                            } else {
+                                                &k.source_path
+                                            }
+                                        ))
+                                        .monospace()
+                                        .small(),
+                                    );
+                                    if ui
+                                        .small_button(tr(lang, "\u{E872} Retirer", "\u{E872} Remove"))
+                                        .clicked()
+                                        && let Some(agent) = self.native_agent.as_ref()
+                                    {
+                                        agent.core.remove_by_blob(&k.blob);
+                                        self.refresh_agent_keys();
+                                    }
+                                });
+                            }
+                        }
+                    }
+                });
+
+            ui.add_space(6.0);
+
             // Auto-resolve pageant path if current configured path does not exist on disk
             if !Path::new(&self.config.pageant_path).exists() {
                 self.resolve_pageant_path();
             }
 
-            // Section 1: Pageant ("C:\Program Files\PuTTY\pageant.exe")
+            // Section 2: Pageant ("C:\Program Files\PuTTY\pageant.exe")
             egui::Frame::NONE
                 .fill(Color32::from_rgb(18, 22, 29))
                 .corner_radius(6.0)
@@ -6096,7 +6503,7 @@ impl CutySshApp {
 
             ui.add_space(8.0);
 
-            // Section 2: Key Inspector & Converter (.ppk <-> OpenSSH)
+            // Section 3: Key Inspector & Converter (.ppk <-> OpenSSH)
             egui::Frame::NONE
                 .fill(Color32::from_rgb(22, 27, 34))
                 .corner_radius(6.0)
