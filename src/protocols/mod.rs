@@ -369,6 +369,74 @@ pub(crate) fn rsa_hash_candidates(preferred: Option<HashAlg>) -> Vec<Option<Hash
 }
 
 #[cfg(windows)]
+/// Tries the integrated Cuty Agent pipe. Returns `(agent_reachable, authenticated_via)`
+/// — `agent_reachable` is true whenever the pipe answered (even with 0 keys or failed
+/// auth), which lets the caller skip the WM "Pageant" fallback: when our agent runs,
+/// the hidden "Pageant" window IS this same vault, and re-trying it would only burn
+/// the server's `MaxAuthTries` budget with duplicate attempts.
+async fn try_authenticate_with_native_agent(
+    session: &mut client::Handle<SshClientHandler>,
+    username: &str,
+    evt_tx: &UnboundedSender<BackendEvent>,
+) -> (bool, Option<String>) {
+    if let Ok(mut agent) = russh::keys::agent::client::AgentClient::connect_named_pipe(
+        crate::ssh::agent_server::pipe_name(),
+    )
+    .await
+    {
+        let Ok(identities) = agent.request_identities().await else {
+            return (true, None);
+        };
+        if identities.is_empty() {
+            return (true, None);
+        }
+        let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
+            "Cuty Agent détecté ({} clé(s))...",
+            identities.len()
+        )));
+        let rsa_hash = session
+            .best_supported_rsa_hash()
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+        for id in identities {
+            let pubkey: PublicKey = id.public_key().into_owned();
+            let alg_is_rsa = pubkey.algorithm().is_rsa();
+            let candidates = if alg_is_rsa {
+                rsa_hash_candidates(rsa_hash)
+            } else {
+                vec![None]
+            };
+            let comment = id.comment().to_string();
+            let fp = pubkey.fingerprint(HashAlg::Sha256).to_string();
+            for hash_alg in candidates {
+                if let Ok(res) = session
+                    .authenticate_publickey_with(username, pubkey.clone(), hash_alg, &mut agent)
+                    .await
+                    && res.success()
+                {
+                    return (
+                        true,
+                        Some(format!(
+                            "Cuty Agent — clé {} [{}]",
+                            if comment.is_empty() {
+                                "sans nom"
+                            } else {
+                                &comment
+                            },
+                            fp
+                        )),
+                    );
+                }
+            }
+        }
+        return (true, None);
+    }
+    (false, None)
+}
+
+#[cfg(windows)]
 async fn try_authenticate_with_pageant(
     session: &mut client::Handle<SshClientHandler>,
     username: &str,
@@ -582,10 +650,24 @@ async fn authenticate_ssh_handle(
 
     let mut authenticated_via: Option<String> = None;
 
-    // 1. Try Pageant and/or Windows OpenSSH Agent automatically when enabled
+    // 1. Try the integrated Cuty Agent first. Only when it is NOT reachable do
+    // the external fallbacks apply (external pageant.exe window / Windows
+    // OpenSSH Agent) — when our agent runs, the hidden "Pageant" window is our
+    // own vault, and querying the fallbacks would duplicate the exact same
+    // failed auth attempts on the server (it disconnects after ~6 attempts).
     #[cfg(windows)]
     {
-        let should_try_pageant = profile.try_pageant
+        let should_try_agents =
+            profile.try_pageant || matches!(profile.ssh_auth, SshAuthMethod::Agent { .. });
+        let mut native_reachable = false;
+        if should_try_agents {
+            let (reachable, authed) =
+                try_authenticate_with_native_agent(session, &username, evt_tx).await;
+            native_reachable = reachable;
+            authenticated_via = authed;
+        }
+
+        let should_try_pageant = should_try_agents
             || matches!(
                 profile.ssh_auth,
                 SshAuthMethod::Agent {
@@ -593,11 +675,11 @@ async fn authenticate_ssh_handle(
                     ..
                 }
             );
-        if should_try_pageant {
+        if authenticated_via.is_none() && should_try_pageant && !native_reachable {
             authenticated_via = try_authenticate_with_pageant(session, &username, evt_tx).await;
         }
 
-        let should_try_openssh_agent = profile.try_pageant
+        let should_try_openssh_agent = should_try_agents
             || matches!(
                 profile.ssh_auth,
                 SshAuthMethod::Agent {

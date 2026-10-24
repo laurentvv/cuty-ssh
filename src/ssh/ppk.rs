@@ -10,7 +10,6 @@ use russh::keys::{PublicKeyBase64, decode_secret_key, parse_public_key_base64};
 use sha2::Sha256;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -473,51 +472,6 @@ pub fn resolve_pageant_executable_with_hints(
 }
 
 /// Resolves the path to `pageant.exe`, prioritizing `configured_path` then standard paths.
-pub fn resolve_pageant_executable(configured_path: &str) -> Option<PathBuf> {
-    resolve_pageant_executable_with_hints(configured_path, &[])
-}
-
-/// Launches Pageant with an optional list of `.ppk` key files.
-pub fn launch_pageant_with_keys(configured_path: &str, ppk_files: &[String]) -> Result<String> {
-    let mut hints: Vec<&str> = Vec::new();
-    for f in ppk_files {
-        hints.push(f.as_str());
-    }
-    let exe = resolve_pageant_executable_with_hints(configured_path, &hints).unwrap_or_else(|| {
-        if configured_path.trim().is_empty() {
-            PathBuf::from(r"C:\Program Files\PuTTY\pageant.exe")
-        } else {
-            PathBuf::from(configured_path)
-        }
-    });
-
-    if !exe.exists() {
-        anyhow::bail!(
-            "Pageant executable not found at \"{}\". Install PuTTY (winget install SimonTatham.PuTTY) or download from https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html",
-            exe.display()
-        );
-    }
-
-    let mut cmd = Command::new(&exe);
-    for f in ppk_files {
-        if !f.trim().is_empty() {
-            cmd.arg(f);
-        }
-    }
-    cmd.spawn()
-        .with_context(|| format!("Failed to launch {}", exe.display()))?;
-
-    if ppk_files.is_empty() {
-        Ok(format!("Pageant démarré ({})", exe.display()))
-    } else {
-        Ok(format!(
-            "Pageant ({}) invoqué avec {} clé(s) .ppk",
-            exe.display(),
-            ppk_files.len()
-        ))
-    }
-}
-
 /// Per-agent diagnostic for the key list query. An empty key list is ambiguous
 /// ("no keys loaded" vs "agent unreachable") — this carries the why.
 #[derive(Debug, Clone, Default)]
@@ -530,9 +484,14 @@ pub struct AgentProbeReport {
     pub openssh_error: Option<String>,
 }
 
-/// Queries Pageant and the Windows OpenSSH Agent to list all public keys currently
-/// loaded in memory, plus a diagnostic report for honest status rendering.
+/// Queries the integrated Cuty Agent and the external fallback agents
+/// (pageant.exe window, Windows OpenSSH Agent) to list all public keys
+/// currently loaded in memory, plus a diagnostic report for honest status
+/// rendering. When Cuty Agent answers, the Pageant probe is skipped: the
+/// hidden "Pageant" window then belongs to cuty-ssh itself, so probing it
+/// would list the very same keys twice.
 pub async fn list_agent_keys(
+    check_native: bool,
     check_pageant: bool,
     check_openssh: bool,
 ) -> (Vec<AgentKeyEntry>, AgentProbeReport) {
@@ -541,8 +500,35 @@ pub async fn list_agent_keys(
 
     #[cfg(windows)]
     {
-        report.pageant_running = pageant::wmmessage::is_pageant_running();
-        if check_pageant {
+        let mut native_reachable = false;
+        if check_native
+            && let Ok(mut agent) = russh::keys::agent::client::AgentClient::connect_named_pipe(
+                crate::ssh::agent_server::pipe_name(),
+            )
+            .await
+        {
+            native_reachable = true;
+            match agent.request_identities().await {
+                Ok(identities) => {
+                    for id in identities {
+                        let pubkey = id.public_key();
+                        entries.push(AgentKeyEntry {
+                            algorithm: pubkey.algorithm().to_string(),
+                            fingerprint_sha256: pubkey.fingerprint(HashAlg::Sha256).to_string(),
+                            comment: id.comment().to_string(),
+                            openssh_public_key: format_openssh_pubkey(&pubkey),
+                            source_agent: "Cuty Agent (intégré)".to_string(),
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("native agent query failed: {e}");
+                }
+            }
+        }
+
+        if check_pageant && !native_reachable {
+            report.pageant_running = pageant::wmmessage::is_pageant_running();
             match russh::keys::agent::client::AgentClient::connect_pageant().await {
                 Ok(mut agent) => match agent.request_identities().await {
                     Ok(identities) => {
@@ -591,9 +577,98 @@ pub async fn list_agent_keys(
     }
 
     #[cfg(not(windows))]
-    let _ = (check_pageant, check_openssh);
+    let _ = (check_native, check_pageant, check_openssh);
 
     (entries, report)
+}
+
+/// Reads the executable's embedded FileVersion version resource (e.g. PuTTY's
+/// « Release 0.78 ») through the Windows version APIs — a pure metadata probe:
+/// the file is never launched. Returns None when the file is unreadable or
+/// carries no version info.
+#[cfg(windows)]
+pub fn query_exe_file_version(path: &Path) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        let size = GetFileVersionInfoSizeW(wide.as_ptr(), std::ptr::null_mut());
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        if GetFileVersionInfoW(wide.as_ptr(), 0, size, data.as_mut_ptr() as *mut _) == 0 {
+            return None;
+        }
+
+        // Resolves a \Block\ path inside the version resource; the returned
+        // pointer aliases `data`, which outlives every use below.
+        let query_ptr = |subblock: &str| -> Option<(*const u8, u32)> {
+            let key: Vec<u16> = subblock.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let mut len = 0u32;
+            if VerQueryValueW(data.as_ptr() as *const _, key.as_ptr(), &mut ptr, &mut len) != 0
+                && !ptr.is_null()
+            {
+                Some((ptr as *const u8, len))
+            } else {
+                None
+            }
+        };
+
+        // Language/code page pairs actually embedded in the resource.
+        let mut lang_keys: Vec<String> = match query_ptr("\\VarFileInfo\\Translation") {
+            Some((ptr, len)) => {
+                let bytes = std::slice::from_raw_parts(ptr, len as usize);
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| {
+                        let lang = u16::from_le_bytes([c[0], c[1]]);
+                        let codepage = u16::from_le_bytes([c[2], c[3]]);
+                        format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileVersion")
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        // Common US-English fallbacks (Unicode then ANSI code page).
+        lang_keys.push("\\StringFileInfo\\040904b0\\FileVersion".to_string());
+        lang_keys.push("\\StringFileInfo\\040904e4\\FileVersion".to_string());
+
+        for key in lang_keys {
+            if let Some((ptr, _)) = query_ptr(&key) {
+                let mut units: Vec<u16> = Vec::new();
+                let mut i = 0;
+                loop {
+                    let u = *(ptr as *const u16).add(i);
+                    if u == 0 || i > 512 {
+                        break;
+                    }
+                    units.push(u);
+                    i += 1;
+                }
+                let s = String::from_utf16_lossy(&units).trim().to_string();
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+pub fn query_exe_file_version(_path: &Path) -> Option<String> {
+    None
 }
 
 /// Resolves the user's Primary SSH Key from `configured_primary_path` or standard fallback locations,
@@ -684,6 +759,23 @@ pub fn build_ssh_copy_id_script(openssh_pubkey: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_exe_version_probe_reads_system_binary_and_rejects_missing() {
+        // A Windows system binary always carries a version resource.
+        let notepad = std::path::Path::new(r"C:\Windows\System32\notepad.exe");
+        if notepad.exists() {
+            let version = query_exe_file_version(notepad);
+            assert!(version.is_some(), "notepad.exe must expose a FileVersion");
+            assert!(!version.unwrap().trim().is_empty());
+        }
+        assert!(
+            query_exe_file_version(std::path::Path::new(
+                r"C:\definitely\missing\cuty-probe.exe"
+            ))
+            .is_none()
+        );
+    }
 
     #[test]
     fn test_resolve_pageant_executable_with_hints_finds_in_key_dir() {

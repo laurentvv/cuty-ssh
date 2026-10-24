@@ -313,6 +313,9 @@ pub struct AppConfig {
     /// Folder of a portable KiTTY/PuTTY install (containing `Sessions/`) imported by 📥 Sync.
     #[serde(default)]
     pub kitty_dir: String,
+    /// Start the native integrated SSH agent (in-process Pageant replacement) at launch.
+    #[serde(default = "default_true")]
+    pub native_agent_enabled: bool,
     pub copy_on_select: bool,
     pub right_click_paste: bool,
     pub detect_hyperlinks: bool,
@@ -334,6 +337,7 @@ impl Default for AppConfig {
             default_key_dir: default_ssh_dir(),
             primary_key_path: String::new(),
             kitty_dir: String::new(),
+            native_agent_enabled: true,
             copy_on_select: true,
             right_click_paste: true,
             detect_hyperlinks: true,
@@ -355,6 +359,10 @@ pub fn default_ssh_dir() -> String {
         }
     }
     ".".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_starter_sessions() -> Vec<SessionProfile> {

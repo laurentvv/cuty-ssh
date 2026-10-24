@@ -209,7 +209,7 @@ fn main() -> eframe::Result {
     }
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("Cuty-SSH — SSH2 / Telnet / SFTP & PuTTY (.ppk / Pageant) Client")
+        .with_title("Cuty-SSH — SSH2 / Telnet / SFTP · PuTTY (.ppk) & Cuty Agent")
         .with_inner_size([1320.0, 820.0])
         .with_min_inner_size([600.0, 42.0]);
 
