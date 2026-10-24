@@ -200,7 +200,10 @@ fn left_dismiss_park_position(outer: egui::Rect, ppp: f32) -> Option<Pos2> {
             return None;
         }
         let right_px = (outer.right() * ppp) as i32;
-        if right_px >= info.rcMonitor.left - 120 {
+        // Dismiss as soon as only a sliver (< 40 px) of the window remains
+        // visible on the left — reachable mid-drag, and still distinct from a
+        // left-edge snap (which leaves the window on-screen).
+        if right_px >= info.rcMonitor.left + 40 {
             return None;
         }
         Some(Pos2::new(
@@ -5070,80 +5073,83 @@ impl CutySshApp {
 
                 ui.add_space(18.0);
 
-                // Quick actions: centered under the centered hero title; the
-                // other tools live in the top toolbar and the palette.
+                // Quick actions: centered under the centered hero title. A plain
+                // `horizontal` (sized to its content) — `horizontal_wrapped`
+                // spans the full width, which defeats vertical_centered. All
+                // four buttons share one width so the row reads as a block.
                 ui.vertical_centered(|ui| {
-                    ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .add_sized(
-                            [170.0, 36.0],
-                            egui::Button::new(
-                                RichText::new(tr(
-                                    lang,
-                                    "\u{E3D4}  Nouvelle session",
-                                    "\u{E3D4}  New Session",
-                                ))
-                                .strong()
-                                .color(Color32::WHITE),
+                    ui.horizontal(|ui| {
+                        let btn_w = 180.0;
+                        if ui
+                            .add_sized(
+                                [btn_w, 36.0],
+                                egui::Button::new(
+                                    RichText::new(tr(
+                                        lang,
+                                        "\u{E3D4}  Nouvelle session",
+                                        "\u{E3D4}  New Session",
+                                    ))
+                                    .strong()
+                                    .color(Color32::WHITE),
+                                )
+                                .fill(theme::ACCENT_STRONG)
+                                .stroke(Stroke::new(1.0, theme::ACCENT)),
                             )
-                            .fill(theme::ACCENT_STRONG)
-                            .stroke(Stroke::new(1.0, theme::ACCENT)),
-                        )
-                        .clicked()
-                    {
-                        self.editing_session = SessionProfile::default();
-                        self.is_new_session = true;
-                        self.show_session_editor = true;
-                    }
-                    if ui
-                        .add_sized(
-                            [170.0, 36.0],
-                            egui::Button::new(tr(
-                                lang,
-                                "\u{E2D6}  Clés & Cuty Agent",
-                                "\u{E2D6}  Keys & Cuty Agent",
-                            )),
-                        )
-                        .clicked()
-                    {
-                        self.refresh_agent_keys();
-                        self.show_key_manager = true;
-                    }
-                    if ui
-                        .add_sized(
-                            [190.0, 36.0],
-                            egui::Button::new(
-                                RichText::new(tr(
+                            .clicked()
+                        {
+                            self.editing_session = SessionProfile::default();
+                            self.is_new_session = true;
+                            self.show_session_editor = true;
+                        }
+                        if ui
+                            .add_sized(
+                                [btn_w, 36.0],
+                                egui::Button::new(tr(
                                     lang,
-                                    "\u{E20C}  Charger les clés",
-                                    "\u{E20C}  Load Session Keys",
-                                ))
-                                .color(Color32::from_rgb(210, 153, 34)),
-                            ),
-                        )
-                        .on_hover_text(tr(
-                            lang,
-                            "Charge en 1 clic toutes les clés de vos sessions sauvegardées dans Cuty Agent (tout format)",
-                            "1-click load every key from your saved sessions into Cuty Agent (any format)",
-                        ))
-                        .clicked()
-                    {
-                        self.load_all_session_keys_into_native_agent();
-                        self.show_key_manager = true;
-                    }
-                    if ui
-                        .add_sized(
-                            [150.0, 36.0],
-                            egui::Button::new(tr(
+                                    "\u{E2D6}  Clés & Cuty Agent",
+                                    "\u{E2D6}  Keys & Cuty Agent",
+                                )),
+                            )
+                            .clicked()
+                        {
+                            self.refresh_agent_keys();
+                            self.show_key_manager = true;
+                        }
+                        if ui
+                            .add_sized(
+                                [btn_w, 36.0],
+                                egui::Button::new(
+                                    RichText::new(tr(
+                                        lang,
+                                        "\u{E20C}  Charger les clés",
+                                        "\u{E20C}  Load Keys",
+                                    ))
+                                    .color(Color32::from_rgb(210, 153, 34)),
+                                ),
+                            )
+                            .on_hover_text(tr(
                                 lang,
-                                "\u{E0F2}  Ping serveurs",
-                                "\u{E0F2}  Ping Servers",
-                            )),
-                        )
-                        .clicked()
-                    {
-                        self.probe_all_sessions();
-                    }
+                                "Charge en 1 clic toutes les clés de vos sessions sauvegardées dans Cuty Agent (tout format)",
+                                "1-click load every key from your saved sessions into Cuty Agent (any format)",
+                            ))
+                            .clicked()
+                        {
+                            self.load_all_session_keys_into_native_agent();
+                            self.show_key_manager = true;
+                        }
+                        if ui
+                            .add_sized(
+                                [btn_w, 36.0],
+                                egui::Button::new(tr(
+                                    lang,
+                                    "\u{E0F2}  Ping serveurs",
+                                    "\u{E0F2}  Ping Servers",
+                                )),
+                            )
+                            .clicked()
+                        {
+                            self.probe_all_sessions();
+                        }
                     });
                 });
 
