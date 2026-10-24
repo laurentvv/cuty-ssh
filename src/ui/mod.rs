@@ -19,8 +19,8 @@ use crate::protocols::{
 use crate::ssh::agent_wmcopydata::WmCompatStatus;
 use crate::ssh::ppk::{
     AgentKeyEntry, AgentProbeReport, KeyInspection, export_to_openssh_pem, export_to_ppk_v3,
-    format_openssh_pubkey, generate_new_ssh_key, inspect_key_file, list_agent_keys,
-    load_private_key_any, resolve_or_create_primary_key,
+    generate_openssh_key_encrypted, inspect_key_file, list_agent_keys, load_private_key_any,
+    resolve_or_create_primary_key,
 };
 use crate::terminal::{TerminalEmulator, TerminalTheme};
 use crate::ui::help_modal::{HelpTopic, tr};
@@ -28,7 +28,7 @@ use crate::ui::terminal_view::{format_bytes, protocol_badge_style};
 use arboard::Clipboard;
 use chrono::Local;
 use egui::{
-    Align, Color32, Context, Key, Layout, Pos2, RichText, Stroke, Ui, Vec2, ViewportCommand,
+    Align, Color32, Context, Key, Layout, Pos2, Rect, RichText, Stroke, Ui, Vec2, ViewportCommand,
     WindowLevel,
 };
 use std::collections::{BTreeMap, HashSet};
@@ -218,6 +218,46 @@ fn left_dismiss_park_position(_outer: egui::Rect, _ppp: f32) -> Option<Pos2> {
     None
 }
 
+/// Clamps `rect` (egui points) so it lands fully inside the work area of the
+/// monitor holding its center, and returns the top-left position to use —
+/// used when a dismissal gesture restores the window to a usable size while
+/// its top-left may sit near or past the right edge of the screen.
+#[cfg(windows)]
+fn park_rect_on_screen(rect: Rect, ppp: f32) -> Pos2 {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    };
+
+    unsafe {
+        let center = POINT {
+            x: ((rect.left() + rect.right()) * 0.5 * ppp) as i32,
+            y: ((rect.top() + rect.bottom()) * 0.5 * ppp) as i32,
+        };
+        let monitor = MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if monitor.is_null() || GetMonitorInfoW(monitor, &mut info) == 0 {
+            return rect.min;
+        }
+        let work_left = info.rcWork.left as f32 / ppp;
+        let work_top = info.rcWork.top as f32 / ppp;
+        let work_right = info.rcWork.right as f32 / ppp;
+        let work_bottom = info.rcWork.bottom as f32 / ppp;
+        let max_x = (work_right - rect.width()).max(work_left);
+        let max_y = (work_bottom - rect.height()).max(work_top);
+        Pos2::new(
+            rect.left().clamp(work_left, max_x),
+            rect.top().clamp(work_top, max_y),
+        )
+    }
+}
+
+#[cfg(not(windows))]
+fn park_rect_on_screen(rect: Rect, _ppp: f32) -> Pos2 {
+    rect.min
+}
+
 /// Honest Pageant/agent status text: distinguishes "no keys loaded" from
 /// "agent unreachable" (window not found vs query failure) instead of pinning
 /// every empty result to a generic "0 keys" verdict.
@@ -359,6 +399,10 @@ pub struct CutySshApp {
     // Open session tabs & Split View
     pub tabs: Vec<SessionTab>,
     pub active_tab_idx: usize,
+    /// Last tab index the strip scrolled into view — differs from
+    /// `active_tab_idx` whenever the selection changed, so the strip follows
+    /// keyboard/menu switches and never loses the active tab off-screen.
+    pub tabs_scroll_target: usize,
     pub broadcast_mode: bool,
     pub split_mode: SplitMode,
     pub split_secondary_tab: Option<Uuid>,
@@ -366,6 +410,9 @@ pub struct CutySshApp {
     // Window state (Roll-up, Always-on-top)
     pub is_rolled_up: bool,
     pub saved_window_size: Vec2,
+    /// One-shot latch for the resize-to-sliver dismiss gesture: prevents a
+    /// minimize loop if the restore size command is lost while minimized.
+    pub sliver_dismissed: bool,
 
     // Session editor (Enhanced Configuration Box)
     pub show_session_editor: bool,
@@ -386,8 +433,8 @@ pub struct CutySshApp {
     pub inspected_key: Option<KeyInspection>,
     pub key_manager_passphrase: String,
     pub key_manager_status: String,
-    pub keygen_algo: String,
     pub keygen_comment: String,
+    pub keygen_passphrase: String,
     pub agent_keys: Vec<AgentKeyEntry>,
     pub agent_report: AgentProbeReport,
     pub agent_keys_rx:
@@ -525,11 +572,13 @@ impl CutySshApp {
             session_tag_input: String::new(),
             tabs: Vec::new(),
             active_tab_idx: 0,
+            tabs_scroll_target: 0,
             broadcast_mode: false,
             split_mode: SplitMode::None,
             split_secondary_tab: None,
             is_rolled_up: false,
             saved_window_size: Vec2::new(1340.0, 840.0),
+            sliver_dismissed: false,
             show_session_editor: false,
             editing_session: SessionProfile::default(),
             is_new_session: false,
@@ -546,8 +595,8 @@ impl CutySshApp {
             inspected_key: None,
             key_manager_passphrase: String::new(),
             key_manager_status: String::new(),
-            keygen_algo: "ed25519".to_string(),
             keygen_comment: "devops@cuty-ssh".to_string(),
+            keygen_passphrase: String::new(),
             agent_keys: Vec::new(),
             agent_report: AgentProbeReport::default(),
             agent_keys_rx: None,
@@ -2110,13 +2159,21 @@ impl eframe::App for CutySshApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
-        // Drag-far-left gesture: pulled fully past the left edge of its
-        // current screen, the window hides to the taskbar instead of
-        // dangling off-screen, and is parked back on-screen so restoring it
-        // never resurrects it out of view. Sessions keep running — this is a
-        // dismissal gesture, not an exit.
+        // Dismissal gestures (to the taskbar — sessions keep running):
+        // 1. Dragged fully past the left edge of its screen: hidden instead of
+        //    dangling off-screen, parked back on-screen first.
+        // 2. Shrunk to a sliver by resizing (inner width < 160 pt, reachable
+        //    because the OS minimum inner width is 120 pt): minimized after
+        //    restoring the last usable size and an on-screen position, so a
+        //    taskbar click never resurrects a 100-pixel column. One-shot per
+        //    gesture (re-armed only once the window is wide again) so a
+        //    restore that loses the resize command cannot minimize-loop.
+        const SLIVER_DISMISS_WIDTH: f32 = 160.0;
+        const SLIVER_REARM_WIDTH: f32 = 280.0;
+        const SLIVER_REARM_HEIGHT: f32 = 200.0;
         if ctx.input(|i| i.viewport().minimized) != Some(true)
             && let Some(outer) = ctx.input(|i| i.viewport().outer_rect)
+            && let Some(inner) = ctx.input(|i| i.viewport().inner_rect)
         {
             let ppp = ctx
                 .input(|i| i.viewport().native_pixels_per_point)
@@ -2125,6 +2182,25 @@ impl eframe::App for CutySshApp {
             if let Some(park) = left_dismiss_park_position(outer, ppp) {
                 ctx.send_viewport_cmd(ViewportCommand::OuterPosition(park));
                 ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+            } else if !self.is_rolled_up {
+                if inner.width() >= SLIVER_REARM_WIDTH && inner.height() >= SLIVER_REARM_HEIGHT {
+                    // Last genuinely usable inner size: the restore target for
+                    // the sliver-dismiss gesture and the roll-up banner.
+                    self.saved_window_size = inner.size();
+                    self.sliver_dismissed = false;
+                } else if inner.width() < SLIVER_DISMISS_WIDTH && !self.sliver_dismissed {
+                    self.sliver_dismissed = true;
+                    // Position for the restored OUTER rect: the OS sizes the
+                    // window from its outer top-left, and the current outer vs
+                    // inner difference is the decoration size to account for.
+                    let deco = outer.size() - inner.size();
+                    let restored = Rect::from_min_size(outer.min, self.saved_window_size + deco);
+                    ctx.send_viewport_cmd(ViewportCommand::OuterPosition(park_rect_on_screen(
+                        restored, ppp,
+                    )));
+                    ctx.send_viewport_cmd(ViewportCommand::InnerSize(self.saved_window_size));
+                    ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+                }
             }
         }
 
@@ -2141,6 +2217,22 @@ impl eframe::App for CutySshApp {
             self.show_command_palette = !self.show_command_palette;
             if self.show_command_palette {
                 self.palette_query.clear();
+            }
+        }
+
+        // Ctrl+Tab / Ctrl+Shift+Tab: cycle through open session tabs
+        // (browser-style), the fast path when the tab strip overflows.
+        if self.tabs.len() > 1 {
+            let (fwd, back) = ctx.input(|i| {
+                (
+                    i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::Tab),
+                    i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(Key::Tab),
+                )
+            });
+            if fwd {
+                self.active_tab_idx = (self.active_tab_idx + 1) % self.tabs.len();
+            } else if back {
+                self.active_tab_idx = (self.active_tab_idx + self.tabs.len() - 1) % self.tabs.len();
             }
         }
 
@@ -3542,8 +3634,22 @@ impl CutySshApp {
                     let mut close_idx: Option<usize> = None;
                     let mut duplicate_profile: Option<SessionProfile> = None;
 
-                    // 1. GAUCHE : Onglets de sessions
+                    // 1. GAUCHE : Onglets de sessions — strip défilant : on glisse
+                    // pour atteindre les onglets cachés, l'onglet actif est
+                    // ramené dans le champ, et le bouton '+' reste toujours visible.
                     ui.horizontal(|ui| {
+                    let scroll_w = (ui.available_width() - 96.0).max(120.0);
+                    let scroll_into_view = self.tabs_scroll_target != self.active_tab_idx;
+                    egui::ScrollArea::horizontal()
+                        .id_salt("tabs_strip_scroll")
+                        // Full strip width, but vertical shrink ON: with it off
+                        // the scroll area claimed the whole remaining panel
+                        // height, which looked like a stray window once many
+                        // tabs were open.
+                        .auto_shrink([false, true])
+                        .max_width(scroll_w)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
                     for (idx, tab) in self.tabs.iter().enumerate() {
                         let is_active = idx == self.active_tab_idx;
                         let status_icon = match tab.state {
@@ -3587,7 +3693,7 @@ impl CutySshApp {
                                 } else {
                                     title.to_string()
                                 };
-                                if ui
+                                let label = ui
                                     .selectable_label(
                                         is_active,
                                         format!(
@@ -3598,23 +3704,112 @@ impl CutySshApp {
                                             lock_badge
                                         ),
                                     )
-                                    .on_hover_text(title)
-                                    .clicked()
-                                {
+                                    .on_hover_text(title);
+                                if label.clicked() {
                                     self.active_tab_idx = idx;
                                 }
-                                if ui
-                                    .small_button("\u{E4F6}")
-                                    .on_hover_text(tr(
-                                        lang,
-                                        "Fermer cet onglet",
-                                        "Close this tab",
-                                    ))
-                                    .clicked()
-                                {
-                                    close_idx = Some(idx);
+                                // Follow selection changes coming from outside
+                                // the strip (Ctrl+Tab, ▾ menu): bring the active
+                                // tab back into view.
+                                if scroll_into_view && idx == self.active_tab_idx {
+                                    label.scroll_to_me(Some(egui::Align::Center));
+                                }
+                        if ui
+                            .small_button("\u{E4F6}")
+                            .on_hover_text(tr(
+                                lang,
+                                "Fermer cet onglet",
+                                "Close this tab",
+                            ))
+                            .clicked()
+                        {
+                            close_idx = Some(idx);
+                        }
+                            });
+                    }
+                        });
+                    });
+                    if scroll_into_view {
+                        self.tabs_scroll_target = self.active_tab_idx;
+                    }
+
+                    // ▾ : rejoindre n'importe quel onglet ouvert d'un clic — la
+                    // parade principale quand le strip déborde.
+                    let mut goto_idx: Option<usize> = None;
+                    let open_tabs_menu = ui.menu_button(
+                        RichText::new("\u{E8A9} \u{E5D3}")
+                            .size(12.0)
+                            .color(Color32::from_rgb(139, 148, 158)),
+                        |ui| {
+                            ui.set_min_width(300.0);
+                            ui.label(
+                                RichText::new(tr(
+                                    lang,
+                                    "Onglets ouverts — cliquez pour basculer (Ctrl+Tab)",
+                                    "Open tabs — click to switch (Ctrl+Tab)",
+                                ))
+                                .small()
+                                .color(Color32::from_rgb(139, 148, 158)),
+                            );
+                            ui.separator();
+                            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                                for (idx, tab) in self.tabs.iter().enumerate() {
+                                    let status_icon = match tab.state {
+                                        TabConnectionState::Connected => "🟢",
+                                        TabConnectionState::Connecting => "🟡",
+                                        TabConnectionState::Disconnected(_) => "🔴",
+                                    };
+                                    let title = tab
+                                        .terminal
+                                        .state
+                                        .dynamic_title
+                                        .as_deref()
+                                        .unwrap_or(&tab.profile.name);
+                                    let target = if tab.profile.protocol == ProtocolType::LocalShell
+                                    {
+                                        tab.profile.local_shell_cmd.clone()
+                                    } else {
+                                        format!("{}:{}", tab.profile.host, tab.profile.port)
+                                    };
+                                    let is_active = idx == self.active_tab_idx;
+                                    let clicked = ui
+                                        .horizontal(|ui| {
+                                            let clicked = ui
+                                                .selectable_label(
+                                                    is_active,
+                                                    format!(
+                                                        "{} {} {}{}",
+                                                        status_icon,
+                                                        tab.profile.icon_badge,
+                                                        title,
+                                                        if is_active { " \u{25C0}" } else { "" }
+                                                    ),
+                                                )
+                                                .clicked();
+                                            ui.label(
+                                                RichText::new(target)
+                                                    .small()
+                                                    .monospace()
+                                                    .color(Color32::from_rgb(139, 148, 158)),
+                                            );
+                                            clicked
+                                        })
+                                        .inner;
+                                    if clicked {
+                                        goto_idx = Some(idx);
+                                        ui.close();
+                                    }
                                 }
                             });
+                        },
+                    );
+                    open_tabs_menu.response.on_hover_text(tr(
+                        lang,
+                        "Lister et rejoindre n'importe quel onglet ouvert",
+                        "List and jump to any open tab",
+                    ));
+                    if let Some(i) = goto_idx {
+                        self.active_tab_idx = i;
                     }
 
                     // Bouton '+' : menu des sessions disponibles (avec filtre) pour ouvrir un
@@ -5787,6 +5982,7 @@ impl CutySshApp {
                 .inner_margin(egui::Margin::same(10))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(46, 160, 67)))
                 .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.heading(
                             RichText::new(tr(
@@ -5903,6 +6099,7 @@ impl CutySshApp {
                 .inner_margin(egui::Margin::same(10))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(46, 160, 67)))
                 .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.heading(
                         RichText::new(tr(
                             lang,
@@ -6193,6 +6390,7 @@ impl CutySshApp {
                 .inner_margin(egui::Margin::same(10))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
                 .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.heading(tr(
                         lang,
                         "\u{E30C} Inspecteur & Convertisseur de Clés (.ppk v2/v3 \u{E0A0} OpenSSH)",
@@ -6445,96 +6643,101 @@ impl CutySshApp {
 
             ui.add_space(8.0);
 
-            // Section 3: Integrated PuTTYgen key generator
+            // Section 4: built-in key generator — OpenSSH format, always
+            // passphrase-protected (PuTTY .ppk generation removed).
             egui::Frame::NONE
                 .fill(Color32::from_rgb(22, 27, 34))
                 .corner_radius(6.0)
                 .inner_margin(egui::Margin::same(10))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
                 .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.heading(tr(
                         lang,
-                        "\u{E2DE} Générateur de Clés SSH / PuTTYgen intégré",
-                        "\u{E2DE} Built-in SSH / PuTTYgen Key Generator",
+                        "\u{E2DE} Générateur de Clés SSH intégré (OpenSSH, protégée par passphrase)",
+                        "\u{E2DE} Built-in SSH Key Generator (OpenSSH, passphrase-protected)",
                     ));
                     ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(tr(
+                            lang,
+                            "Ed25519 chiffrée (bcrypt + AES256-CTR) : compatible ssh.exe, Cuty Agent et tous les outils OpenSSH. La passphrase est obligatoire et n'est jamais écrite sur disque.",
+                            "Ed25519 encrypted (bcrypt + AES256-CTR): compatible with ssh.exe, Cuty Agent and every OpenSSH tool. The passphrase is mandatory and never written to disk.",
+                        ))
+                        .small()
+                        .color(Color32::from_rgb(139, 148, 158)),
+                    );
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.label(tr(lang, "Algorithme :", "Algorithm:"));
-                        egui::ComboBox::from_id_salt("keygen_algo_cb")
-                            .selected_text(&self.keygen_algo)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.keygen_algo,
-                                    "ed25519".to_string(),
-                                    tr(
-                                        lang,
-                                        "Ed25519 (Recommandé, rapide & sûr)",
-                                        "Ed25519 (Recommended, fast & secure)",
-                                    ),
-                                );
-                                ui.selectable_value(
-                                    &mut self.keygen_algo,
-                                    "ecdsa-p256".to_string(),
-                                    "ECDSA NIST P-256",
-                                );
-                                ui.selectable_value(
-                                    &mut self.keygen_algo,
-                                    "rsa-2048".to_string(),
-                                    "RSA 2048 bits",
-                                );
-                            });
-
                         ui.label(tr(lang, "Commentaire :", "Comment:"));
-                        ui.text_edit_singleline(&mut self.keygen_comment);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.keygen_comment)
+                                .desired_width(200.0),
+                        );
+                        ui.label(tr(lang, "Passphrase :", "Passphrase:"));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.keygen_passphrase)
+                                .password(true)
+                                .desired_width(200.0),
+                        );
                     });
 
                     ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button(tr(
+                    let passphrase_empty = self.keygen_passphrase.is_empty();
+                    let generate_label = tr(
+                        lang,
+                        "\u{E6A2} Générer & Sauvegarder la clé OpenSSH (+ .pub)",
+                        "\u{E6A2} Generate & Save OpenSSH Key (+ .pub)",
+                    );
+                    let generate_btn = if passphrase_empty {
+                        ui.add_enabled(false, egui::Button::new(generate_label)).on_hover_text(
+                            tr(
                                 lang,
-                                "\u{E6A2} Générer une nouvelle clé .PPK (PuTTY)",
-                                "\u{E6A2} Generate New .PPK Key (PuTTY)",
-                            ))
-                            .clicked()
-                        {
-                            match generate_new_ssh_key(&self.keygen_algo, &self.keygen_comment) {
-                                Ok(new_key) => {
-                                    if let Ok(ppk_content) =
-                                        export_to_ppk_v3(&new_key, &self.keygen_comment)
-                                        && let Some(save_p) = rfd::FileDialog::new()
-                                            .add_filter("PuTTY Private Key (.ppk)", &["ppk"])
-                                            .set_file_name("id_cuty.ppk")
-                                            .save_file()
-                                    {
-                                        let _ = std::fs::write(&save_p, &ppk_content);
-                                        let pub_str = format_openssh_pubkey(new_key.public_key());
-                                        let _ = std::fs::write(
-                                            save_p.with_extension("pub"),
-                                            &pub_str,
-                                        );
-                                        self.inspected_key = inspect_key_file(&save_p).ok();
-                                        self.key_manager_status = format!(
-                                            "{} {}",
-                                            tr(
-                                                lang,
-                                                "Nouvelle clé .ppk générée et sauvegardée :",
-                                                "New .ppk key generated and saved:"
-                                            ),
-                                            save_p.display()
-                                        );
-                                    }
-                                }
-                                Err(e) => {
+                                "Saisissez d'abord une passphrase (obligatoire).",
+                                "Enter a passphrase first (mandatory).",
+                            ),
+                        )
+                    } else {
+                        ui.add(egui::Button::new(generate_label))
+                    };
+                    if generate_btn.clicked() {
+                        let passphrase =
+                            zeroize::Zeroizing::new(self.keygen_passphrase.clone());
+                        match generate_openssh_key_encrypted(&self.keygen_comment, &passphrase) {
+                            Ok((pem, pub_line)) => {
+                                if let Some(save_p) = rfd::FileDialog::new()
+                                    .set_file_name("id_cuty_ed25519")
+                                    .save_file()
+                                {
+                                    let _ = std::fs::write(&save_p, pem.as_str());
+                                    let _ = std::fs::write(
+                                        save_p.with_extension("pub"),
+                                        format!("{pub_line}\n"),
+                                    );
+                                    // One-shot: wipe the passphrase from the
+                                    // field once the key is safely on disk.
+                                    self.keygen_passphrase.zeroize();
+                                    self.inspected_key = inspect_key_file(&save_p).ok();
                                     self.key_manager_status = format!(
                                         "{} {}",
-                                        tr(lang, "Erreur génération :", "Generation error:"),
-                                        e
-                                    )
+                                        tr(
+                                            lang,
+                                            "Nouvelle clé OpenSSH (protégée par passphrase) générée :",
+                                            "New OpenSSH key (passphrase-protected) generated:"
+                                        ),
+                                        save_p.display()
+                                    );
                                 }
                             }
+                            Err(e) => {
+                                self.key_manager_status = format!(
+                                    "{} {}",
+                                    tr(lang, "Erreur génération :", "Generation error:"),
+                                    e
+                                );
+                            }
                         }
-                    });
+                    }
                 });
 
             if !self.key_manager_status.is_empty() {
