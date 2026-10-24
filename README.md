@@ -19,7 +19,7 @@
   <img src="assets/cuty_ssh_icon.png" width="88" alt="Cuty-SSH App Icon" style="border-radius: 18px;" />
 </p>
 
-[**⬇ Download Latest Release (`v0.8.0`)**](#download--quick-start) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#screenshots--animated-tour) · [**Key Features**](#key-features) · [**CLI Automation**](#8-universal-cli-launcher--headless-automation-plink--ssh-alternative) · [**Architecture**](#architecture) · [**Contributing**](#contributing)
+[**⬇ Download Latest Release (`v0.9.0`)**](#download--quick-start) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#screenshots--animated-tour) · [**Key Features**](#key-features) · [**CLI Automation**](#8-universal-cli-launcher--headless-automation-plink--ssh-alternative) · [**Architecture**](#architecture) · [**Contributing**](#contributing)
 
 </div>
 
@@ -27,7 +27,7 @@
 
 ## Overview
 
-**Cuty-SSH** (`v0.8.0`) is a single-binary, portable, GPU-accelerated (**DirectX 12 / wgpu**) terminal emulator and sysadmin connection cockpit for Windows written in **100% safe, async Rust (`russh` + `egui` + `tokio`)** with **zero external binary dependencies** (no `putty.exe` or `kitty.exe` wrapper).
+**Cuty-SSH** (`v0.9.0`) is a single-binary, portable, GPU-accelerated (**DirectX 12 / wgpu**) terminal emulator and sysadmin connection cockpit for Windows written in **100% safe, async Rust (`russh` + `egui` + `tokio`)** with **zero external binary dependencies** (no `putty.exe` or `kitty.exe` wrapper).
 
 It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **OpenSSH** workflows:
 - Load **PuTTY `.ppk` v2 & v3** private keys natively (including **Argon2id** passphrase encryption) alongside OpenSSH/PEM keys.
@@ -35,6 +35,7 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 - Authenticate transparently via **Cuty Agent**, the built-in SSH agent (in-process Pageant replacement, WM_COPYDATA-compatible with PuTTY/KiTTY/WinSCP), with **external Pageant** (Windows shared memory) and the **Windows OpenSSH Agent** (`\\.\pipe\openssh-ssh-agent`) as automatic fallbacks.
 - Provision new servers in **1 click (`ssh-copy-id`)**: connect once with a password, deploy your Primary SSH Key to `~/.ssh/authorized_keys`, and let Cuty-SSH automatically switch the saved session profile to passwordless key authentication while wiping the stored password.
 - Route sessions through **SSH Bastions / Jump Hosts (`-J` / `ProxyJump`)**, manage **TOFU `known_hosts` SHA-256 fingerprints**, encrypt credentials at rest with **Windows DPAPI**, transfer files via **Drag-and-Drop streaming SFTP**, and monitor live remote server telemetry (`CPU load`, `RAM`, `Disk`, `Uptime`).
+- **Dismiss the cockpit in a gesture**: drag the window past the left edge of your screen — or resize it down to a sliver — and it minimizes to the taskbar while SSH sessions, tunnels and Cuty Agent keep running; a taskbar click brings it back at its last usable size, never off-screen (roll-up banner and always-on-top included).
 
 > [!IMPORTANT]
 > **Zero plaintext secrets on disk** — passwords and key passphrases are stored exclusively through Windows **DPAPI** encryption (bound to your user account) and wiped from memory with `zeroize`. **Zero external binaries** — everything (SSH2, SFTP, terminal, key formats) is implemented in Rust; `putty.exe`/`kitty.exe`/`plink.exe` are never invoked.
@@ -82,7 +83,7 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 
 ## Feature Matrix: Why Cuty-SSH?
 
-| Capability | Classic PuTTY / KiTTY | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.8.0`)** |
+| Capability | Classic PuTTY / KiTTY | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.9.0`)** |
 | :--- | :---: | :---: | :---: |
 | **Pure Rust Async SSH2 Engine (`russh`)** | ❌ C legacy | ❌ External process | ✅ **Built-in (`russh 0.64`)** |
 | **Native PuTTY `.ppk` v2 & v3 (Argon2id) Keys** | ✅ | ❌ Requires conversion | ✅ **Direct load & inspection** |
@@ -390,7 +391,7 @@ General Options:
 - A GPU with **DirectX 12**, Vulkan, or OpenGL support (`wgpu` backend; defaults to DirectX 12, override with `WGPU_BACKEND=vulkan` or `WGPU_BACKEND=gl`).
 
 ### Option 1 — Windows Installer (.msi) & WinGet (Recommended)
-- **Direct Download**: Download and run [**`cuty-ssh-v0.8.0-windows-x64.msi`**](https://github.com/laurentvv/cuty-ssh/releases/download/v0.8.0/cuty-ssh-v0.8.0-windows-x64.msi).
+- **Direct Download**: Download and run [**`cuty-ssh-v0.9.0-windows-x64.msi`**](https://github.com/laurentvv/cuty-ssh/releases/download/v0.9.0/cuty-ssh-v0.9.0-windows-x64.msi).
   - Installs cleanly to `%LOCALAPPDATA%\Programs\Cuty-SSH` without administrator/UAC prompts.
   - Automatically adds a **Cuty-SSH** Start Menu shortcut with application icon.
   - Clean 1-click uninstall from Windows Settings / Installed apps.
@@ -400,7 +401,7 @@ General Options:
   ```
 
 ### Option 2 — Portable Standalone Binary
-1. Download **`cuty-ssh.exe`** (or **`cuty-ssh-v0.8.0-windows-x64.zip`**) from the [**GitHub Releases**](https://github.com/laurentvv/cuty-ssh/releases/latest) page.
+1. Download **`cuty-ssh.exe`** (or **`cuty-ssh-v0.9.0-windows-x64.zip`**) from the [**GitHub Releases**](https://github.com/laurentvv/cuty-ssh/releases/latest) page.
 2. Place `cuty-ssh.exe` in any folder and run it — zero installation required.
 3. Cuty-SSH automatically creates a local **`cuty-ssh-portable/`** directory next to the executable containing:
    - `config.json` (DPAPI-protected session profiles, folders, tags, snippets, UI language & theme)
@@ -458,7 +459,7 @@ The compiled executable is generated at `target/release/cuty-ssh.exe`.
 ## Release Notes
 
 Detailed notes accompany every release:
-- Current: [`RELEASE_NOTES_v0.8.0.md`](RELEASE_NOTES_v0.8.0.md)
+- Current: [`RELEASE_NOTES_v0.9.0.md`](RELEASE_NOTES_v0.9.0.md)
 - Full history: [**GitHub Releases**](https://github.com/laurentvv/cuty-ssh/releases)
 
 ---
