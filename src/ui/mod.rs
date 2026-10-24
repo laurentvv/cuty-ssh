@@ -359,6 +359,10 @@ pub struct CutySshApp {
     // Open session tabs & Split View
     pub tabs: Vec<SessionTab>,
     pub active_tab_idx: usize,
+    /// Last tab index the strip scrolled into view — differs from
+    /// `active_tab_idx` whenever the selection changed, so the strip follows
+    /// keyboard/menu switches and never loses the active tab off-screen.
+    pub tabs_scroll_target: usize,
     pub broadcast_mode: bool,
     pub split_mode: SplitMode,
     pub split_secondary_tab: Option<Uuid>,
@@ -525,6 +529,7 @@ impl CutySshApp {
             session_tag_input: String::new(),
             tabs: Vec::new(),
             active_tab_idx: 0,
+            tabs_scroll_target: 0,
             broadcast_mode: false,
             split_mode: SplitMode::None,
             split_secondary_tab: None,
@@ -2144,6 +2149,22 @@ impl eframe::App for CutySshApp {
             }
         }
 
+        // Ctrl+Tab / Ctrl+Shift+Tab: cycle through open session tabs
+        // (browser-style), the fast path when the tab strip overflows.
+        if self.tabs.len() > 1 {
+            let (fwd, back) = ctx.input(|i| {
+                (
+                    i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::Tab),
+                    i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(Key::Tab),
+                )
+            });
+            if fwd {
+                self.active_tab_idx = (self.active_tab_idx + 1) % self.tabs.len();
+            } else if back {
+                self.active_tab_idx = (self.active_tab_idx + self.tabs.len() - 1) % self.tabs.len();
+            }
+        }
+
         self.render_top_toolbar(ui, &ctx);
 
         if self.is_rolled_up {
@@ -3542,8 +3563,18 @@ impl CutySshApp {
                     let mut close_idx: Option<usize> = None;
                     let mut duplicate_profile: Option<SessionProfile> = None;
 
-                    // 1. GAUCHE : Onglets de sessions
+                    // 1. GAUCHE : Onglets de sessions — strip défilant : on glisse
+                    // pour atteindre les onglets cachés, l'onglet actif est
+                    // ramené dans le champ, et le bouton '+' reste toujours visible.
                     ui.horizontal(|ui| {
+                    let scroll_w = (ui.available_width() - 96.0).max(120.0);
+                    let scroll_into_view = self.tabs_scroll_target != self.active_tab_idx;
+                    egui::ScrollArea::horizontal()
+                        .id_salt("tabs_strip_scroll")
+                        .auto_shrink([false, false])
+                        .max_width(scroll_w)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
                     for (idx, tab) in self.tabs.iter().enumerate() {
                         let is_active = idx == self.active_tab_idx;
                         let status_icon = match tab.state {
@@ -3587,7 +3618,7 @@ impl CutySshApp {
                                 } else {
                                     title.to_string()
                                 };
-                                if ui
+                                let label = ui
                                     .selectable_label(
                                         is_active,
                                         format!(
@@ -3598,23 +3629,112 @@ impl CutySshApp {
                                             lock_badge
                                         ),
                                     )
-                                    .on_hover_text(title)
-                                    .clicked()
-                                {
+                                    .on_hover_text(title);
+                                if label.clicked() {
                                     self.active_tab_idx = idx;
                                 }
-                                if ui
-                                    .small_button("\u{E4F6}")
-                                    .on_hover_text(tr(
-                                        lang,
-                                        "Fermer cet onglet",
-                                        "Close this tab",
-                                    ))
-                                    .clicked()
-                                {
-                                    close_idx = Some(idx);
+                                // Follow selection changes coming from outside
+                                // the strip (Ctrl+Tab, ▾ menu): bring the active
+                                // tab back into view.
+                                if scroll_into_view && idx == self.active_tab_idx {
+                                    label.scroll_to_me(Some(egui::Align::Center));
+                                }
+                        if ui
+                            .small_button("\u{E4F6}")
+                            .on_hover_text(tr(
+                                lang,
+                                "Fermer cet onglet",
+                                "Close this tab",
+                            ))
+                            .clicked()
+                        {
+                            close_idx = Some(idx);
+                        }
+                            });
+                    }
+                        });
+                    });
+                    if scroll_into_view {
+                        self.tabs_scroll_target = self.active_tab_idx;
+                    }
+
+                    // ▾ : rejoindre n'importe quel onglet ouvert d'un clic — la
+                    // parade principale quand le strip déborde.
+                    let mut goto_idx: Option<usize> = None;
+                    let open_tabs_menu = ui.menu_button(
+                        RichText::new("\u{E8A9} \u{E5D3}")
+                            .size(12.0)
+                            .color(Color32::from_rgb(139, 148, 158)),
+                        |ui| {
+                            ui.set_min_width(300.0);
+                            ui.label(
+                                RichText::new(tr(
+                                    lang,
+                                    "Onglets ouverts — cliquez pour basculer (Ctrl+Tab)",
+                                    "Open tabs — click to switch (Ctrl+Tab)",
+                                ))
+                                .small()
+                                .color(Color32::from_rgb(139, 148, 158)),
+                            );
+                            ui.separator();
+                            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                                for (idx, tab) in self.tabs.iter().enumerate() {
+                                    let status_icon = match tab.state {
+                                        TabConnectionState::Connected => "🟢",
+                                        TabConnectionState::Connecting => "🟡",
+                                        TabConnectionState::Disconnected(_) => "🔴",
+                                    };
+                                    let title = tab
+                                        .terminal
+                                        .state
+                                        .dynamic_title
+                                        .as_deref()
+                                        .unwrap_or(&tab.profile.name);
+                                    let target = if tab.profile.protocol == ProtocolType::LocalShell
+                                    {
+                                        tab.profile.local_shell_cmd.clone()
+                                    } else {
+                                        format!("{}:{}", tab.profile.host, tab.profile.port)
+                                    };
+                                    let is_active = idx == self.active_tab_idx;
+                                    let clicked = ui
+                                        .horizontal(|ui| {
+                                            let clicked = ui
+                                                .selectable_label(
+                                                    is_active,
+                                                    format!(
+                                                        "{} {} {}{}",
+                                                        status_icon,
+                                                        tab.profile.icon_badge,
+                                                        title,
+                                                        if is_active { " \u{25C0}" } else { "" }
+                                                    ),
+                                                )
+                                                .clicked();
+                                            ui.label(
+                                                RichText::new(target)
+                                                    .small()
+                                                    .monospace()
+                                                    .color(Color32::from_rgb(139, 148, 158)),
+                                            );
+                                            clicked
+                                        })
+                                        .inner;
+                                    if clicked {
+                                        goto_idx = Some(idx);
+                                        ui.close();
+                                    }
                                 }
                             });
+                        },
+                    );
+                    open_tabs_menu.response.on_hover_text(tr(
+                        lang,
+                        "Lister et rejoindre n'importe quel onglet ouvert",
+                        "List and jump to any open tab",
+                    ));
+                    if let Some(i) = goto_idx {
+                        self.active_tab_idx = i;
                     }
 
                     // Bouton '+' : menu des sessions disponibles (avec filtre) pour ouvrir un
