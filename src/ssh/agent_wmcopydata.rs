@@ -301,6 +301,11 @@ unsafe fn answer_filemapping(core: &NativeAgentCore, mapname: &[u8]) -> bool {
 
         // Security: the mapping must be owned by our own user SID, exactly
         // like pageant's owner check (`EqualSid(mapsid, expectedsid)`).
+        // PuTTY also accepts the "default" SID (owner of our own process
+        // object): under an elevated split token, objects created with a
+        // default descriptor are owned by the Administrators GROUP, not the
+        // user — without this second acceptance every elevated PuTTY/WinSCP
+        // client would be rejected (and our CI, which runs elevated).
         let mut owner: PSID = std::ptr::null_mut();
         if GetSecurityInfo(
             guard.map,
@@ -315,10 +320,15 @@ unsafe fn answer_filemapping(core: &NativeAgentCore, mapname: &[u8]) -> bool {
         {
             return false;
         }
-        let Some(own_sid) = token_user_sid_bytes() else {
-            return false;
-        };
-        if EqualSid(owner, own_sid.as_ptr() as PSID) == 0 {
+        let user_sid = token_user_sid_bytes();
+        let default_sid = process_default_owner_sid_bytes();
+        let owner_ok = user_sid
+            .as_ref()
+            .is_some_and(|sid| EqualSid(owner, sid.as_ptr() as PSID) != 0)
+            || default_sid
+                .as_ref()
+                .is_some_and(|sid| EqualSid(owner, sid.as_ptr() as PSID) != 0);
+        if !owner_ok {
             return false; // wrong owning SID of file mapping
         }
 
@@ -419,6 +429,42 @@ unsafe fn token_user_sid_bytes() -> Option<Vec<u8>> {
     }
 }
 
+/// Owner SID of our own process object — PuTTY's `get_default_sid()`. Under an
+/// elevated split token this is the Administrators group SID, which is also
+/// the default owner of mappings created by elevated clients, so accepting it
+/// mirrors pageant's pre-0.61 compatibility path.
+unsafe fn process_default_owner_sid_bytes() -> Option<Vec<u8>> {
+    unsafe {
+        let mut owner: PSID = std::ptr::null_mut();
+        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        if GetSecurityInfo(
+            GetCurrentProcess(),
+            SE_KERNEL_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut sd,
+        ) != 0
+        {
+            return None;
+        }
+        let sid = owner as *const u8;
+        let sub_count = *sid.add(1) as usize;
+        let len = 8 + 4 * sub_count;
+        let out = if len == 0 || len > 256 {
+            None
+        } else {
+            Some(std::slice::from_raw_parts(sid, len).to_vec())
+        };
+        if !sd.is_null() {
+            let _ = windows_sys::Win32::Foundation::LocalFree(sd as _);
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,13 +506,27 @@ mod tests {
             return;
         }
 
-        // Scenario 1: identity listing with comment preservation.
-        let cookie = uuid::Uuid::new_v4().simple().to_string();
-        let answer = pageant::wmmessage::query_pageant_direct(
-            cookie,
-            &framed(&[SSH2_AGENTC_REQUEST_IDENTITIES]),
-        )
-        .expect("Pageant WM query must be answered by our window");
+        // Scenario 1: identity listing with comment preservation. CI runners
+        // vary in window-session readiness — retry a few times before failing.
+        let mut answer = None;
+        for attempt in 0..3 {
+            let cookie = uuid::Uuid::new_v4().simple().to_string();
+            match pageant::wmmessage::query_pageant_direct(
+                cookie,
+                &framed(&[SSH2_AGENTC_REQUEST_IDENTITIES]),
+            ) {
+                Ok(a) => {
+                    answer = Some(a);
+                    break;
+                }
+                Err(e) if attempt < 2 => {
+                    eprintln!("WM query attempt {} failed ({e}), retrying…", attempt + 1);
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                }
+                Err(e) => panic!("Pageant WM query must be answered by our window: {e}"),
+            }
+        }
+        let answer = answer.expect("answer checked in loop");
         assert_eq!(answer[4], SSH2_AGENT_IDENTITIES_ANSWER);
         let mut r: &[u8] = &answer[5..];
         assert_eq!(u32::decode(&mut r).unwrap(), 1, "one key expected");
