@@ -3571,7 +3571,11 @@ impl CutySshApp {
                     let scroll_into_view = self.tabs_scroll_target != self.active_tab_idx;
                     egui::ScrollArea::horizontal()
                         .id_salt("tabs_strip_scroll")
-                        .auto_shrink([false, false])
+                        // Full strip width, but vertical shrink ON: with it off
+                        // the scroll area claimed the whole remaining panel
+                        // height, which looked like a stray window once many
+                        // tabs were open.
+                        .auto_shrink([false, true])
                         .max_width(scroll_w)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
