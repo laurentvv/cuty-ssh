@@ -270,6 +270,39 @@ pub fn generate_new_ssh_key(_algorithm_choice: &str, comment: &str) -> Result<Pr
     Ok(key)
 }
 
+/// Generates a new Ed25519 keypair and serializes it as a passphrase-protected
+/// OpenSSH private key (bcrypt KDF + AES256-CTR), returning the PEM document
+/// (zeroized on drop) and the `authorized_keys` public line.
+pub fn generate_openssh_key_encrypted(
+    comment: &str,
+    passphrase: &str,
+) -> Result<(Zeroizing<String>, String)> {
+    let key = generate_new_ssh_key("ed25519", comment)?;
+    // The crate's default `PrivateKey::encrypt` needs a live RNG (rand_core);
+    // UUID v4 bytes are OS entropy, so the dependency set stays unchanged.
+    // 16-byte salt and 16 rounds match OpenSSH's ssh-keygen defaults.
+    let salt: Vec<u8> = Uuid::new_v4().as_bytes().to_vec();
+    let check = *Uuid::new_v4().as_bytes();
+    let checkint = u32::from_be_bytes([check[0], check[1], check[2], check[3]]);
+    let mut encrypted = key
+        .encrypt_with(
+            ssh_key::Cipher::Aes256Ctr,
+            ssh_key::Kdf::Bcrypt { salt, rounds: 16 },
+            checkint,
+            passphrase,
+        )
+        .context("Failed to encrypt the generated key")?;
+    // Upstream quirk: encrypt_with rebuilds the public key from the key data
+    // alone and drops the comment (it stays encoded inside the encrypted
+    // payload) — restore it so the .pub line and inspector stay consistent.
+    encrypted.set_comment(comment);
+    let pem = encrypted
+        .to_openssh(ssh_key::LineEnding::LF)
+        .context("Failed to encode key in OpenSSH format")?;
+    let pub_line = format_openssh_pubkey(encrypted.public_key());
+    Ok((pem, pub_line))
+}
+
 /// Exports any `PrivateKey` to PuTTY Private Key v3 (`.ppk`) format compatible with `pageant.exe` and `putty.exe`.
 pub fn export_to_ppk_v3(key: &PrivateKey, comment: &str) -> Result<String> {
     let alg = key.algorithm();

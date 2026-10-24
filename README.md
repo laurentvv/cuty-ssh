@@ -120,7 +120,7 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 - **Built-in Key Inspector, Converter & Generator (PuTTYgen in Rust)**:
   - Inspect any `.ppk`, OpenSSH, PEM, PKCS#8, or `.pub` key (format, algorithm, encryption KDF, SHA-256 fingerprint, comment, and `authorized_keys` public key line).
   - Convert `.ppk` ↔ OpenSSH private keys (`id_ed25519` / `id_rsa`).
-  - Generate new Ed25519, ECDSA-P256, or RSA-2048 keys directly in PuTTY `.ppk` v3 format.
+  - Generate new Ed25519 keys in passphrase-protected OpenSSH format (bcrypt + AES256-CTR, `ssh-keygen`-compatible) with their `.pub` file.
 
 #### 1-Click `ssh-copy-id` & Automatic Password-to-Key Migration
 Provisioning a brand-new Linux server typically requires logging in with a password, manually creating `~/.ssh/authorized_keys`, fixing `chmod 700`/`600` permissions, and reconfiguring your SSH client. **Cuty-SSH automates the entire workflow in 1 click**:

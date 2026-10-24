@@ -540,10 +540,75 @@ fn load_app_icon() -> Option<egui::IconData> {
 mod tests {
     use crate::config::{AppConfig, url_decode_session_name, url_encode_session_name};
     use crate::ssh::ppk::{
-        decode_private_key_any, export_to_openssh_pem, export_to_ppk_v3, generate_new_ssh_key,
-        inspect_key_content,
+        decode_private_key_any, export_to_openssh_pem, export_to_ppk_v3, format_openssh_pubkey,
+        generate_new_ssh_key, generate_openssh_key_encrypted, inspect_key_content,
     };
     use crate::terminal::TerminalEmulator;
+
+    #[test]
+    fn test_openssh_encrypted_generation_roundtrip() {
+        let (pem, pub_line) =
+            generate_openssh_key_encrypted("gen@cuty-ssh", "s3cret-pass").unwrap();
+        assert!(pem.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----"));
+        assert!(pub_line.starts_with("ssh-ed25519 "));
+        assert!(pub_line.contains("gen@cuty-ssh"));
+
+        let info = inspect_key_content(&pem, "id_cuty_ed25519").unwrap();
+        // The inspector cannot see through encryption: it flags the key as
+        // encrypted and hides the algorithm until a passphrase is provided.
+        assert!(
+            info.is_encrypted,
+            "generated key must be passphrase-protected"
+        );
+
+        assert!(
+            decode_private_key_any(&pem, Some("wrong-pass")).is_err(),
+            "a wrong passphrase must be rejected"
+        );
+
+        let key = decode_private_key_any(&pem, Some("s3cret-pass")).unwrap();
+        assert_eq!(key.algorithm().as_str(), "ssh-ed25519");
+        assert_eq!(format_openssh_pubkey(key.public_key()), pub_line);
+    }
+
+    /// Opt-in interop check (set `CUTY_E2E_SSH_KEYGEN=1`): the generated
+    /// encrypted key must be readable by the reference `ssh-keygen` binary,
+    /// and a wrong passphrase must be rejected by it as well.
+    #[test]
+    fn test_openssh_encrypted_key_matches_real_ssh_keygen() {
+        if std::env::var("CUTY_E2E_SSH_KEYGEN").is_err() {
+            eprintln!("skipped: set CUTY_E2E_SSH_KEYGEN=1 to run the ssh-keygen interop check");
+            return;
+        }
+        let (pem, pub_line) = generate_openssh_key_encrypted("e2e@cuty-ssh", "e2e-pass").unwrap();
+        let key_p = std::env::temp_dir().join("cuty_e2e_id_ed25519");
+        std::fs::write(&key_p, pem.as_str()).unwrap();
+
+        let read_pub = |pass: &str| {
+            std::process::Command::new("ssh-keygen")
+                .args(["-y", "-P", pass, "-f"])
+                .arg(&key_p)
+                .output()
+                .expect("ssh-keygen not found on PATH")
+        };
+
+        let ok = read_pub("e2e-pass");
+        assert!(
+            ok.status.success(),
+            "ssh-keygen failed to read our key: {}",
+            String::from_utf8_lossy(&ok.stderr)
+        );
+        // `ssh-keygen -y` prints the public key including the comment it
+        // recovers from inside the encrypted payload.
+        assert_eq!(String::from_utf8_lossy(&ok.stdout).trim(), pub_line);
+
+        let bad = read_pub("wrong-pass");
+        assert!(
+            !bad.status.success(),
+            "ssh-keygen must reject a wrong passphrase"
+        );
+        let _ = std::fs::remove_file(&key_p);
+    }
 
     #[test]
     fn test_ppk_v3_roundtrip_and_inspection() {

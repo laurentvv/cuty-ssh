@@ -19,8 +19,8 @@ use crate::protocols::{
 use crate::ssh::agent_wmcopydata::WmCompatStatus;
 use crate::ssh::ppk::{
     AgentKeyEntry, AgentProbeReport, KeyInspection, export_to_openssh_pem, export_to_ppk_v3,
-    format_openssh_pubkey, generate_new_ssh_key, inspect_key_file, list_agent_keys,
-    load_private_key_any, resolve_or_create_primary_key,
+    generate_openssh_key_encrypted, inspect_key_file, list_agent_keys, load_private_key_any,
+    resolve_or_create_primary_key,
 };
 use crate::terminal::{TerminalEmulator, TerminalTheme};
 use crate::ui::help_modal::{HelpTopic, tr};
@@ -433,8 +433,8 @@ pub struct CutySshApp {
     pub inspected_key: Option<KeyInspection>,
     pub key_manager_passphrase: String,
     pub key_manager_status: String,
-    pub keygen_algo: String,
     pub keygen_comment: String,
+    pub keygen_passphrase: String,
     pub agent_keys: Vec<AgentKeyEntry>,
     pub agent_report: AgentProbeReport,
     pub agent_keys_rx:
@@ -595,8 +595,8 @@ impl CutySshApp {
             inspected_key: None,
             key_manager_passphrase: String::new(),
             key_manager_status: String::new(),
-            keygen_algo: "ed25519".to_string(),
             keygen_comment: "devops@cuty-ssh".to_string(),
+            keygen_passphrase: String::new(),
             agent_keys: Vec::new(),
             agent_report: AgentProbeReport::default(),
             agent_keys_rx: None,
@@ -6643,96 +6643,101 @@ impl CutySshApp {
 
             ui.add_space(8.0);
 
-            // Section 3: Integrated PuTTYgen key generator
+            // Section 4: built-in key generator — OpenSSH format, always
+            // passphrase-protected (PuTTY .ppk generation removed).
             egui::Frame::NONE
                 .fill(Color32::from_rgb(22, 27, 34))
                 .corner_radius(6.0)
                 .inner_margin(egui::Margin::same(10))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
                 .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.heading(tr(
                         lang,
-                        "\u{E2DE} Générateur de Clés SSH / PuTTYgen intégré",
-                        "\u{E2DE} Built-in SSH / PuTTYgen Key Generator",
+                        "\u{E2DE} Générateur de Clés SSH intégré (OpenSSH, protégée par passphrase)",
+                        "\u{E2DE} Built-in SSH Key Generator (OpenSSH, passphrase-protected)",
                     ));
                     ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(tr(
+                            lang,
+                            "Ed25519 chiffrée (bcrypt + AES256-CTR) : compatible ssh.exe, Cuty Agent et tous les outils OpenSSH. La passphrase est obligatoire et n'est jamais écrite sur disque.",
+                            "Ed25519 encrypted (bcrypt + AES256-CTR): compatible with ssh.exe, Cuty Agent and every OpenSSH tool. The passphrase is mandatory and never written to disk.",
+                        ))
+                        .small()
+                        .color(Color32::from_rgb(139, 148, 158)),
+                    );
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.label(tr(lang, "Algorithme :", "Algorithm:"));
-                        egui::ComboBox::from_id_salt("keygen_algo_cb")
-                            .selected_text(&self.keygen_algo)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.keygen_algo,
-                                    "ed25519".to_string(),
-                                    tr(
-                                        lang,
-                                        "Ed25519 (Recommandé, rapide & sûr)",
-                                        "Ed25519 (Recommended, fast & secure)",
-                                    ),
-                                );
-                                ui.selectable_value(
-                                    &mut self.keygen_algo,
-                                    "ecdsa-p256".to_string(),
-                                    "ECDSA NIST P-256",
-                                );
-                                ui.selectable_value(
-                                    &mut self.keygen_algo,
-                                    "rsa-2048".to_string(),
-                                    "RSA 2048 bits",
-                                );
-                            });
-
                         ui.label(tr(lang, "Commentaire :", "Comment:"));
-                        ui.text_edit_singleline(&mut self.keygen_comment);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.keygen_comment)
+                                .desired_width(200.0),
+                        );
+                        ui.label(tr(lang, "Passphrase :", "Passphrase:"));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.keygen_passphrase)
+                                .password(true)
+                                .desired_width(200.0),
+                        );
                     });
 
                     ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button(tr(
+                    let passphrase_empty = self.keygen_passphrase.is_empty();
+                    let generate_label = tr(
+                        lang,
+                        "\u{E6A2} Générer & Sauvegarder la clé OpenSSH (+ .pub)",
+                        "\u{E6A2} Generate & Save OpenSSH Key (+ .pub)",
+                    );
+                    let generate_btn = if passphrase_empty {
+                        ui.add_enabled(false, egui::Button::new(generate_label)).on_hover_text(
+                            tr(
                                 lang,
-                                "\u{E6A2} Générer une nouvelle clé .PPK (PuTTY)",
-                                "\u{E6A2} Generate New .PPK Key (PuTTY)",
-                            ))
-                            .clicked()
-                        {
-                            match generate_new_ssh_key(&self.keygen_algo, &self.keygen_comment) {
-                                Ok(new_key) => {
-                                    if let Ok(ppk_content) =
-                                        export_to_ppk_v3(&new_key, &self.keygen_comment)
-                                        && let Some(save_p) = rfd::FileDialog::new()
-                                            .add_filter("PuTTY Private Key (.ppk)", &["ppk"])
-                                            .set_file_name("id_cuty.ppk")
-                                            .save_file()
-                                    {
-                                        let _ = std::fs::write(&save_p, &ppk_content);
-                                        let pub_str = format_openssh_pubkey(new_key.public_key());
-                                        let _ = std::fs::write(
-                                            save_p.with_extension("pub"),
-                                            &pub_str,
-                                        );
-                                        self.inspected_key = inspect_key_file(&save_p).ok();
-                                        self.key_manager_status = format!(
-                                            "{} {}",
-                                            tr(
-                                                lang,
-                                                "Nouvelle clé .ppk générée et sauvegardée :",
-                                                "New .ppk key generated and saved:"
-                                            ),
-                                            save_p.display()
-                                        );
-                                    }
-                                }
-                                Err(e) => {
+                                "Saisissez d'abord une passphrase (obligatoire).",
+                                "Enter a passphrase first (mandatory).",
+                            ),
+                        )
+                    } else {
+                        ui.add(egui::Button::new(generate_label))
+                    };
+                    if generate_btn.clicked() {
+                        let passphrase =
+                            zeroize::Zeroizing::new(self.keygen_passphrase.clone());
+                        match generate_openssh_key_encrypted(&self.keygen_comment, &passphrase) {
+                            Ok((pem, pub_line)) => {
+                                if let Some(save_p) = rfd::FileDialog::new()
+                                    .set_file_name("id_cuty_ed25519")
+                                    .save_file()
+                                {
+                                    let _ = std::fs::write(&save_p, pem.as_str());
+                                    let _ = std::fs::write(
+                                        save_p.with_extension("pub"),
+                                        format!("{pub_line}\n"),
+                                    );
+                                    // One-shot: wipe the passphrase from the
+                                    // field once the key is safely on disk.
+                                    self.keygen_passphrase.zeroize();
+                                    self.inspected_key = inspect_key_file(&save_p).ok();
                                     self.key_manager_status = format!(
                                         "{} {}",
-                                        tr(lang, "Erreur génération :", "Generation error:"),
-                                        e
-                                    )
+                                        tr(
+                                            lang,
+                                            "Nouvelle clé OpenSSH (protégée par passphrase) générée :",
+                                            "New OpenSSH key (passphrase-protected) generated:"
+                                        ),
+                                        save_p.display()
+                                    );
                                 }
                             }
+                            Err(e) => {
+                                self.key_manager_status = format!(
+                                    "{} {}",
+                                    tr(lang, "Erreur génération :", "Generation error:"),
+                                    e
+                                );
+                            }
                         }
-                    });
+                    }
                 });
 
             if !self.key_manager_status.is_empty() {

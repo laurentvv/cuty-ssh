@@ -463,8 +463,8 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
-                    "• Outil PuTTYgen intégré (bouton « 🔑 Clés ») : Inspectez l'empreinte SHA-256 d'une clé, copiez la ligne authorized_keys, convertissez .ppk ↔ OpenSSH, ou générez une nouvelle clé .ppk v3.",
-                    "• Built-in PuTTYgen tool ('🔑 Keys' button): Inspect SHA-256 fingerprints, copy the authorized_keys line, convert .ppk ↔ OpenSSH, or generate a new .ppk v3 key.",
+                    "• Outil de clés intégré (bouton « 🔑 Clés ») : Inspectez l'empreinte SHA-256 d'une clé, copiez la ligne authorized_keys, convertissez .ppk ↔ OpenSSH, ou générez une nouvelle clé OpenSSH protégée par passphrase.",
+                    "• Built-in key tool ('🔑 Keys' button): Inspect SHA-256 fingerprints, copy the authorized_keys line, convert .ppk ↔ OpenSSH, or generate a new passphrase-protected OpenSSH key.",
                 ),
             ],
         );
