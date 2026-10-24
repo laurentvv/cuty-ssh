@@ -5982,6 +5982,7 @@ impl CutySshApp {
                 .inner_margin(egui::Margin::same(10))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(46, 160, 67)))
                 .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.heading(
                             RichText::new(tr(
@@ -6098,6 +6099,7 @@ impl CutySshApp {
                 .inner_margin(egui::Margin::same(10))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(46, 160, 67)))
                 .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.heading(
                         RichText::new(tr(
                             lang,
@@ -6388,6 +6390,7 @@ impl CutySshApp {
                 .inner_margin(egui::Margin::same(10))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
                 .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.heading(tr(
                         lang,
                         "\u{E30C} Inspecteur & Convertisseur de Clés (.ppk v2/v3 \u{E0A0} OpenSSH)",
