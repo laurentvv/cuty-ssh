@@ -28,7 +28,7 @@ use crate::ui::terminal_view::{format_bytes, protocol_badge_style};
 use arboard::Clipboard;
 use chrono::Local;
 use egui::{
-    Align, Color32, Context, Key, Layout, Pos2, RichText, Stroke, Ui, Vec2, ViewportCommand,
+    Align, Color32, Context, Key, Layout, Pos2, Rect, RichText, Stroke, Ui, Vec2, ViewportCommand,
     WindowLevel,
 };
 use std::collections::{BTreeMap, HashSet};
@@ -218,6 +218,46 @@ fn left_dismiss_park_position(_outer: egui::Rect, _ppp: f32) -> Option<Pos2> {
     None
 }
 
+/// Clamps `rect` (egui points) so it lands fully inside the work area of the
+/// monitor holding its center, and returns the top-left position to use —
+/// used when a dismissal gesture restores the window to a usable size while
+/// its top-left may sit near or past the right edge of the screen.
+#[cfg(windows)]
+fn park_rect_on_screen(rect: Rect, ppp: f32) -> Pos2 {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    };
+
+    unsafe {
+        let center = POINT {
+            x: ((rect.left() + rect.right()) * 0.5 * ppp) as i32,
+            y: ((rect.top() + rect.bottom()) * 0.5 * ppp) as i32,
+        };
+        let monitor = MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if monitor.is_null() || GetMonitorInfoW(monitor, &mut info) == 0 {
+            return rect.min;
+        }
+        let work_left = info.rcWork.left as f32 / ppp;
+        let work_top = info.rcWork.top as f32 / ppp;
+        let work_right = info.rcWork.right as f32 / ppp;
+        let work_bottom = info.rcWork.bottom as f32 / ppp;
+        let max_x = (work_right - rect.width()).max(work_left);
+        let max_y = (work_bottom - rect.height()).max(work_top);
+        Pos2::new(
+            rect.left().clamp(work_left, max_x),
+            rect.top().clamp(work_top, max_y),
+        )
+    }
+}
+
+#[cfg(not(windows))]
+fn park_rect_on_screen(rect: Rect, _ppp: f32) -> Pos2 {
+    rect.min
+}
+
 /// Honest Pageant/agent status text: distinguishes "no keys loaded" from
 /// "agent unreachable" (window not found vs query failure) instead of pinning
 /// every empty result to a generic "0 keys" verdict.
@@ -370,6 +410,9 @@ pub struct CutySshApp {
     // Window state (Roll-up, Always-on-top)
     pub is_rolled_up: bool,
     pub saved_window_size: Vec2,
+    /// One-shot latch for the resize-to-sliver dismiss gesture: prevents a
+    /// minimize loop if the restore size command is lost while minimized.
+    pub sliver_dismissed: bool,
 
     // Session editor (Enhanced Configuration Box)
     pub show_session_editor: bool,
@@ -535,6 +578,7 @@ impl CutySshApp {
             split_secondary_tab: None,
             is_rolled_up: false,
             saved_window_size: Vec2::new(1340.0, 840.0),
+            sliver_dismissed: false,
             show_session_editor: false,
             editing_session: SessionProfile::default(),
             is_new_session: false,
@@ -2115,13 +2159,21 @@ impl eframe::App for CutySshApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
-        // Drag-far-left gesture: pulled fully past the left edge of its
-        // current screen, the window hides to the taskbar instead of
-        // dangling off-screen, and is parked back on-screen so restoring it
-        // never resurrects it out of view. Sessions keep running — this is a
-        // dismissal gesture, not an exit.
+        // Dismissal gestures (to the taskbar — sessions keep running):
+        // 1. Dragged fully past the left edge of its screen: hidden instead of
+        //    dangling off-screen, parked back on-screen first.
+        // 2. Shrunk to a sliver by resizing (inner width < 160 pt, reachable
+        //    because the OS minimum inner width is 120 pt): minimized after
+        //    restoring the last usable size and an on-screen position, so a
+        //    taskbar click never resurrects a 100-pixel column. One-shot per
+        //    gesture (re-armed only once the window is wide again) so a
+        //    restore that loses the resize command cannot minimize-loop.
+        const SLIVER_DISMISS_WIDTH: f32 = 160.0;
+        const SLIVER_REARM_WIDTH: f32 = 280.0;
+        const SLIVER_REARM_HEIGHT: f32 = 200.0;
         if ctx.input(|i| i.viewport().minimized) != Some(true)
             && let Some(outer) = ctx.input(|i| i.viewport().outer_rect)
+            && let Some(inner) = ctx.input(|i| i.viewport().inner_rect)
         {
             let ppp = ctx
                 .input(|i| i.viewport().native_pixels_per_point)
@@ -2130,6 +2182,25 @@ impl eframe::App for CutySshApp {
             if let Some(park) = left_dismiss_park_position(outer, ppp) {
                 ctx.send_viewport_cmd(ViewportCommand::OuterPosition(park));
                 ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+            } else if !self.is_rolled_up {
+                if inner.width() >= SLIVER_REARM_WIDTH && inner.height() >= SLIVER_REARM_HEIGHT {
+                    // Last genuinely usable inner size: the restore target for
+                    // the sliver-dismiss gesture and the roll-up banner.
+                    self.saved_window_size = inner.size();
+                    self.sliver_dismissed = false;
+                } else if inner.width() < SLIVER_DISMISS_WIDTH && !self.sliver_dismissed {
+                    self.sliver_dismissed = true;
+                    // Position for the restored OUTER rect: the OS sizes the
+                    // window from its outer top-left, and the current outer vs
+                    // inner difference is the decoration size to account for.
+                    let deco = outer.size() - inner.size();
+                    let restored = Rect::from_min_size(outer.min, self.saved_window_size + deco);
+                    ctx.send_viewport_cmd(ViewportCommand::OuterPosition(park_rect_on_screen(
+                        restored, ppp,
+                    )));
+                    ctx.send_viewport_cmd(ViewportCommand::InnerSize(self.saved_window_size));
+                    ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+                }
             }
         }
 

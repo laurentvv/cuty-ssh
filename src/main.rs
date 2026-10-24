@@ -211,7 +211,10 @@ fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Cuty-SSH — SSH2 / Telnet / SFTP · PuTTY (.ppk) & Cuty Agent")
         .with_inner_size([1320.0, 820.0])
-        .with_min_inner_size([600.0, 42.0]);
+        // Min width 120 pt lets the resize-to-sliver dismiss gesture trigger
+        // (ui/mod.rs minimizes below ~160 pt); min height fits the roll-up
+        // banner.
+        .with_min_inner_size([120.0, 42.0]);
 
     if let Some(icon) = load_app_icon() {
         viewport = viewport.with_icon(icon);
