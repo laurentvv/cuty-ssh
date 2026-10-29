@@ -4230,6 +4230,14 @@ impl CutySshApp {
                                 .clicked()
                             {
                                 active_tab.terminal.clear_scrollback();
+                                // Also wipe the visible screen, then ask the shell to redraw its prompt (Ctrl+L).
+                                active_tab.terminal.feed_str("\x1b[2J\x1b[H");
+                                if !active_tab.profile.read_only {
+                                    let _ = active_tab
+                                        .handle
+                                        .cmd_tx
+                                        .send(BackendCommand::SendInput(vec![0x0c]));
+                                }
                             }
 
                             if can_split {
