@@ -44,184 +44,104 @@ impl CutySshApp {
         let lang = self.config.language;
 
         match (self.split_mode, secondary_idx) {
-            (SplitMode::Vertical, Some(sec_idx)) => {
-                let total = ui.available_size();
-                let half_w = ((total.x - 6.0) * 0.5).max(160.0);
+            (mode @ (SplitMode::Vertical | SplitMode::Horizontal), Some(sec_idx)) => {
+                // Panes keep a fixed slot (tab order); clicking a pane only moves the focus.
+                let active_idx = self.active_tab_idx;
+                let (first_idx, second_idx) = if active_idx < sec_idx {
+                    (active_idx, sec_idx)
+                } else {
+                    (sec_idx, active_idx)
+                };
+                let full = ui.available_rect_before_wrap();
+                let gap = 6.0;
+                let (rect_a, rect_b, sep) = if mode == SplitMode::Vertical {
+                    let w = ((full.width() - gap) * 0.5).max(160.0);
+                    let a = Rect::from_min_size(full.min, Vec2::new(w, full.height()));
+                    let b = Rect::from_min_size(
+                        Pos2::new(full.min.x + w + gap, full.min.y),
+                        Vec2::new(w, full.height()),
+                    );
+                    let x = full.min.x + w + gap * 0.5;
+                    (a, b, [Pos2::new(x, full.min.y), Pos2::new(x, full.max.y)])
+                } else {
+                    let h = ((full.height() - gap) * 0.5).max(100.0);
+                    let a = Rect::from_min_size(full.min, Vec2::new(full.width(), h));
+                    let b = Rect::from_min_size(
+                        Pos2::new(full.min.x, full.min.y + h + gap),
+                        Vec2::new(full.width(), h),
+                    );
+                    let y = full.min.y + h + gap * 0.5;
+                    (a, b, [Pos2::new(full.min.x, y), Pos2::new(full.max.x, y)])
+                };
+                ui.allocate_rect(full, Sense::hover());
+                ui.painter()
+                    .line_segment(sep, Stroke::new(1.0, Color32::from_rgb(48, 54, 61)));
+
                 let mut focus_switch: Option<usize> = None;
-                let mut outbound_primary: Vec<u8> = Vec::new();
-                let mut outbound_secondary: Vec<u8> = Vec::new();
+                let mut outbound_active: Vec<u8> = Vec::new();
+                let mut outbound_other: (usize, Vec<u8>) = (sec_idx, Vec::new());
 
-                ui.horizontal(|ui| {
-                    ui.allocate_ui(Vec2::new(half_w, total.y), |ui| {
-                        let is_focused = true;
-                        if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
-                            if render_pane_header(
-                                ui,
-                                &tab.profile.name,
-                                &tab.profile.host,
-                                true,
-                                self.broadcast_mode,
-                                lang,
-                            ) {
-                                self.broadcast_mode = !self.broadcast_mode;
-                            }
-                            let (clicked, bytes) = render_single_terminal_pane(
-                                ui,
-                                ctx,
-                                tab,
-                                TerminalPaneOpts {
-                                    copy_on_select: self.config.copy_on_select,
-                                    right_click_paste: self.config.right_click_paste,
-                                    detect_hyperlinks: self.config.detect_hyperlinks,
-                                    capture_keyboard: is_focused && !modal_open,
-                                    lang,
-                                },
-                            );
-                            let _ = clicked;
-                            outbound_primary = bytes;
+                for (idx, rect) in [(first_idx, rect_a), (second_idx, rect_b)] {
+                    let is_active = idx == active_idx;
+                    let mut pane_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(rect)
+                            .layout(egui::Layout::top_down(egui::Align::Min)),
+                    );
+                    pane_ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+                    let Some(tab) = self.tabs.get_mut(idx) else {
+                        continue;
+                    };
+                    if render_pane_header(
+                        &mut pane_ui,
+                        &tab.profile.name,
+                        &tab.profile.host,
+                        is_active,
+                        self.broadcast_mode,
+                        lang,
+                    ) {
+                        self.broadcast_mode = !self.broadcast_mode;
+                    }
+                    let (clicked, bytes) = render_single_terminal_pane(
+                        &mut pane_ui,
+                        ctx,
+                        tab,
+                        TerminalPaneOpts {
+                            copy_on_select: self.config.copy_on_select,
+                            right_click_paste: self.config.right_click_paste,
+                            detect_hyperlinks: self.config.detect_hyperlinks,
+                            capture_keyboard: is_active && !modal_open,
+                            lang,
+                        },
+                    );
+                    if is_active {
+                        outbound_active = bytes;
+                    } else {
+                        if clicked {
+                            focus_switch = Some(idx);
                         }
-                    });
+                        outbound_other = (idx, bytes);
+                    }
+                }
 
-                    ui.separator();
-
-                    ui.allocate_ui(Vec2::new(half_w, total.y), |ui| {
-                        if let Some(tab) = self.tabs.get_mut(sec_idx) {
-                            render_pane_header(
-                                ui,
-                                &tab.profile.name,
-                                &tab.profile.host,
-                                false,
-                                self.broadcast_mode,
-                                lang,
-                            );
-                            let (clicked, bytes) = render_single_terminal_pane(
-                                ui,
-                                ctx,
-                                tab,
-                                TerminalPaneOpts {
-                                    copy_on_select: self.config.copy_on_select,
-                                    right_click_paste: self.config.right_click_paste,
-                                    detect_hyperlinks: self.config.detect_hyperlinks,
-                                    capture_keyboard: false,
-                                    lang,
-                                },
-                            );
-                            if clicked {
-                                focus_switch = Some(sec_idx);
-                            }
-                            outbound_secondary = bytes;
-                        }
-                    });
-                });
-
-                if !outbound_primary.is_empty() {
-                    if let Some(t) = self.tabs.get_mut(self.active_tab_idx) {
+                if !outbound_active.is_empty() {
+                    if let Some(t) = self.tabs.get_mut(active_idx) {
                         t.terminal.state.scroll_offset = 0;
                     }
-                    self.send_bytes_to_active_or_broadcast(&outbound_primary);
+                    self.send_bytes_to_active_or_broadcast(&outbound_active);
                 }
-                if !outbound_secondary.is_empty()
-                    && let Some(t) = self.tabs.get_mut(sec_idx)
+                if !outbound_other.1.is_empty()
+                    && let Some(t) = self.tabs.get_mut(outbound_other.0)
                     && !t.profile.read_only
                 {
                     t.terminal.state.scroll_offset = 0;
                     let _ = t
                         .handle
                         .cmd_tx
-                        .send(BackendCommand::SendInput(outbound_secondary));
+                        .send(BackendCommand::SendInput(outbound_other.1));
                 }
                 if let Some(new_active) = focus_switch {
-                    let old_active_id = self.tabs[self.active_tab_idx].tab_id;
-                    self.active_tab_idx = new_active;
-                    self.split_secondary_tab = Some(old_active_id);
-                }
-            }
-            (SplitMode::Horizontal, Some(sec_idx)) => {
-                let total = ui.available_size();
-                let half_h = ((total.y - 8.0) * 0.5).max(100.0);
-                let mut focus_switch: Option<usize> = None;
-                let mut outbound_primary: Vec<u8> = Vec::new();
-                let mut outbound_secondary: Vec<u8> = Vec::new();
-
-                ui.vertical(|ui| {
-                    ui.allocate_ui(Vec2::new(total.x, half_h), |ui| {
-                        if let Some(tab) = self.tabs.get_mut(self.active_tab_idx) {
-                            if render_pane_header(
-                                ui,
-                                &tab.profile.name,
-                                &tab.profile.host,
-                                true,
-                                self.broadcast_mode,
-                                lang,
-                            ) {
-                                self.broadcast_mode = !self.broadcast_mode;
-                            }
-                            let (_clicked, bytes) = render_single_terminal_pane(
-                                ui,
-                                ctx,
-                                tab,
-                                TerminalPaneOpts {
-                                    copy_on_select: self.config.copy_on_select,
-                                    right_click_paste: self.config.right_click_paste,
-                                    detect_hyperlinks: self.config.detect_hyperlinks,
-                                    capture_keyboard: !modal_open,
-                                    lang,
-                                },
-                            );
-                            outbound_primary = bytes;
-                        }
-                    });
-
-                    ui.separator();
-
-                    ui.allocate_ui(Vec2::new(total.x, half_h), |ui| {
-                        if let Some(tab) = self.tabs.get_mut(sec_idx) {
-                            render_pane_header(
-                                ui,
-                                &tab.profile.name,
-                                &tab.profile.host,
-                                false,
-                                self.broadcast_mode,
-                                lang,
-                            );
-                            let (clicked, bytes) = render_single_terminal_pane(
-                                ui,
-                                ctx,
-                                tab,
-                                TerminalPaneOpts {
-                                    copy_on_select: self.config.copy_on_select,
-                                    right_click_paste: self.config.right_click_paste,
-                                    detect_hyperlinks: self.config.detect_hyperlinks,
-                                    capture_keyboard: false,
-                                    lang,
-                                },
-                            );
-                            if clicked {
-                                focus_switch = Some(sec_idx);
-                            }
-                            outbound_secondary = bytes;
-                        }
-                    });
-                });
-
-                if !outbound_primary.is_empty() {
-                    if let Some(t) = self.tabs.get_mut(self.active_tab_idx) {
-                        t.terminal.state.scroll_offset = 0;
-                    }
-                    self.send_bytes_to_active_or_broadcast(&outbound_primary);
-                }
-                if !outbound_secondary.is_empty()
-                    && let Some(t) = self.tabs.get_mut(sec_idx)
-                    && !t.profile.read_only
-                {
-                    t.terminal.state.scroll_offset = 0;
-                    let _ = t
-                        .handle
-                        .cmd_tx
-                        .send(BackendCommand::SendInput(outbound_secondary));
-                }
-                if let Some(new_active) = focus_switch {
-                    let old_active_id = self.tabs[self.active_tab_idx].tab_id;
+                    let old_active_id = self.tabs[active_idx].tab_id;
                     self.active_tab_idx = new_active;
                     self.split_secondary_tab = Some(old_active_id);
                 }
