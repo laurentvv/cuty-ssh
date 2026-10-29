@@ -2989,7 +2989,8 @@ impl CutySshApp {
 
     fn render_left_sidebar(&mut self, ui: &mut Ui) {
         let lang = self.config.language;
-        egui::Panel::left("sessions_sidebar_v2")
+        let resize_id = ui.scope_id().with("sessions_sidebar_v2").with("__resize");
+        let panel = egui::Panel::left("sessions_sidebar_v2")
             .resizable(true)
             .default_size(320.0)
             .min_size(240.0)
@@ -3621,6 +3622,16 @@ impl CutySshApp {
                     let _ = self.config.save();
                 }
             });
+
+        // Dragging the resize handle well past the minimum width hides the sidebar.
+        if ui.ctx().is_being_dragged(resize_id) {
+            let left = panel.response.rect.min.x;
+            if let Some(pos) = ui.input(|i| i.pointer.interact_pos())
+                && pos.x < left + 120.0
+            {
+                self.show_sidebar = false;
+            }
+        }
     }
 
     fn render_tabs_bar(&mut self, ui: &mut Ui) {
@@ -6821,12 +6832,53 @@ impl CutySshApp {
                                 ui.horizontal(|ui| {
                                     ui.text_edit_singleline(&mut self.editing_session.folder);
                                     ui.label(tr(lang, "Icône:", "Icon:"));
-                                    ui.add(
-                                        egui::TextEdit::singleline(
-                                            &mut self.editing_session.icon_badge,
-                                        )
-                                        .desired_width(36.0),
-                                    );
+                                    const SESSION_ICONS: &[&str] = &[
+                                        "🖥", "💻", "🖧", "⚡", "🐧", "🪟", "🍎", "🐳", "☸", "🐘",
+                                        "🗄", "🌐", "☁", "🔐", "🔑", "🛡", "🏰", "🔌", "📡", "🏠",
+                                        "🏢", "🧪", "🚀", "🔧", "⚙", "📦", "📁", "📊", "🎮", "🤖",
+                                        "🔥", "⭐", "🟢", "🔴", "🟡", "🔵", "🟣", "🟠",
+                                    ];
+                                    let current = if self.editing_session.icon_badge.is_empty() {
+                                        "🖥".to_string()
+                                    } else {
+                                        self.editing_session.icon_badge.clone()
+                                    };
+                                    ui.menu_button(format!("{} ▾", current), |ui| {
+                                        ui.set_max_width(260.0);
+                                        ui.horizontal_wrapped(|ui| {
+                                            for icon in SESSION_ICONS {
+                                                let selected =
+                                                    self.editing_session.icon_badge == *icon;
+                                                if ui
+                                                    .selectable_label(
+                                                        selected,
+                                                        RichText::new(*icon).size(18.0),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.editing_session.icon_badge =
+                                                        icon.to_string();
+                                                    ui.close();
+                                                }
+                                            }
+                                        });
+                                        ui.separator();
+                                        ui.horizontal(|ui| {
+                                            ui.label(tr(lang, "Personnalisée :", "Custom:"));
+                                            ui.add(
+                                                egui::TextEdit::singleline(
+                                                    &mut self.editing_session.icon_badge,
+                                                )
+                                                .desired_width(40.0),
+                                            );
+                                        });
+                                    })
+                                    .response
+                                    .on_hover_text(tr(
+                                        lang,
+                                        "Choisir l'icône de la session",
+                                        "Choose the session icon",
+                                    ));
                                 });
                                 ui.end_row();
 
