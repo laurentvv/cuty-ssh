@@ -1347,107 +1347,22 @@ async fn run_ssh_session(
                     Some(BackendCommand::SftpUpload { local_path, remote_path }) => {
                         let sftp_ref = Arc::clone(&sftp_session);
                         let evt_c = evt_tx.clone();
-                        tokio::spawn(async move {
-                            let guard = sftp_ref.lock().await;
-                            if let Some(sftp) = guard.as_ref() {
-                                let is_dir = tokio::fs::metadata(&local_path)
-                                    .await
-                                    .map(|m| m.is_dir())
-                                    .unwrap_or(false);
-                                let result = if is_dir {
-                                    upload_sftp_tree(sftp, &local_path, &remote_path, &evt_c).await
-                                } else {
-                                    upload_sftp_file(sftp, &local_path, &remote_path, &evt_c).await
-                                };
-                                match result {
-                                    Ok(bytes_len) => {
-                                        let _ = evt_c.send(BackendEvent::SftpStatus(format!(
-                                            "Upload réussi : {} ({} octets)",
-                                            remote_path, bytes_len
-                                        )));
-                                        if is_dir {
-                                            // Mark the folder's queue entry as completed;
-                                            // its children were reported individually.
-                                            let _ = evt_c.send(BackendEvent::SftpProgress {
-                                                filename: remote_path
-                                                    .rsplit('/')
-                                                    .next()
-                                                    .unwrap_or(&remote_path)
-                                                    .to_string(),
-                                                transferred: bytes_len,
-                                                total: bytes_len,
-                                                is_upload: true,
-                                                done: true,
-                                            });
-                                        }
-                                        if let Some((parent_dir, _)) = remote_path.rsplit_once('/') {
-                                            let dir = if parent_dir.is_empty() { "/" } else { parent_dir };
-                                            if let Ok(entries) = list_sftp_directory(sftp, dir).await {
-                                                let _ = evt_c.send(BackendEvent::SftpDirListed {
-                                                    current_path: dir.to_string(),
-                                                    entries,
-                                                });
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        let _ = evt_c.send(BackendEvent::SftpStatus(format!(
-                                            "Échec upload SFTP : {}",
-                                            e
-                                        )));
-                                    }
-                                }
-                            }
-                        });
+                        tokio::spawn(run_sftp_upload(
+                            sftp_ref,
+                            evt_c,
+                            local_path,
+                            remote_path,
+                        ));
                     }
                     Some(BackendCommand::SftpDownload { remote_path, local_path }) => {
                         let sftp_ref = Arc::clone(&sftp_session);
                         let evt_c = evt_tx.clone();
-                        tokio::spawn(async move {
-                            let guard = sftp_ref.lock().await;
-                            if let Some(sftp) = guard.as_ref() {
-                                let is_dir = sftp
-                                    .metadata(&remote_path)
-                                    .await
-                                    .map(|m| m.is_dir())
-                                    .unwrap_or(false);
-                                let result = if is_dir {
-                                    download_sftp_tree(sftp, &remote_path, &local_path, &evt_c).await
-                                } else {
-                                    download_sftp_file(sftp, &remote_path, &local_path, &evt_c).await
-                                };
-                                match result {
-                                    Ok(bytes_len) => {
-                                        let _ = evt_c.send(BackendEvent::SftpStatus(format!(
-                                            "Téléchargé vers {} ({} octets)",
-                                            local_path.display(),
-                                            bytes_len
-                                        )));
-                                        if is_dir {
-                                            // Mark the folder's queue entry as completed;
-                                            // its children were reported individually.
-                                            let _ = evt_c.send(BackendEvent::SftpProgress {
-                                                filename: remote_path
-                                                    .rsplit('/')
-                                                    .next()
-                                                    .unwrap_or(&remote_path)
-                                                    .to_string(),
-                                                transferred: bytes_len,
-                                                total: bytes_len,
-                                                is_upload: false,
-                                                done: true,
-                                            });
-                                        }
-                                    }
-                                    Err(e) => {
-                                        let _ = evt_c.send(BackendEvent::SftpStatus(format!(
-                                            "Échec téléchargement SFTP : {}",
-                                            e
-                                        )));
-                                    }
-                                }
-                            }
-                        });
+                        tokio::spawn(run_sftp_download(
+                            sftp_ref,
+                            evt_c,
+                            remote_path,
+                            local_path,
+                        ));
                     }
                     Some(BackendCommand::SftpChmod { remote_path, mode }) => {
                         let sftp_ref = Arc::clone(&sftp_session);
@@ -1891,6 +1806,115 @@ async fn refresh_parent_listing(
     if let Some((parent, _)) = path.rsplit_once('/') {
         let dir = if parent.is_empty() { "/" } else { parent };
         refresh_dir_listing(sftp, dir, evt_tx).await;
+    }
+}
+
+/// Body of the `BackendCommand::SftpUpload` handler: locks the shared SFTP
+/// session for the whole transfer (uploads are serialized), transfers a file
+/// or a whole tree, then reports status and refreshes the remote listing.
+/// Extracted as a function so tests run the exact production code path.
+pub(crate) async fn run_sftp_upload(
+    sftp_ref: Arc<tokio::sync::Mutex<Option<SftpSession>>>,
+    evt_c: UnboundedSender<BackendEvent>,
+    local_path: PathBuf,
+    remote_path: String,
+) {
+    let guard = sftp_ref.lock().await;
+    let Some(sftp) = guard.as_ref() else {
+        return;
+    };
+    let is_dir = tokio::fs::metadata(&local_path)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    let result = if is_dir {
+        upload_sftp_tree(sftp, &local_path, &remote_path, &evt_c).await
+    } else {
+        upload_sftp_file(sftp, &local_path, &remote_path, &evt_c).await
+    };
+    match result {
+        Ok(bytes_len) => {
+            let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                "Upload réussi : {} ({} octets)",
+                remote_path, bytes_len
+            )));
+            if is_dir {
+                // Mark the folder's queue entry as completed;
+                // its children were reported individually.
+                let _ = evt_c.send(BackendEvent::SftpProgress {
+                    filename: remote_path.rsplit('/').next().unwrap_or(&remote_path).to_string(),
+                    transferred: bytes_len,
+                    total: bytes_len,
+                    is_upload: true,
+                    done: true,
+                });
+            }
+            if let Some((parent_dir, _)) = remote_path.rsplit_once('/') {
+                let dir = if parent_dir.is_empty() { "/" } else { parent_dir };
+                if let Ok(entries) = list_sftp_directory(sftp, dir).await {
+                    let _ = evt_c.send(BackendEvent::SftpDirListed {
+                        current_path: dir.to_string(),
+                        entries,
+                    });
+                }
+            }
+        }
+        Err(e) => {
+            let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                "Échec upload SFTP : {}",
+                e
+            )));
+        }
+    }
+}
+
+/// Body of the `BackendCommand::SftpDownload` handler, extracted like
+/// [`run_sftp_upload`] so tests exercise the production code path.
+pub(crate) async fn run_sftp_download(
+    sftp_ref: Arc<tokio::sync::Mutex<Option<SftpSession>>>,
+    evt_c: UnboundedSender<BackendEvent>,
+    remote_path: String,
+    local_path: PathBuf,
+) {
+    let guard = sftp_ref.lock().await;
+    let Some(sftp) = guard.as_ref() else {
+        return;
+    };
+    let is_dir = sftp
+        .metadata(&remote_path)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    let result = if is_dir {
+        download_sftp_tree(sftp, &remote_path, &local_path, &evt_c).await
+    } else {
+        download_sftp_file(sftp, &remote_path, &local_path, &evt_c).await
+    };
+    match result {
+        Ok(bytes_len) => {
+            let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                "Téléchargé vers {} ({} octets)",
+                local_path.display(),
+                bytes_len
+            )));
+            if is_dir {
+                // Mark the folder's queue entry as completed;
+                // its children were reported individually.
+                let _ = evt_c.send(BackendEvent::SftpProgress {
+                    filename: remote_path.rsplit('/').next().unwrap_or(&remote_path).to_string(),
+                    transferred: bytes_len,
+                    total: bytes_len,
+                    is_upload: false,
+                    done: true,
+                });
+            }
+        }
+        Err(e) => {
+            let _ = evt_c.send(BackendEvent::SftpStatus(format!(
+                "Échec téléchargement SFTP : {}",
+                e
+            )));
+        }
     }
 }
 
@@ -2692,6 +2716,405 @@ pub fn calculate_ipv4_cidr(input: &str) -> Result<CidrCalculation> {
     })
 }
 
+/// In-process SSH + SFTP server for integration tests: a real russh server
+/// (password auth, random Ed25519 host key) exposing an SFTP subsystem backed
+/// by a plain temp directory. Modeled on the russh-sftp 3.0.1 `server` example,
+/// so tests exercise the production client code end to end over the network
+/// stack (loopback) without any external process.
+#[cfg(test)]
+mod sftp_test_server {
+    use super::*;
+    use russh::keys::Algorithm;
+    use russh::server::{Auth, ChannelOpenHandle, Msg, Server as _};
+    use russh::server::{Handler as SshHandler, Session as SshServerSession};
+    use russh::{Channel, ChannelId};
+    use russh_sftp::protocol::{
+        Attrs, Data, File, FileAttributes, Handle, Name, Status, StatusCode, Version,
+    };
+    use russh_sftp::server;
+    use std::collections::{HashMap, HashSet};
+    use std::io::Seek;
+    use std::net::SocketAddr;
+
+    #[derive(Clone)]
+    struct TestSshServer {
+        root: PathBuf,
+    }
+
+    impl russh::server::Server for TestSshServer {
+        type Handler = TestSshSession;
+
+        fn new_client(&mut self, _: Option<SocketAddr>) -> Self::Handler {
+            TestSshSession {
+                root: self.root.clone(),
+                channels: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            }
+        }
+    }
+
+    struct TestSshSession {
+        root: PathBuf,
+        channels: Arc<tokio::sync::Mutex<HashMap<ChannelId, Channel<Msg>>>>,
+    }
+
+    impl SshHandler for TestSshSession {
+        type Error = anyhow::Error;
+
+        async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth> {
+            Ok(Auth::Accept)
+        }
+
+        async fn channel_open_session(
+            &mut self,
+            channel: Channel<Msg>,
+            reply: ChannelOpenHandle,
+            _session: &mut SshServerSession,
+        ) -> Result<()> {
+            self.channels.lock().await.insert(channel.id(), channel);
+            reply.accept().await;
+            Ok(())
+        }
+
+        async fn subsystem_request(
+            &mut self,
+            channel_id: ChannelId,
+            name: &str,
+            session: &mut SshServerSession,
+        ) -> Result<()> {
+            if name == "sftp" {
+                let channel = self
+                    .channels
+                    .lock()
+                    .await
+                    .remove(&channel_id)
+                    .expect("channel opened before subsystem request");
+                session.channel_success(channel_id)?;
+                let handler = FsSftpHandler {
+                    root: self.root.clone(),
+                    listed_dirs: HashSet::new(),
+                };
+                server::run(channel.into_stream(), handler).await;
+            } else {
+                session.channel_failure(channel_id)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// SFTP handler backed by the real filesystem under `root`.
+    /// Virtual absolute paths (`/a.txt`) map to `root/a.txt`.
+    struct FsSftpHandler {
+        root: PathBuf,
+        listed_dirs: HashSet<String>,
+    }
+
+    impl FsSftpHandler {
+        fn map(&self, path: &str) -> PathBuf {
+            let p = path.trim();
+            if p.is_empty() || p == "." || p == "/" {
+                return self.root.clone();
+            }
+            self.root.join(p.trim_start_matches('/'))
+        }
+
+        fn fs_attrs(id: u32, md: &std::fs::Metadata) -> Attrs {
+            let perms = if md.is_dir() { 0o755 } else { 0o644 };
+            Attrs {
+                id,
+                attrs: FileAttributes {
+                    size: Some(md.len()),
+                    permissions: Some(perms),
+                    mtime: md
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as u32),
+                    ..Default::default()
+                },
+            }
+        }
+
+        fn ok_status(id: u32) -> Status {
+            Status {
+                id,
+                status_code: StatusCode::Ok,
+                error_message: "Ok".to_string(),
+                language_tag: "en-US".to_string(),
+            }
+        }
+    }
+
+    impl server::Handler for FsSftpHandler {
+        type Error = StatusCode;
+
+        fn unimplemented(&self) -> Self::Error {
+            StatusCode::OpUnsupported
+        }
+
+        async fn init(
+            &mut self,
+            _version: u32,
+            _extensions: HashMap<String, String>,
+        ) -> Result<Version, Self::Error> {
+            Ok(Version::new())
+        }
+
+        async fn open(
+            &mut self,
+            id: u32,
+            filename: String,
+            pflags: OpenFlags,
+            _attrs: FileAttributes,
+        ) -> Result<Handle, Self::Error> {
+            let path = self.map(&filename);
+            if pflags.contains(OpenFlags::READ) {
+                std::fs::File::open(&path).map_err(|_| StatusCode::NoSuchFile)?;
+            } else if pflags.contains(OpenFlags::CREATE) {
+                let mut opts = std::fs::OpenOptions::new();
+                opts.write(true).create(true);
+                if pflags.contains(OpenFlags::TRUNCATE) {
+                    opts.truncate(true);
+                }
+                opts.open(&path).map_err(|_| StatusCode::PermissionDenied)?;
+            } else {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .map_err(|_| StatusCode::NoSuchFile)?;
+            }
+            Ok(Handle {
+                id,
+                handle: filename,
+            })
+        }
+
+        async fn close(&mut self, id: u32, _handle: String) -> Result<Status, Self::Error> {
+            Ok(Self::ok_status(id))
+        }
+
+        async fn read(
+            &mut self,
+            id: u32,
+            handle: String,
+            offset: u64,
+            len: u32,
+        ) -> Result<Data, Self::Error> {
+            let path = self.map(&handle);
+            let mut f = std::fs::File::open(&path).map_err(|_| StatusCode::NoSuchFile)?;
+            f.seek(std::io::SeekFrom::Start(offset))
+                .map_err(|_| StatusCode::Failure)?;
+            let mut buf = vec![0u8; len as usize];
+            let n = f.read(&mut buf).map_err(|_| StatusCode::Failure)?;
+            if n == 0 {
+                return Err(StatusCode::Eof);
+            }
+            buf.truncate(n);
+            Ok(Data { id, data: buf })
+        }
+
+        async fn write(
+            &mut self,
+            id: u32,
+            handle: String,
+            offset: u64,
+            data: Vec<u8>,
+        ) -> Result<Status, Self::Error> {
+            let path = self.map(&handle);
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .map_err(|_| StatusCode::NoSuchFile)?;
+            f.seek(std::io::SeekFrom::Start(offset))
+                .map_err(|_| StatusCode::Failure)?;
+            f.write_all(&data).map_err(|_| StatusCode::Failure)?;
+            Ok(Self::ok_status(id))
+        }
+
+        async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+            let md = std::fs::symlink_metadata(self.map(&path))
+                .map_err(|_| StatusCode::NoSuchFile)?;
+            Ok(Self::fs_attrs(id, &md))
+        }
+
+        async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
+            let md = std::fs::metadata(self.map(&handle)).map_err(|_| StatusCode::NoSuchFile)?;
+            Ok(Self::fs_attrs(id, &md))
+        }
+
+        async fn setstat(
+            &mut self,
+            id: u32,
+            _path: String,
+            _attrs: FileAttributes,
+        ) -> Result<Status, Self::Error> {
+            Ok(Self::ok_status(id))
+        }
+
+        async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
+            let mapped = self.map(&path);
+            if mapped.is_dir() {
+                Ok(Handle {
+                    id,
+                    handle: path,
+                })
+            } else {
+                Err(StatusCode::NoSuchFile)
+            }
+        }
+
+        async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
+            if !self.listed_dirs.insert(handle.clone()) {
+                return Err(StatusCode::Eof);
+            }
+            let dir = self.map(&handle);
+            let mut files = Vec::new();
+            for entry in std::fs::read_dir(&dir).map_err(|_| StatusCode::Failure)? {
+                let entry = entry.map_err(|_| StatusCode::Failure)?;
+                let attrs = entry
+                    .metadata()
+                    .map(|md| Self::fs_attrs(id, &md).attrs)
+                    .unwrap_or_default();
+                files.push(File::new(
+                    entry.file_name().to_string_lossy().to_string(),
+                    attrs,
+                ));
+            }
+            Ok(Name { id, files })
+        }
+
+        async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
+            let path = self.map(&filename);
+            if path.is_file() {
+                std::fs::remove_file(&path).map_err(|_| StatusCode::Failure)?;
+                Ok(Self::ok_status(id))
+            } else {
+                Err(StatusCode::NoSuchFile)
+            }
+        }
+
+        async fn mkdir(
+            &mut self,
+            id: u32,
+            path: String,
+            _attrs: FileAttributes,
+        ) -> Result<Status, Self::Error> {
+            std::fs::create_dir_all(self.map(&path)).map_err(|_| StatusCode::Failure)?;
+            Ok(Self::ok_status(id))
+        }
+
+        async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
+            // Canonical view: everything lives under the virtual root "/".
+            let p = path.trim();
+            let canonical = if p.is_empty() || p == "." || p == "/" {
+                "/".to_string()
+            } else {
+                format!("/{}", p.trim_start_matches('/'))
+            };
+            Ok(Name {
+                id,
+                files: vec![File::new(canonical, FileAttributes::dummy())],
+            })
+        }
+
+        async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+            let md = std::fs::metadata(self.map(&path)).map_err(|_| StatusCode::NoSuchFile)?;
+            Ok(Self::fs_attrs(id, &md))
+        }
+
+        async fn rename(
+            &mut self,
+            id: u32,
+            oldpath: String,
+            newpath: String,
+        ) -> Result<Status, Self::Error> {
+            // OpenSSH semantics: rename fails when the target exists (the
+            // production uploader removes the target first).
+            let (from, to) = (self.map(&oldpath), self.map(&newpath));
+            if to.exists() {
+                return Err(StatusCode::Failure);
+            }
+            std::fs::rename(&from, &to).map_err(|_| StatusCode::Failure)?;
+            Ok(Self::ok_status(id))
+        }
+    }
+
+    /// Client handler accepting any host key (in-process test server).
+    struct AcceptAnyHostKey;
+
+    impl client::Handler for AcceptAnyHostKey {
+        type Error = russh::Error;
+
+        async fn check_server_key(
+            &mut self,
+            _server_public_key: &PublicKeyOrCertificate,
+        ) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+    }
+
+    /// Starts the in-process server on a random loopback port.
+    /// Returns `(port, root_dir)`.
+    pub(crate) async fn start() -> (u16, PathBuf) {
+        let root = std::env::temp_dir().join(format!("cuty_sftp_test_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("create test server root");
+        let config = Arc::new(russh::server::Config {
+            keys: vec![russh::keys::PrivateKey::random(
+                &mut rand::rng(),
+                Algorithm::Ed25519,
+            )
+            .expect("generate host key")],
+            ..Default::default()
+        });
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind loopback listener");
+        let port = listener.local_addr().expect("local addr").port();
+        let mut server = TestSshServer { root: root.clone() };
+        tokio::spawn(async move {
+            let _ = server.run_on_socket(config, &listener).await;
+        });
+        (port, root)
+    }
+
+    /// Connects a client exactly like the production backend does and wraps
+    /// the SFTP session in the shared `Arc<Mutex<Option<_>>>` holder.
+    /// Returns the event channel so tests observe backend events.
+    pub(crate) async fn connect_sftp(
+        port: u16,
+    ) -> (
+        Arc<tokio::sync::Mutex<Option<SftpSession>>>,
+        UnboundedSender<BackendEvent>,
+        UnboundedReceiver<BackendEvent>,
+    ) {
+        let config = Arc::new(russh::client::Config::default());
+        let mut session = client::connect(config, ("127.0.0.1", port), AcceptAnyHostKey)
+            .await
+            .expect("client connect");
+        let auth = session
+            .authenticate_password("test", "test")
+            .await
+            .expect("password auth");
+        assert!(auth.success(), "password auth accepted");
+        let channel = session
+            .channel_open_session()
+            .await
+            .expect("open session channel");
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .expect("request sftp subsystem");
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
+            .expect("init sftp session");
+        let (evt_tx, evt_rx) = unbounded_channel();
+        (
+            Arc::new(tokio::sync::Mutex::new(Some(sftp))),
+            evt_tx,
+            evt_rx,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2771,6 +3194,119 @@ mod tests {
             .await
             .unwrap();
         assert!(srv.await.unwrap().is_err());
+    }
+
+    /// Regression test for "selecting several files only copies the first":
+    /// several concurrent `SftpUpload` commands (one spawned task per file,
+    /// serialized on the shared session mutex) must ALL reach the server,
+    /// exactly like the real backend path does.
+    #[tokio::test]
+    async fn sftp_concurrent_uploads_all_complete() {
+        let (port, server_root) = sftp_test_server::start().await;
+        let local_dir = std::env::temp_dir().join(format!("cuty_sftp_up_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&local_dir).unwrap();
+
+        // Three files: the 200 KB one crosses the 64 KB chunk boundary.
+        let contents: Vec<Vec<u8>> = vec![
+            (0..200_000).map(|i| (i % 251) as u8).collect(),
+            b"hello world".to_vec(),
+            (0..1_000).map(|i| (i % 7) as u8).collect(),
+        ];
+        let names = ["a_big.bin", "b_small.txt", "c_mid.bin"];
+        let mut paths = Vec::new();
+        for (name, data) in names.iter().zip(&contents) {
+            let p = local_dir.join(name);
+            std::fs::write(&p, data).unwrap();
+            paths.push(p);
+        }
+
+        let (sftp_ref, evt_tx, mut evt_rx) = sftp_test_server::connect_sftp(port).await;
+
+        // Same spawn-per-command pattern as the BackendCommand::SftpUpload arm.
+        let mut tasks = Vec::new();
+        for (p, name) in paths.iter().zip(names.iter()) {
+            let sftp_ref = Arc::clone(&sftp_ref);
+            let evt_tx = evt_tx.clone();
+            tasks.push(tokio::spawn(run_sftp_upload(
+                sftp_ref,
+                evt_tx,
+                p.clone(),
+                format!("/{name}"),
+            )));
+        }
+        drop(evt_tx);
+        for t in tasks {
+            t.await.expect("upload task panicked");
+        }
+
+        // Every file must exist server-side with the exact bytes.
+        for (name, data) in names.iter().zip(&contents) {
+            let target = server_root.join(name);
+            let written = std::fs::read(&target)
+                .unwrap_or_else(|e| panic!("read {name} on server side: {e}"));
+            assert_eq!(written, *data, "content mismatch for {name}");
+            assert!(!server_root.join(format!("{name}{PART_SUFFIX}")).exists());
+        }
+        // The status events report three successful uploads.
+        let mut ok = 0;
+        while let Ok(evt) = evt_rx.try_recv() {
+            if let BackendEvent::SftpStatus(msg) = evt
+                && msg.starts_with("Upload réussi")
+            {
+                ok += 1;
+            }
+        }
+        assert_eq!(ok, 3, "exactly three successful upload statuses");
+
+        std::fs::remove_dir_all(&local_dir).ok();
+        std::fs::remove_dir_all(&server_root).ok();
+    }
+
+    /// Download mirror of the concurrent-uploads test.
+    #[tokio::test]
+    async fn sftp_concurrent_downloads_all_complete() {
+        let (port, server_root) = sftp_test_server::start().await;
+        let local_dir = std::env::temp_dir().join(format!("cuty_sftp_dl_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&local_dir).unwrap();
+
+        let contents: Vec<Vec<u8>> = vec![
+            (0..130_000).map(|i| (i % 13) as u8).collect(),
+            b"tiny".to_vec(),
+            (0..9_999).map(|i| (i % 3) as u8).collect(),
+        ];
+        let names = ["r_big.bin", "r_tiny.txt", "r_mid.bin"];
+        for (name, data) in names.iter().zip(&contents) {
+            std::fs::write(server_root.join(name), data).unwrap();
+        }
+
+        let (sftp_ref, evt_tx, _evt_rx) = sftp_test_server::connect_sftp(port).await;
+
+        let mut tasks = Vec::new();
+        for name in names.iter() {
+            let sftp_ref = Arc::clone(&sftp_ref);
+            let evt_tx = evt_tx.clone();
+            tasks.push(tokio::spawn(run_sftp_download(
+                sftp_ref,
+                evt_tx,
+                format!("/{name}"),
+                local_dir.join(name),
+            )));
+        }
+        drop(evt_tx);
+        for t in tasks {
+            t.await.expect("download task panicked");
+        }
+
+        for (name, data) in names.iter().zip(&contents) {
+            let target = local_dir.join(name);
+            let got = std::fs::read(&target)
+                .unwrap_or_else(|e| panic!("read {name} locally: {e}"));
+            assert_eq!(got, *data, "content mismatch for {name}");
+            assert!(!local_dir.join(format!("{name}{PART_SUFFIX}")).exists());
+        }
+
+        std::fs::remove_dir_all(&local_dir).ok();
+        std::fs::remove_dir_all(&server_root).ok();
     }
 }
 
