@@ -573,6 +573,11 @@ impl CutySshApp {
                     "5. Glisser entre les deux volets : faites glisser un fichier, un dossier ou toute la sélection du volet local vers le volet distant pour l'envoyer, et du volet distant vers le volet local pour le télécharger. Les dossiers entiers sont transférés récursivement (liens symboliques ignorés) ; le panneau cible s'illumine pendant le survol, et les fichiers des dossiers existants suivent les règles de collision habituelles.",
                     "5. Drag between the two panes: drag a file, a folder, or the whole selection from the local pane to the remote pane to upload it, and from the remote pane to the local pane to download it. Whole folders transfer recursively (symlinks skipped); the target pane lights up on hover, and files inside existing folders follow the usual collision rules.",
                 ),
+                tr(
+                    lang,
+                    "6. Multi-sélection : Ctrl+clic ajoute/retire une entrée, Maj+clic sélectionne la plage entre l'ancre et la ligne cliquée, Ctrl+Maj+clic étend la sélection. Toute la sélection part d'un coup (glisser ou boutons Téléverser/Télécharger) ; avec la règle « Demander si existe », chaque fichier en conflit est proposé l'un après l'autre, avec « Écraser tout » et « Ignorer tout » pour trancher le lot en un clic.",
+                    "6. Multi-selection: Ctrl+click adds/removes an entry, Shift+click selects the range between the anchor and the clicked row, Ctrl+Shift+click extends the selection. The whole selection transfers at once (drag or the Upload/Download buttons); with the 'Ask if file exists' rule, every conflicting file is offered one after another, with 'Overwrite all' and 'Skip all' to settle the whole batch in one click.",
+                ),
             ],
         );
 

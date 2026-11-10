@@ -15,6 +15,7 @@ assets/screenshot_cockpi
 # Agent internal tooling and ledger (kept local, ignored on public git)
 .agent/
 .agents/
+.zcode/
 __pycache__/
 
 

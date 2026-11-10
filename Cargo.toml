@@ -51,6 +51,10 @@ zeroize = "1.9"
 # Pageant agent transport diagnostics (is_pageant_running) — same crate russh uses.
 pageant = "0.2"
 
+[dev-dependencies]
+# In-process SFTP test server host-key generation (ssh-key::PrivateKey::random).
+rand = "0.10"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

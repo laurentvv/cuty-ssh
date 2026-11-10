@@ -1035,6 +1035,7 @@ dependencies = [
  "open",
  "pageant",
  "portable-pty",
+ "rand 0.10.3",
  "rfd",
  "russh",
  "russh-sftp",
