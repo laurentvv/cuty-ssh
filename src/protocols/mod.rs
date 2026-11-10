@@ -1842,7 +1842,11 @@ pub(crate) async fn run_sftp_upload(
                 // Mark the folder's queue entry as completed;
                 // its children were reported individually.
                 let _ = evt_c.send(BackendEvent::SftpProgress {
-                    filename: remote_path.rsplit('/').next().unwrap_or(&remote_path).to_string(),
+                    filename: remote_path
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&remote_path)
+                        .to_string(),
                     transferred: bytes_len,
                     total: bytes_len,
                     is_upload: true,
@@ -1850,7 +1854,11 @@ pub(crate) async fn run_sftp_upload(
                 });
             }
             if let Some((parent_dir, _)) = remote_path.rsplit_once('/') {
-                let dir = if parent_dir.is_empty() { "/" } else { parent_dir };
+                let dir = if parent_dir.is_empty() {
+                    "/"
+                } else {
+                    parent_dir
+                };
                 if let Ok(entries) = list_sftp_directory(sftp, dir).await {
                     let _ = evt_c.send(BackendEvent::SftpDirListed {
                         current_path: dir.to_string(),
@@ -1901,7 +1909,11 @@ pub(crate) async fn run_sftp_download(
                 // Mark the folder's queue entry as completed;
                 // its children were reported individually.
                 let _ = evt_c.send(BackendEvent::SftpProgress {
-                    filename: remote_path.rsplit('/').next().unwrap_or(&remote_path).to_string(),
+                    filename: remote_path
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&remote_path)
+                        .to_string(),
                     transferred: bytes_len,
                     total: bytes_len,
                     is_upload: false,
@@ -2931,8 +2943,8 @@ mod sftp_test_server {
         }
 
         async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
-            let md = std::fs::symlink_metadata(self.map(&path))
-                .map_err(|_| StatusCode::NoSuchFile)?;
+            let md =
+                std::fs::symlink_metadata(self.map(&path)).map_err(|_| StatusCode::NoSuchFile)?;
             Ok(Self::fs_attrs(id, &md))
         }
 
@@ -2953,10 +2965,7 @@ mod sftp_test_server {
         async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
             let mapped = self.map(&path);
             if mapped.is_dir() {
-                Ok(Handle {
-                    id,
-                    handle: path,
-                })
+                Ok(Handle { id, handle: path })
             } else {
                 Err(StatusCode::NoSuchFile)
             }
@@ -3058,11 +3067,10 @@ mod sftp_test_server {
         let root = std::env::temp_dir().join(format!("cuty_sftp_test_{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("create test server root");
         let config = Arc::new(russh::server::Config {
-            keys: vec![russh::keys::PrivateKey::random(
-                &mut rand::rng(),
-                Algorithm::Ed25519,
-            )
-            .expect("generate host key")],
+            keys: vec![
+                russh::keys::PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
+                    .expect("generate host key"),
+            ],
             ..Default::default()
         });
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -3299,8 +3307,7 @@ mod tests {
 
         for (name, data) in names.iter().zip(&contents) {
             let target = local_dir.join(name);
-            let got = std::fs::read(&target)
-                .unwrap_or_else(|e| panic!("read {name} locally: {e}"));
+            let got = std::fs::read(&target).unwrap_or_else(|e| panic!("read {name} locally: {e}"));
             assert_eq!(got, *data, "content mismatch for {name}");
             assert!(!local_dir.join(format!("{name}{PART_SUFFIX}")).exists());
         }

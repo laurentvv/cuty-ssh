@@ -122,11 +122,62 @@ fn dragged_names(selected: &HashSet<String>, name: &str) -> Vec<String> {
     }
 }
 
+/// Windows file-manager Shift+click semantics on the visible row list.
+///
+/// - No anchor (or anchor no longer visible): plain-click behaviour — replace
+///   the selection (keep it when `additive`) with the clicked entry, which
+///   becomes the new anchor.
+/// - Valid anchor: select the inclusive anchor→clicked range in display
+///   order. `additive` (Ctrl+Shift+click) extends the existing selection
+///   instead of replacing it; the anchor stays put.
+fn apply_range_selection(
+    selected: &mut HashSet<String>,
+    anchor: &mut Option<String>,
+    visible: &[String],
+    clicked: &str,
+    additive: bool,
+) {
+    let range = anchor
+        .as_deref()
+        .and_then(|a| visible.iter().position(|n| n == a))
+        .zip(visible.iter().position(|n| n == clicked))
+        .map(|(a, c)| (a.min(c), a.max(c)));
+
+    match range {
+        Some((lo, hi)) => {
+            if !additive {
+                selected.clear();
+            }
+            selected.extend(visible[lo..=hi].iter().cloned());
+            // Anchor stays at its original position across Shift+clicks.
+        }
+        None => {
+            if !additive {
+                selected.clear();
+            }
+            selected.insert(clicked.to_string());
+            *anchor = Some(clicked.to_string());
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SftpLogEntry {
     pub timestamp: String,
     pub message: String,
     pub is_error: bool,
+}
+
+/// Answer picked in the collision dialog. The `*All` variants apply to the
+/// current file AND every queued collision behind it.
+#[derive(Debug, Clone)]
+enum CollisionChoice {
+    Overwrite,
+    Resume,
+    Rename(String),
+    Skip,
+    OverwriteAll,
+    SkipAll,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +235,8 @@ pub struct SftpClientState {
     pub local_filter: String,
     pub local_entries: Vec<LocalFileEntry>,
     pub local_selected: HashSet<String>,
+    /// Shift+click range anchor (entry name), reset on every plain click.
+    pub local_anchor: Option<String>,
     pub local_sort_col: SftpCol,
     pub local_sort_asc: bool,
     pub local_folders_first: bool,
@@ -194,6 +247,8 @@ pub struct SftpClientState {
     // Remote pane extra controls
     pub remote_filter: String,
     pub remote_selected: HashSet<String>,
+    /// Shift+click range anchor (entry name), reset on every plain click.
+    pub remote_anchor: Option<String>,
     pub remote_sort_col: SftpCol,
     pub remote_sort_asc: bool,
     pub remote_folders_first: bool,
@@ -215,6 +270,10 @@ pub struct SftpClientState {
     pub symlink_modal: Option<SymlinkModal>,
     pub delete_confirm: Option<(bool, String, bool)>, // (is_remote, path, is_dir)
     pub collision_modal: Option<CollisionModal>,
+    /// Collisions waiting for their turn behind the open `collision_modal`
+    /// (rule "Ask"): every file of a multi-selection gets resolved, never
+    /// silently dropped.
+    pub pending_collisions: Vec<CollisionModal>,
 
     // External editor configuration
     pub editor_path: String,
@@ -276,6 +335,7 @@ impl SftpClientState {
             local_filter: String::new(),
             local_entries: Vec::new(),
             local_selected: HashSet::new(),
+            local_anchor: None,
             local_sort_col: SftpCol::Name,
             local_sort_asc: true,
             local_folders_first: true,
@@ -285,6 +345,7 @@ impl SftpClientState {
 
             remote_filter: String::new(),
             remote_selected: HashSet::new(),
+            remote_anchor: None,
             remote_sort_col: SftpCol::Name,
             remote_sort_asc: true,
             remote_folders_first: true,
@@ -308,6 +369,7 @@ impl SftpClientState {
             symlink_modal: None,
             delete_confirm: None,
             collision_modal: None,
+            pending_collisions: Vec::new(),
 
             editor_path: "notepad.exe".to_string(),
             show_editor_modal: false,
@@ -424,6 +486,7 @@ impl SftpClientState {
         if let Some(parent) = self.local_path.parent() {
             self.local_path = parent.to_path_buf();
             self.local_selected.clear();
+            self.local_anchor = None;
             self.refresh_local();
         }
     }
@@ -432,6 +495,7 @@ impl SftpClientState {
         if let Ok(home) = std::env::var("USERPROFILE") {
             self.local_path = PathBuf::from(home);
             self.local_selected.clear();
+            self.local_anchor = None;
             self.refresh_local();
         }
     }
@@ -1008,6 +1072,16 @@ impl SftpClientState {
                         .max_height(scroll_h)
                         .show(ui, |ui| {
                             let filter_lc = self.local_filter.trim().to_lowercase();
+                            // Visible rows in display order — the Shift+click range space.
+                            let visible_names: Vec<String> = self
+                                .local_entries
+                                .iter()
+                                .filter(|e| {
+                                    filter_lc.is_empty()
+                                        || e.name.to_lowercase().contains(&filter_lc)
+                                })
+                                .map(|e| e.name.clone())
+                                .collect();
                             for entry in &self.local_entries {
                                 if !filter_lc.is_empty()
                                     && !entry.name.to_lowercase().contains(&filter_lc)
@@ -1038,15 +1112,26 @@ impl SftpClientState {
                                     );
 
                                     if btn.clicked() {
-                                        if ui.input(|i| i.modifiers.ctrl) {
+                                        let mods = ui.input(|i| i.modifiers);
+                                        if mods.shift {
+                                            apply_range_selection(
+                                                &mut self.local_selected,
+                                                &mut self.local_anchor,
+                                                &visible_names,
+                                                &entry.name,
+                                                mods.ctrl,
+                                            );
+                                        } else if mods.ctrl {
                                             if is_selected {
                                                 self.local_selected.remove(&entry.name);
                                             } else {
                                                 self.local_selected.insert(entry.name.clone());
                                             }
+                                            self.local_anchor = Some(entry.name.clone());
                                         } else {
                                             self.local_selected.clear();
                                             self.local_selected.insert(entry.name.clone());
+                                            self.local_anchor = Some(entry.name.clone());
                                         }
                                     }
                                     if btn.double_clicked() && entry.is_dir {
@@ -1059,6 +1144,7 @@ impl SftpClientState {
                                     if btn.drag_started() && !is_selected {
                                         self.local_selected.clear();
                                         self.local_selected.insert(entry.name.clone());
+                                        self.local_anchor = Some(entry.name.clone());
                                     }
                                     btn.dnd_set_drag_payload(SftpDragPayload {
                                         names: dragged_names(&self.local_selected, &entry.name),
@@ -1191,10 +1277,12 @@ impl SftpClientState {
                             )
                             .clicked()
                         {
+                            // Visible (sorted) order → deterministic queue order.
                             let paths: Vec<PathBuf> = self
-                                .local_selected
+                                .local_entries
                                 .iter()
-                                .map(|n| self.local_path.join(n))
+                                .filter(|e| self.local_selected.contains(&e.name))
+                                .map(|e| e.path.clone())
                                 .collect();
                             launch_upload = Some(paths);
                         }
@@ -1548,7 +1636,16 @@ impl SftpClientState {
                         .max_height(scroll_h)
                         .show(ui, |ui| {
                             let filter_lc = self.remote_filter.trim().to_lowercase();
-                            for entry in sorted_remote {
+                            // Visible rows in display order — the Shift+click range space.
+                            let visible_names: Vec<String> = sorted_remote
+                                .iter()
+                                .filter(|e| {
+                                    filter_lc.is_empty()
+                                        || e.name.to_lowercase().contains(&filter_lc)
+                                })
+                                .map(|e| e.name.clone())
+                                .collect();
+                            for entry in &sorted_remote {
                                 if !filter_lc.is_empty()
                                     && !entry.name.to_lowercase().contains(&filter_lc)
                                 {
@@ -1584,15 +1681,26 @@ impl SftpClientState {
                                     );
 
                                     if btn.clicked() {
-                                        if ui.input(|i| i.modifiers.ctrl) {
+                                        let mods = ui.input(|i| i.modifiers);
+                                        if mods.shift {
+                                            apply_range_selection(
+                                                &mut self.remote_selected,
+                                                &mut self.remote_anchor,
+                                                &visible_names,
+                                                &entry.name,
+                                                mods.ctrl,
+                                            );
+                                        } else if mods.ctrl {
                                             if is_selected {
                                                 self.remote_selected.remove(&entry.name);
                                             } else {
                                                 self.remote_selected.insert(entry.name.clone());
                                             }
+                                            self.remote_anchor = Some(entry.name.clone());
                                         } else {
                                             self.remote_selected.clear();
                                             self.remote_selected.insert(entry.name.clone());
+                                            self.remote_anchor = Some(entry.name.clone());
                                         }
                                     }
                                     if btn.double_clicked() && entry.is_dir {
@@ -1605,6 +1713,7 @@ impl SftpClientState {
                                     if btn.drag_started() && !is_selected {
                                         self.remote_selected.clear();
                                         self.remote_selected.insert(entry.name.clone());
+                                        self.remote_anchor = Some(entry.name.clone());
                                     }
                                     btn.dnd_set_drag_payload(SftpDragPayload {
                                         names: dragged_names(&self.remote_selected, &entry.name),
@@ -1751,7 +1860,7 @@ impl SftpClientState {
                                             .button(tr(lang, "Propriétés (Permissions / Chmod)", "Properties (Permissions / Chmod)"))
                                             .clicked()
                                         {
-                                            self.props_request = Some(entry.clone());
+                                            self.props_request = Some((*entry).clone());
                                             ui.close();
                                         }
                                     });
@@ -1823,7 +1932,12 @@ impl SftpClientState {
                             )
                             .clicked()
                         {
-                            let names: Vec<String> = self.remote_selected.iter().cloned().collect();
+                            // Visible (sorted) order → deterministic queue order.
+                            let names: Vec<String> = sorted_remote
+                                .iter()
+                                .filter(|e| self.remote_selected.contains(&e.name))
+                                .map(|e| e.name.clone())
+                                .collect();
                             launch_download = Some(names);
                         }
 
@@ -1923,29 +2037,158 @@ impl SftpClientState {
         if let Some(target) = cd_local_into {
             self.local_path = target;
             self.local_selected.clear();
+            self.local_anchor = None;
             self.refresh_local();
         }
         if let Some(target) = cd_remote_into {
             let _ = cmd_tx.send(BackendCommand::SftpListDir(target));
             self.remote_selected.clear();
+            self.remote_anchor = None;
         }
 
         // Upload batch with collision detection
         if let Some(paths) = launch_upload {
-            for p in paths {
-                let filename = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "file.bin".to_string());
-                let remote_target = if remote_path.ends_with('/') {
-                    format!("{}{}", remote_path, filename)
-                } else {
-                    format!("{}/{}", remote_path, filename)
-                };
+            self.enqueue_uploads(&paths, remote_path, remote_entries, cmd_tx, lang);
+        }
 
-                let meta = std::fs::metadata(&p).ok();
+        // Download batch with collision detection
+        if let Some(names) = launch_download {
+            self.enqueue_downloads(&names, remote_path, remote_entries, cmd_tx, lang);
+        }
+    }
+
+    /// Queues an upload batch: per-file collision check against the current
+    /// remote listing, then one queue task + one `SftpUpload` command per file.
+    /// With the "Ask" rule, colliding files are parked in `pending_collisions`
+    /// so every one of them gets its resolution turn — nothing is silently
+    /// dropped (multi-selection transfers used to copy only one file).
+    fn enqueue_uploads(
+        &mut self,
+        paths: &[PathBuf],
+        remote_path: &str,
+        remote_entries: &[SftpFileEntry],
+        cmd_tx: &UnboundedSender<BackendCommand>,
+        lang: UiLanguage,
+    ) {
+        for p in paths {
+            let filename = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "file.bin".to_string());
+            let remote_target = if remote_path.ends_with('/') {
+                format!("{}{}", remote_path, filename)
+            } else {
+                format!("{}/{}", remote_path, filename)
+            };
+
+            let meta = std::fs::metadata(p).ok();
+            let local_size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let local_is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+            let local_mtime = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            // Collision check against remote entries.
+            // Directories merge silently: their children go through the same
+            // collision rules one by one during the recursive transfer.
+            let existing_remote = remote_entries.iter().find(|e| e.name == filename);
+            if let (false, Some(existing)) = (local_is_dir, existing_remote) {
+                match self.existing_file_rule {
+                    ExistingFileRule::Skip => {
+                        self.log(
+                            tr(
+                                lang,
+                                &format!("Fichier existant ignoré : {filename}"),
+                                &format!("Existing file skipped: {filename}"),
+                            ),
+                            false,
+                        );
+                        continue;
+                    }
+                    ExistingFileRule::Ask => {
+                        self.pending_collisions.push(CollisionModal {
+                            is_upload: true,
+                            filename: filename.clone(),
+                            local_path: p.clone(),
+                            remote_path: remote_target.clone(),
+                            local_size,
+                            local_mtime,
+                            remote_size: existing.size,
+                            remote_mtime: existing.mtime as u64,
+                            new_name: format!("{}_new", filename),
+                        });
+                        continue;
+                    }
+                    ExistingFileRule::Overwrite | ExistingFileRule::Resume => {}
+                }
+            }
+
+            let task_id = self.next_task_id;
+            self.next_task_id += 1;
+
+            self.upload_queue.push(QueueTask {
+                id: task_id,
+                filename: filename.clone(),
+                local_path: p.clone(),
+                remote_path: remote_target.clone(),
+                size: local_size,
+                transferred: 0,
+                is_upload: true,
+                status: if self.queue_paused {
+                    QueueTaskStatus::Paused
+                } else {
+                    QueueTaskStatus::InProgress
+                },
+            });
+
+            if !self.queue_paused {
+                let _ = cmd_tx.send(BackendCommand::SftpUpload {
+                    local_path: p.clone(),
+                    remote_path: remote_target.clone(),
+                });
+                self.log(
+                    tr(
+                        lang,
+                        &format!("Upload démarré : {filename} -> {remote_target}"),
+                        &format!("Upload started: {filename} -> {remote_target}"),
+                    ),
+                    false,
+                );
+            }
+        }
+        self.open_next_collision();
+    }
+
+    /// Download mirror of [`Self::enqueue_uploads`].
+    fn enqueue_downloads(
+        &mut self,
+        names: &[String],
+        remote_path: &str,
+        remote_entries: &[SftpFileEntry],
+        cmd_tx: &UnboundedSender<BackendCommand>,
+        lang: UiLanguage,
+    ) {
+        for name in names {
+            let remote_src = if remote_path.ends_with('/') {
+                format!("{}{}", remote_path, name)
+            } else {
+                format!("{}/{}", remote_path, name)
+            };
+            let local_dst = self.local_path.join(name);
+
+            let existing_remote = remote_entries.iter().find(|e| e.name == *name);
+            let remote_size = existing_remote.map(|e| e.size).unwrap_or(0);
+            let remote_mtime = existing_remote.map(|e| e.mtime).unwrap_or(0);
+            let remote_is_dir = existing_remote.map(|e| e.is_dir).unwrap_or(false);
+
+            // Directories merge silently: their children go through the same
+            // collision rules one by one during the recursive transfer.
+            if local_dst.exists() && !remote_is_dir {
+                let meta = std::fs::metadata(&local_dst).ok();
                 let local_size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                let local_is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
                 let local_mtime = meta
                     .as_ref()
                     .and_then(|m| m.modified().ok())
@@ -1953,166 +2196,208 @@ impl SftpClientState {
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
 
-                // Collision check against remote entries.
-                // Directories merge silently: their children go through the same
-                // collision rules one by one during the recursive transfer.
-                let existing_remote = remote_entries.iter().find(|e| e.name == filename);
-                if let (false, Some(existing)) = (local_is_dir, existing_remote) {
-                    match self.existing_file_rule {
-                        ExistingFileRule::Skip => {
-                            self.log(
-                                tr(
-                                    lang,
-                                    &format!("Fichier existant ignoré : {filename}"),
-                                    &format!("Existing file skipped: {filename}"),
-                                ),
-                                false,
-                            );
-                            continue;
-                        }
-                        ExistingFileRule::Ask => {
-                            self.collision_modal = Some(CollisionModal {
-                                is_upload: true,
-                                filename: filename.clone(),
-                                local_path: p.clone(),
-                                remote_path: remote_target.clone(),
-                                local_size,
-                                local_mtime,
-                                remote_size: existing.size,
-                                remote_mtime: existing.mtime as u64,
-                                new_name: format!("{}_new", filename),
-                            });
-                            continue;
-                        }
-                        ExistingFileRule::Overwrite | ExistingFileRule::Resume => {}
+                match self.existing_file_rule {
+                    ExistingFileRule::Skip => {
+                        self.log(
+                            tr(
+                                lang,
+                                &format!("Fichier local existant ignoré : {name}"),
+                                &format!("Existing local file skipped: {name}"),
+                            ),
+                            false,
+                        );
+                        continue;
                     }
+                    ExistingFileRule::Ask => {
+                        self.pending_collisions.push(CollisionModal {
+                            is_upload: false,
+                            filename: name.clone(),
+                            local_path: local_dst.clone(),
+                            remote_path: remote_src.clone(),
+                            local_size,
+                            local_mtime,
+                            remote_size,
+                            remote_mtime: remote_mtime as u64,
+                            new_name: format!("{}_new", name),
+                        });
+                        continue;
+                    }
+                    ExistingFileRule::Overwrite | ExistingFileRule::Resume => {}
                 }
+            }
 
-                let task_id = self.next_task_id;
-                self.next_task_id += 1;
+            let task_id = self.next_task_id;
+            self.next_task_id += 1;
 
-                self.upload_queue.push(QueueTask {
-                    id: task_id,
-                    filename: filename.clone(),
-                    local_path: p.clone(),
-                    remote_path: remote_target.clone(),
-                    size: local_size,
-                    transferred: 0,
-                    is_upload: true,
-                    status: if self.queue_paused {
-                        QueueTaskStatus::Paused
-                    } else {
-                        QueueTaskStatus::InProgress
-                    },
+            self.download_queue.push(QueueTask {
+                id: task_id,
+                filename: name.clone(),
+                local_path: local_dst.clone(),
+                remote_path: remote_src.clone(),
+                size: remote_size,
+                transferred: 0,
+                is_upload: false,
+                status: if self.queue_paused {
+                    QueueTaskStatus::Paused
+                } else {
+                    QueueTaskStatus::InProgress
+                },
+            });
+
+            if !self.queue_paused {
+                let _ = cmd_tx.send(BackendCommand::SftpDownload {
+                    remote_path: remote_src.clone(),
+                    local_path: local_dst,
                 });
-
-                if !self.queue_paused {
-                    let _ = cmd_tx.send(BackendCommand::SftpUpload {
-                        local_path: p,
-                        remote_path: remote_target.clone(),
-                    });
-                    self.log(
-                        tr(
-                            lang,
-                            &format!("Upload démarré : {filename} -> {remote_target}"),
-                            &format!("Upload started: {filename} -> {remote_target}"),
-                        ),
-                        false,
-                    );
-                }
+                self.log(
+                    tr(
+                        lang,
+                        &format!("Téléchargement démarré : {name} -> local"),
+                        &format!("Download started: {name} -> local"),
+                    ),
+                    false,
+                );
             }
         }
+        self.open_next_collision();
+    }
 
-        // Download batch with collision detection
-        if let Some(names) = launch_download {
-            for name in names {
-                let remote_src = if remote_path.ends_with('/') {
-                    format!("{}{}", remote_path, name)
-                } else {
-                    format!("{}/{}", remote_path, name)
-                };
-                let local_dst = self.local_path.join(&name);
+    /// Opens the first queued collision, if any, when no modal is already open.
+    fn open_next_collision(&mut self) {
+        if self.collision_modal.is_none()
+            && let Some(next) = self.pending_collisions.first().cloned()
+        {
+            self.pending_collisions.remove(0);
+            self.collision_modal = Some(next);
+        }
+    }
 
-                let existing_remote = remote_entries.iter().find(|e| e.name == name);
-                let remote_size = existing_remote.map(|e| e.size).unwrap_or(0);
-                let remote_mtime = existing_remote.map(|e| e.mtime).unwrap_or(0);
-                let remote_is_dir = existing_remote.map(|e| e.is_dir).unwrap_or(false);
+    /// Applies a collision-dialog answer: the current file's transfer (or
+    /// skip), plus the batch variants for every queued collision.
+    fn resolve_collision(
+        &mut self,
+        col_modal: CollisionModal,
+        choice: CollisionChoice,
+        cmd_tx: &UnboundedSender<BackendCommand>,
+        lang: UiLanguage,
+    ) {
+        match choice {
+            CollisionChoice::OverwriteAll => {
+                // Current file first, then every queued collision.
+                self.launch_collision_transfer(&col_modal, None, cmd_tx);
+                let batch: Vec<CollisionModal> = std::mem::take(&mut self.pending_collisions);
+                for m in &batch {
+                    self.launch_collision_transfer(m, None, cmd_tx);
+                }
+                self.log(
+                    tr(
+                        lang,
+                        &format!("{} fichier(s) en conflit écrasé(s).", batch.len() + 1),
+                        &format!("{} conflicting file(s) overwritten.", batch.len() + 1),
+                    ),
+                    false,
+                );
+            }
+            CollisionChoice::SkipAll => {
+                let skipped = self.pending_collisions.len() + 1;
+                self.pending_collisions.clear();
+                self.log(
+                    tr(
+                        lang,
+                        &format!("{skipped} fichier(s) en conflit ignoré(s)."),
+                        &format!("{skipped} conflicting file(s) skipped."),
+                    ),
+                    false,
+                );
+            }
+            CollisionChoice::Overwrite | CollisionChoice::Resume => {
+                self.launch_collision_transfer(&col_modal, None, cmd_tx);
+                self.open_next_collision();
+            }
+            CollisionChoice::Rename(new_name) => {
+                self.launch_collision_transfer(&col_modal, Some(&new_name), cmd_tx);
+                self.open_next_collision();
+            }
+            CollisionChoice::Skip => {
+                self.log(
+                    tr(
+                        lang,
+                        &format!("Transfert ignoré (collision) : {}", col_modal.filename),
+                        &format!("Transfer skipped (collision): {}", col_modal.filename),
+                    ),
+                    false,
+                );
+                self.open_next_collision();
+            }
+        }
+    }
 
-                // Directories merge silently: their children go through the same
-                // collision rules one by one during the recursive transfer.
-                if local_dst.exists() && !remote_is_dir {
-                    let meta = std::fs::metadata(&local_dst).ok();
-                    let local_size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                    let local_mtime = meta
-                        .as_ref()
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
+    /// Queues and starts the transfer a collision dialog just resolved.
+    /// `renamed` redirects the target to a new name ("Rename" choice).
+    fn launch_collision_transfer(
+        &mut self,
+        m: &CollisionModal,
+        renamed: Option<&str>,
+        cmd_tx: &UnboundedSender<BackendCommand>,
+    ) {
+        let task_id = self.next_task_id;
+        self.next_task_id += 1;
 
-                    match self.existing_file_rule {
-                        ExistingFileRule::Skip => {
-                            self.log(
-                                tr(
-                                    lang,
-                                    &format!("Fichier local existant ignoré : {name}"),
-                                    &format!("Existing local file skipped: {name}"),
-                                ),
-                                false,
-                            );
-                            continue;
-                        }
-                        ExistingFileRule::Ask => {
-                            self.collision_modal = Some(CollisionModal {
-                                is_upload: false,
-                                filename: name.clone(),
-                                local_path: local_dst.clone(),
-                                remote_path: remote_src.clone(),
-                                local_size,
-                                local_mtime,
-                                remote_size,
-                                remote_mtime: remote_mtime as u64,
-                                new_name: format!("{}_new", name),
-                            });
-                            continue;
-                        }
-                        ExistingFileRule::Overwrite | ExistingFileRule::Resume => {}
+        if m.is_upload {
+            let remote_target = match renamed {
+                Some(new_name) => {
+                    let parent = m.remote_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+                    if parent.ends_with('/') {
+                        format!("{}{}", parent, new_name)
+                    } else {
+                        format!("{}/{}", parent, new_name)
                     }
                 }
-
-                let task_id = self.next_task_id;
-                self.next_task_id += 1;
-
-                self.download_queue.push(QueueTask {
-                    id: task_id,
-                    filename: name.clone(),
-                    local_path: local_dst.clone(),
-                    remote_path: remote_src.clone(),
-                    size: remote_size,
-                    transferred: 0,
-                    is_upload: false,
-                    status: if self.queue_paused {
-                        QueueTaskStatus::Paused
-                    } else {
-                        QueueTaskStatus::InProgress
-                    },
-                });
-
-                if !self.queue_paused {
-                    let _ = cmd_tx.send(BackendCommand::SftpDownload {
-                        remote_path: remote_src.clone(),
-                        local_path: local_dst,
-                    });
-                    self.log(
-                        tr(
-                            lang,
-                            &format!("Téléchargement démarré : {name} -> local"),
-                            &format!("Download started: {name} -> local"),
-                        ),
-                        false,
-                    );
-                }
-            }
+                None => m.remote_path.clone(),
+            };
+            let _ = cmd_tx.send(BackendCommand::SftpUpload {
+                local_path: m.local_path.clone(),
+                remote_path: remote_target.clone(),
+            });
+            self.upload_queue.push(QueueTask {
+                id: task_id,
+                filename: match renamed {
+                    Some(n) => n.to_string(),
+                    None => m.filename.clone(),
+                },
+                local_path: m.local_path.clone(),
+                remote_path: remote_target,
+                size: m.local_size,
+                transferred: 0,
+                is_upload: true,
+                status: QueueTaskStatus::InProgress,
+            });
+        } else {
+            let local_dst = match renamed {
+                Some(new_name) => m
+                    .local_path
+                    .parent()
+                    .map(|p| p.join(new_name))
+                    .unwrap_or_else(|| PathBuf::from(new_name)),
+                None => m.local_path.clone(),
+            };
+            let _ = cmd_tx.send(BackendCommand::SftpDownload {
+                remote_path: m.remote_path.clone(),
+                local_path: local_dst.clone(),
+            });
+            self.download_queue.push(QueueTask {
+                id: task_id,
+                filename: match renamed {
+                    Some(n) => n.to_string(),
+                    None => m.filename.clone(),
+                },
+                local_path: local_dst,
+                remote_path: m.remote_path.clone(),
+                size: m.remote_size,
+                transferred: 0,
+                is_upload: false,
+                status: QueueTaskStatus::InProgress,
+            });
         }
     }
 
@@ -2550,11 +2835,10 @@ impl SftpClientState {
         }
 
         // 5. Collision Resolution Modal (Bitvise #415)
-        let mut collision_result = None;
+        let mut collision_result: Option<CollisionChoice> = None;
         if let Some(col_modal) = &mut self.collision_modal {
             let mut close = false;
-            let mut action: Option<ExistingFileRule> = None;
-            let mut renamed_target: Option<String> = None;
+            let pending_count = self.pending_collisions.len();
 
             egui::Window::new(tr(lang, "⚠️ Conflit de fichier existant", "⚠️ File collision conflict"))
                 .collapsible(false)
@@ -2566,6 +2850,19 @@ impl SftpClientState {
                         "Le fichier de destination existe déjà. Quelle action souhaitez-vous exécuter ?",
                         "Destination file already exists. Which action would you like to take?",
                     )).strong());
+                    if pending_count > 0 {
+                        ui.label(
+                            RichText::new(tr(
+                                lang,
+                                &format!(
+                                    "Ce fichier fait partie d'une sélection : {pending_count} autre(s) conflit(s) suivront."),
+                                &format!(
+                                    "This file is part of a selection: {pending_count} more conflict(s) will follow."),
+                            ))
+                            .small()
+                            .color(Color32::from_rgb(88, 166, 255)),
+                        );
+                    }
                     ui.add_space(4.0);
 
                     // Comparison side-by-side
@@ -2605,131 +2902,51 @@ impl SftpClientState {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button(tr(lang, "Écraser", "Overwrite")).clicked() {
-                            action = Some(ExistingFileRule::Overwrite);
+                            collision_result = Some(CollisionChoice::Overwrite);
                             close = true;
                         }
                         if ui.button(tr(lang, "Reprendre", "Resume")).clicked() {
-                            action = Some(ExistingFileRule::Resume);
+                            collision_result = Some(CollisionChoice::Resume);
                             close = true;
                         }
                         if ui.button(tr(lang, "Renommer", "Rename")).clicked() && !col_modal.new_name.trim().is_empty() {
-                            renamed_target = Some(col_modal.new_name.trim().to_string());
+                            collision_result =
+                                Some(CollisionChoice::Rename(col_modal.new_name.trim().to_string()));
                             close = true;
                         }
                         if ui.button(tr(lang, "Ignorer", "Skip")).clicked() {
-                            action = Some(ExistingFileRule::Skip);
+                            collision_result = Some(CollisionChoice::Skip);
                             close = true;
                         }
                     });
+                    // Batch answers only make sense when more collisions are queued.
+                    if pending_count > 0 {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(tr(lang, "Écraser tout", "Overwrite all"))
+                                .clicked()
+                            {
+                                collision_result = Some(CollisionChoice::OverwriteAll);
+                                close = true;
+                            }
+                            if ui.button(tr(lang, "Ignorer tout", "Skip all")).clicked() {
+                                collision_result = Some(CollisionChoice::SkipAll);
+                                close = true;
+                            }
+                        });
+                    }
                 });
 
-            if close {
-                collision_result = Some((action, renamed_target));
+            if !close {
+                collision_result = None;
             }
         }
 
         let resolved_collision =
             collision_result.and_then(|res| self.collision_modal.take().map(|m| (m, res)));
-        if let Some((col_modal, (action, renamed_target))) = resolved_collision {
-            if let Some(act) = action {
-                match act {
-                    ExistingFileRule::Overwrite | ExistingFileRule::Resume => {
-                        let task_id = self.next_task_id;
-                        self.next_task_id += 1;
-                        if col_modal.is_upload {
-                            let _ = cmd_tx.send(BackendCommand::SftpUpload {
-                                local_path: col_modal.local_path.clone(),
-                                remote_path: col_modal.remote_path.clone(),
-                            });
-                            self.upload_queue.push(QueueTask {
-                                id: task_id,
-                                filename: col_modal.filename.clone(),
-                                local_path: col_modal.local_path.clone(),
-                                remote_path: col_modal.remote_path.clone(),
-                                size: col_modal.local_size,
-                                transferred: 0,
-                                is_upload: true,
-                                status: QueueTaskStatus::InProgress,
-                            });
-                        } else {
-                            let _ = cmd_tx.send(BackendCommand::SftpDownload {
-                                remote_path: col_modal.remote_path.clone(),
-                                local_path: col_modal.local_path.clone(),
-                            });
-                            self.download_queue.push(QueueTask {
-                                id: task_id,
-                                filename: col_modal.filename.clone(),
-                                local_path: col_modal.local_path.clone(),
-                                remote_path: col_modal.remote_path.clone(),
-                                size: col_modal.remote_size,
-                                transferred: 0,
-                                is_upload: false,
-                                status: QueueTaskStatus::InProgress,
-                            });
-                        }
-                    }
-                    ExistingFileRule::Skip => {
-                        self.log(
-                            tr(
-                                lang,
-                                &format!("Transfert ignoré (collision) : {}", col_modal.filename),
-                                &format!("Transfer skipped (collision): {}", col_modal.filename),
-                            ),
-                            false,
-                        );
-                    }
-                    ExistingFileRule::Ask => {}
-                }
-            } else if let Some(new_name) = renamed_target {
-                let task_id = self.next_task_id;
-                self.next_task_id += 1;
-                if col_modal.is_upload {
-                    let parent = col_modal
-                        .remote_path
-                        .rsplit_once('/')
-                        .map(|(p, _)| p)
-                        .unwrap_or("");
-                    let new_remote = if parent.ends_with('/') {
-                        format!("{}{}", parent, new_name)
-                    } else {
-                        format!("{}/{}", parent, new_name)
-                    };
-                    let _ = cmd_tx.send(BackendCommand::SftpUpload {
-                        local_path: col_modal.local_path.clone(),
-                        remote_path: new_remote.clone(),
-                    });
-                    self.upload_queue.push(QueueTask {
-                        id: task_id,
-                        filename: new_name,
-                        local_path: col_modal.local_path.clone(),
-                        remote_path: new_remote,
-                        size: col_modal.local_size,
-                        transferred: 0,
-                        is_upload: true,
-                        status: QueueTaskStatus::InProgress,
-                    });
-                } else {
-                    let new_local = col_modal
-                        .local_path
-                        .parent()
-                        .map(|p| p.join(&new_name))
-                        .unwrap_or_else(|| PathBuf::from(&new_name));
-                    let _ = cmd_tx.send(BackendCommand::SftpDownload {
-                        remote_path: col_modal.remote_path.clone(),
-                        local_path: new_local.clone(),
-                    });
-                    self.download_queue.push(QueueTask {
-                        id: task_id,
-                        filename: new_name,
-                        local_path: new_local,
-                        remote_path: col_modal.remote_path.clone(),
-                        size: col_modal.remote_size,
-                        transferred: 0,
-                        is_upload: false,
-                        status: QueueTaskStatus::InProgress,
-                    });
-                }
-            }
+        if let Some((col_modal, choice)) = resolved_collision {
+            self.resolve_collision(col_modal, choice, cmd_tx, lang);
         }
 
         // 6. External Editor Settings Modal (Bitvise #450)
@@ -3011,5 +3228,449 @@ mod tests {
                 "c.txt".to_string()
             ]
         );
+    }
+
+    fn set_of(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn shift_click_selects_range_from_anchor_to_click() {
+        let visible: Vec<String> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut selected = set_of(&["a"]);
+        let mut anchor = Some("a".to_string());
+        apply_range_selection(&mut selected, &mut anchor, &visible, "d", false);
+        assert_eq!(selected, set_of(&["a", "b", "c", "d"]));
+        assert_eq!(anchor, Some("a".to_string()), "anchor stays in place");
+    }
+
+    #[test]
+    fn shift_click_reverse_range_and_ctrl_shift_extends() {
+        let visible: Vec<String> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // Clicking above the anchor selects the same inclusive range.
+        let mut selected = set_of(&["d"]);
+        let mut anchor = Some("d".to_string());
+        apply_range_selection(&mut selected, &mut anchor, &visible, "b", false);
+        assert_eq!(selected, set_of(&["b", "c", "d"]));
+
+        // Ctrl+Shift keeps entries selected outside the range.
+        let mut selected = set_of(&["a", "d"]);
+        let mut anchor = Some("d".to_string());
+        apply_range_selection(&mut selected, &mut anchor, &visible, "b", true);
+        assert_eq!(selected, set_of(&["a", "b", "c", "d"]));
+    }
+
+    #[test]
+    fn shift_click_without_anchor_behaves_like_plain_click() {
+        let visible: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let mut selected = set_of(&["a"]);
+        let mut anchor = None;
+        apply_range_selection(&mut selected, &mut anchor, &visible, "c", false);
+        assert_eq!(selected, set_of(&["c"]));
+        assert_eq!(anchor, Some("c".to_string()));
+
+        // Anchor no longer visible (renamed/filtered away) → plain click again.
+        let mut selected = set_of(&["c"]);
+        let mut anchor = Some("zzz".to_string());
+        apply_range_selection(&mut selected, &mut anchor, &visible, "a", false);
+        assert_eq!(selected, set_of(&["a"]));
+        assert_eq!(anchor, Some("a".to_string()));
+    }
+
+    fn ui_test_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cuty_ui_{tag}_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn remote_entry(name: &str) -> SftpFileEntry {
+        SftpFileEntry {
+            name: name.to_string(),
+            full_path: format!("/remote/{name}"),
+            is_dir: false,
+            is_symlink: false,
+            size: 42,
+            permissions: 0o644,
+            mtime: 100,
+        }
+    }
+
+    fn count_sftp_uploads(rx: &mut tokio::sync::mpsc::UnboundedReceiver<BackendCommand>) -> usize {
+        let mut n = 0;
+        while let Ok(BackendCommand::SftpUpload { .. }) = rx.try_recv() {
+            n += 1;
+        }
+        n
+    }
+
+    #[test]
+    fn multi_upload_overwrite_sends_all_files() {
+        let dir = ui_test_dir("up_all");
+        let paths: Vec<PathBuf> = ["f1.txt", "f2.txt", "f3.txt"]
+            .iter()
+            .map(|n| {
+                let p = dir.join(n);
+                std::fs::write(&p, n.as_bytes()).unwrap();
+                p
+            })
+            .collect();
+
+        let mut state = SftpClientState::new();
+        state.existing_file_rule = ExistingFileRule::Overwrite;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        state.enqueue_uploads(&paths, "/remote", &[], &tx, UiLanguage::English);
+
+        assert_eq!(state.upload_queue.len(), 3, "one queue task per file");
+        assert_eq!(count_sftp_uploads(&mut rx), 3, "one command per file");
+        assert!(state.pending_collisions.is_empty());
+        assert!(state.collision_modal.is_none());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Regression test for "selecting several files only copies the first":
+    /// with the default Ask rule, EVERY colliding file must be queued for
+    /// resolution — previously all but the last were silently dropped.
+    #[test]
+    fn multi_upload_ask_queues_every_collision() {
+        let dir = ui_test_dir("up_ask");
+        let paths: Vec<PathBuf> = ["a.txt", "b.txt"]
+            .iter()
+            .map(|n| {
+                let p = dir.join(n);
+                std::fs::write(&p, n.as_bytes()).unwrap();
+                p
+            })
+            .collect();
+        let remote = [remote_entry("a.txt"), remote_entry("b.txt")];
+
+        let mut state = SftpClientState::new();
+        // Default rule is already Ask; make it explicit.
+        state.existing_file_rule = ExistingFileRule::Ask;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        state.enqueue_uploads(&paths, "/remote", &remote, &tx, UiLanguage::English);
+
+        assert_eq!(
+            count_sftp_uploads(&mut rx),
+            0,
+            "nothing sent without a decision"
+        );
+        assert!(state.upload_queue.is_empty());
+        let modal = state
+            .collision_modal
+            .as_ref()
+            .expect("first collision open");
+        assert_eq!(modal.filename, "a.txt");
+        assert_eq!(
+            state.pending_collisions.len(),
+            1,
+            "the second collision waits its turn"
+        );
+        assert_eq!(state.pending_collisions[0].filename, "b.txt");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn multi_download_ask_queues_every_collision() {
+        let dir = ui_test_dir("dl_ask");
+        for n in ["a.txt", "b.txt"] {
+            std::fs::write(dir.join(n), n.as_bytes()).unwrap();
+        }
+        let names: Vec<String> = ["a.txt", "b.txt"].iter().map(|s| s.to_string()).collect();
+        let remote = [remote_entry("a.txt"), remote_entry("b.txt")];
+
+        let mut state = SftpClientState::new();
+        state.local_path = dir.clone();
+        state.existing_file_rule = ExistingFileRule::Ask;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        state.enqueue_downloads(&names, "/remote", &remote, &tx, UiLanguage::English);
+
+        let mut downloads = 0;
+        while let Ok(BackendCommand::SftpDownload { .. }) = rx.try_recv() {
+            downloads += 1;
+        }
+        assert_eq!(downloads, 0);
+        assert!(state.download_queue.is_empty());
+        assert_eq!(
+            state.collision_modal.as_ref().unwrap().filename,
+            "a.txt",
+            "first collision open"
+        );
+        assert_eq!(state.pending_collisions.len(), 1);
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn overwrite_all_transfers_every_pending_collision() {
+        let dir = ui_test_dir("up_all2");
+        let paths: Vec<PathBuf> = ["a.txt", "b.txt", "c.txt"]
+            .iter()
+            .map(|n| {
+                let p = dir.join(n);
+                std::fs::write(&p, n.as_bytes()).unwrap();
+                p
+            })
+            .collect();
+        let remote = [
+            remote_entry("a.txt"),
+            remote_entry("b.txt"),
+            remote_entry("c.txt"),
+        ];
+
+        let mut state = SftpClientState::new();
+        state.existing_file_rule = ExistingFileRule::Ask;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        state.enqueue_uploads(&paths, "/remote", &remote, &tx, UiLanguage::English);
+        assert_eq!(state.pending_collisions.len(), 2);
+
+        let current = state.collision_modal.take().unwrap();
+        state.resolve_collision(
+            current,
+            CollisionChoice::OverwriteAll,
+            &tx,
+            UiLanguage::English,
+        );
+
+        assert_eq!(
+            state.upload_queue.len(),
+            3,
+            "current + all pending transferred"
+        );
+        assert_eq!(count_sftp_uploads(&mut rx), 3);
+        assert!(state.pending_collisions.is_empty());
+        assert!(state.collision_modal.is_none());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn skip_all_clears_pending_and_sends_nothing() {
+        let dir = ui_test_dir("skip_all");
+        let paths: Vec<PathBuf> = ["a.txt", "b.txt"]
+            .iter()
+            .map(|n| {
+                let p = dir.join(n);
+                std::fs::write(&p, n.as_bytes()).unwrap();
+                p
+            })
+            .collect();
+        let remote = [remote_entry("a.txt"), remote_entry("b.txt")];
+
+        let mut state = SftpClientState::new();
+        state.existing_file_rule = ExistingFileRule::Ask;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        state.enqueue_uploads(&paths, "/remote", &remote, &tx, UiLanguage::English);
+
+        let current = state.collision_modal.take().unwrap();
+        state.resolve_collision(current, CollisionChoice::SkipAll, &tx, UiLanguage::English);
+
+        assert!(state.upload_queue.is_empty());
+        assert_eq!(count_sftp_uploads(&mut rx), 0);
+        assert!(state.pending_collisions.is_empty());
+        assert!(state.collision_modal.is_none());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Full-path interaction test: renders the real browse view through an
+    /// egui context and drives it with synthetic mouse events. A plain click
+    /// anchors the selection, Shift+click selects the range, Ctrl+click adds
+    /// a single entry — exercising the actual row handlers, not a helper.
+    #[test]
+    fn shift_click_in_rendered_browse_view_selects_range() {
+        let dir = ui_test_dir("headless");
+        for i in 1..=5 {
+            std::fs::write(dir.join(format!("f{i}.txt")), vec![i as u8; 16]).unwrap();
+        }
+
+        let mut state = SftpClientState::new();
+        state.local_path = dir.clone();
+        state.refresh_local();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let ctx = Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
+
+        fn run_frame(
+            ctx: &Context,
+            screen: egui::Rect,
+            state: &mut SftpClientState,
+            tx: &UnboundedSender<BackendCommand>,
+            events: Vec<egui::Event>,
+        ) {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let ctx = ui.ctx().clone();
+                let mut close = false;
+                egui::CentralPanel::default().show(ui, |ui| {
+                    state.render(
+                        ui,
+                        &ctx,
+                        UiLanguage::English,
+                        "/remote",
+                        &[],
+                        tx,
+                        &mut close,
+                    );
+                });
+            });
+            // Headless: no painter applies them, drop the texture deltas cleanly.
+            out.textures_delta.clear();
+        }
+
+        fn click(
+            ctx: &Context,
+            screen: egui::Rect,
+            state: &mut SftpClientState,
+            tx: &UnboundedSender<BackendCommand>,
+            pos: egui::Pos2,
+            mods: egui::Modifiers,
+        ) {
+            // egui only tracks modifiers through ModifiersChanged events.
+            run_frame(
+                ctx,
+                screen,
+                state,
+                tx,
+                vec![
+                    egui::Event::ModifiersChanged(mods),
+                    egui::Event::PointerMoved(pos),
+                ],
+            );
+            run_frame(
+                ctx,
+                screen,
+                state,
+                tx,
+                vec![
+                    egui::Event::ModifiersChanged(mods),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: mods,
+                    },
+                ],
+            );
+            run_frame(
+                ctx,
+                screen,
+                state,
+                tx,
+                vec![
+                    egui::Event::ModifiersChanged(mods),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: mods,
+                    },
+                ],
+            );
+            run_frame(
+                ctx,
+                screen,
+                state,
+                tx,
+                vec![egui::Event::ModifiersChanged(egui::Modifiers::default())],
+            );
+        }
+
+        // Layout pass.
+        run_frame(&ctx, screen, &mut state, &tx, Vec::new());
+
+        // Probe the local pane (left half) to locate one row per file:
+        // a plain click selects exactly that row.
+        let mut row_y: Vec<(String, f32)> = Vec::new();
+        let mut y = 130.0;
+        while y < 780.0 {
+            click(
+                &ctx,
+                screen,
+                &mut state,
+                &tx,
+                egui::Pos2::new(300.0, y),
+                egui::Modifiers::default(),
+            );
+            if state.local_selected.len() == 1 {
+                let name = state.local_selected.iter().next().unwrap().clone();
+                if !row_y.iter().any(|(n, _)| *n == name) {
+                    row_y.push((name, y));
+                }
+            }
+            y += 6.0;
+        }
+        assert_eq!(
+            row_y.len(),
+            5,
+            "probe must find the five file rows, got {row_y:?}"
+        );
+        // Sorted view: rows appear in name order.
+        row_y.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Plain click on the first row anchors the selection.
+        click(
+            &ctx,
+            screen,
+            &mut state,
+            &tx,
+            egui::Pos2::new(300.0, row_y[0].1),
+            egui::Modifiers::default(),
+        );
+        assert_eq!(state.local_selected, set_of(&["f1.txt"]));
+
+        // Shift+click on the fourth row selects the whole range.
+        click(
+            &ctx,
+            screen,
+            &mut state,
+            &tx,
+            egui::Pos2::new(300.0, row_y[3].1),
+            egui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            state.local_selected,
+            set_of(&["f1.txt", "f2.txt", "f3.txt", "f4.txt"]),
+            "Shift+click selects the anchor→clicked range"
+        );
+
+        // Ctrl+click on the fifth row extends the selection.
+        click(
+            &ctx,
+            screen,
+            &mut state,
+            &tx,
+            egui::Pos2::new(300.0, row_y[4].1),
+            egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            state.local_selected,
+            set_of(&["f1.txt", "f2.txt", "f3.txt", "f4.txt", "f5.txt"]),
+            "Ctrl+click adds the clicked entry"
+        );
+
+        std::fs::remove_dir_all(dir).ok();
     }
 }
