@@ -1153,8 +1153,27 @@ impl SftpClientState {
 
                                     // Right-click context menu (Local file) - Strict FR / EN, zero mixed text
                                     btn.context_menu(|ui| {
-                                        if ui.button(tr(lang, "⬆ Téléverser", "⬆ Upload")).clicked() {
-                                            launch_upload = Some(vec![entry.path.clone()]);
+                                        // Explorer semantics: right-clicking an entry that is
+                                        // part of a multi-selection uploads the whole selection.
+                                        let sel_count = self.local_selected.len();
+                                        let in_selection =
+                                            sel_count > 1 && self.local_selected.contains(&entry.name);
+                                        let up_label = if in_selection {
+                                            tr(
+                                                lang,
+                                                &format!("⬆ Téléverser la sélection ({sel_count})"),
+                                                &format!("⬆ Upload selection ({sel_count})"),
+                                            )
+                                            .to_string()
+                                        } else {
+                                            tr(lang, "⬆ Téléverser", "⬆ Upload").to_string()
+                                        };
+                                        if ui.button(up_label).clicked() {
+                                            let names =
+                                                dragged_names(&self.local_selected, &entry.name);
+                                            launch_upload = Some(
+                                                names.into_iter().map(|n| self.local_path.join(n)).collect(),
+                                            );
                                             ui.close();
                                         }
                                         if ui.button(tr(lang, "⏸ Mettre en pause dans la file", "⏸ Enqueue paused")).clicked() {
@@ -1722,8 +1741,24 @@ impl SftpClientState {
 
                                     // Context Menu (Remote file) - Strict FR / EN, zero mixed text
                                     btn.context_menu(|ui| {
-                                        if ui.button(tr(lang, "⬇ Télécharger", "⬇ Download")).clicked() {
-                                            launch_download = Some(vec![entry.name.clone()]);
+                                        // Explorer semantics: right-clicking an entry that is
+                                        // part of a multi-selection downloads the whole selection.
+                                        let sel_count = self.remote_selected.len();
+                                        let in_selection =
+                                            sel_count > 1 && self.remote_selected.contains(&entry.name);
+                                        let dl_label = if in_selection {
+                                            tr(
+                                                lang,
+                                                &format!("⬇ Télécharger la sélection ({sel_count})"),
+                                                &format!("⬇ Download selection ({sel_count})"),
+                                            )
+                                            .to_string()
+                                        } else {
+                                            tr(lang, "⬇ Télécharger", "⬇ Download").to_string()
+                                        };
+                                        if ui.button(dl_label).clicked() {
+                                            launch_download =
+                                                Some(dragged_names(&self.remote_selected, &entry.name));
                                             ui.close();
                                         }
                                         if ui.button(tr(lang, "⏸ Mettre en pause dans la file", "⏸ Enqueue paused")).clicked() {
