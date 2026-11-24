@@ -2595,8 +2595,18 @@ async fn fetch_remote_telemetry(
     })
 }
 
+/// Client identification (RFC 4253 §4.2) sent by the reachability probe once an
+/// SSH banner has been read. Closing the socket without it makes sshd log
+/// `error: kex_exchange_identification: Connection closed by remote host` on
+/// every probe; with it, the disconnection is an information-level line only.
+/// The software name carries an underscore because RFC 4253 excludes whitespace
+/// and `-` from `softwareversion`.
+const PROBE_CLIENT_IDENT: &str = concat!("SSH-2.0-cuty_ssh_", env!("CARGO_PKG_VERSION"), "\r\n");
+
 /// Probes a TCP host/port, measures connection latency in milliseconds, and grabs
-/// the server's initial SSH/Telnet protocol banner if sent within 450 ms.
+/// the server's initial SSH/Telnet protocol banner if sent within 450 ms. When
+/// that banner starts with `SSH-`, a client identification is sent before the
+/// socket is closed (RFC 4253 §4.2), without waiting for the server's answer.
 pub async fn probe_tcp_and_banner(
     session_id: Option<Uuid>,
     label: String,
@@ -2620,23 +2630,34 @@ pub async fn probe_tcp_and_banner(
         Ok(Ok(mut stream)) => {
             let latency_ms = start.elapsed().as_millis() as u64;
             let mut buf = [0u8; 256];
-            let banner =
-                match tokio::time::timeout(Duration::from_millis(450), stream.read(&mut buf)).await
-                {
-                    Ok(Ok(n)) if n > 0 => {
-                        let s = String::from_utf8_lossy(&buf[..n]);
-                        s.lines()
-                            .next()
-                            .unwrap_or("")
-                            .chars()
-                            .filter(|c| !c.is_control())
-                            .take(96)
-                            .collect::<String>()
-                            .trim()
-                            .to_string()
-                    }
-                    _ => "Port TCP ouvert (pas de bannière immédiate)".to_string(),
-                };
+            let read =
+                tokio::time::timeout(Duration::from_millis(450), stream.read(&mut buf)).await;
+            let received = match &read {
+                Ok(Ok(n)) => &buf[..*n],
+                _ => &[][..],
+            };
+            // Only an SSH version string as the very first bytes on the wire is
+            // answered; Telnet, raw TCP and other protocols never are.
+            let is_ssh = received.starts_with(b"SSH-");
+            let banner = match read {
+                Ok(Ok(n)) if n > 0 => {
+                    let s = String::from_utf8_lossy(&buf[..n]);
+                    s.lines()
+                        .next()
+                        .unwrap_or("")
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(96)
+                        .collect::<String>()
+                        .trim()
+                        .to_string()
+                }
+                _ => "Port TCP ouvert (pas de bannière immédiate)".to_string(),
+            };
+            if is_ssh {
+                // A failed write (peer already gone) leaves the probe result unchanged.
+                let _ = stream.write_all(PROBE_CLIENT_IDENT.as_bytes()).await;
+            }
             HostProbeResult {
                 session_id,
                 label,
@@ -3202,6 +3223,116 @@ mod tests {
             .await
             .unwrap();
         assert!(srv.await.unwrap().is_err());
+    }
+
+    /// One-shot loopback server for the probe tests: sends `server_bytes`
+    /// (nothing when `None`), then collects every byte the probed client writes
+    /// until it closes the connection.
+    async fn serve_banner_then_collect(
+        server_bytes: Option<&[u8]>,
+    ) -> (u16, tokio::task::JoinHandle<Vec<u8>>) {
+        // The server task must own its bytes (`tokio::spawn` needs `'static`).
+        let server_bytes = server_bytes.map(<[u8]>::to_vec);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            if let Some(bytes) = server_bytes {
+                sock.write_all(&bytes).await.unwrap();
+            }
+            let mut received = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match sock.read(&mut buf).await {
+                    Ok(0) => break received,
+                    Ok(n) => received.extend_from_slice(&buf[..n]),
+                    // A reset instead of a clean close is what sshd reports as
+                    // "Connection reset by peer".
+                    Err(e) => panic!("probe did not close the connection cleanly: {e}"),
+                }
+            }
+        });
+        (port, server)
+    }
+
+    /// Waits for the probe to hang up and returns what the loopback server received.
+    async fn collected(server: tokio::task::JoinHandle<Vec<u8>>) -> Vec<u8> {
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("probe must close the connection without waiting for the server")
+            .unwrap()
+    }
+
+    /// RFC 4253 §4.2: `SSH-protoversion-softwareversion SP comments CR LF`, 255
+    /// characters at most including CR LF; `protoversion` is `2.0`;
+    /// `softwareversion` is printable US-ASCII without whitespace nor `-`.
+    fn assert_rfc4253_identification(line: &[u8]) {
+        assert!(line.ends_with(b"\r\n"), "not CRLF-terminated: {line:?}");
+        assert!(line.len() <= 255, "{} characters, limit is 255", line.len());
+        let body = std::str::from_utf8(&line[..line.len() - 2]).expect("ASCII identification");
+        let rest = body
+            .strip_prefix("SSH-2.0-")
+            .unwrap_or_else(|| panic!("wrong protocol version prefix: {body:?}"));
+        let (software, comment) = match rest.split_once(' ') {
+            Some((software, comment)) => (software, Some(comment)),
+            None => (rest, None),
+        };
+        assert!(!software.is_empty(), "empty softwareversion");
+        assert!(
+            software
+                .bytes()
+                .all(|b| (0x21..=0x7e).contains(&b) && b != b'-'),
+            "softwareversion must be printable US-ASCII without whitespace nor '-': {software:?}"
+        );
+        if let Some(comment) = comment {
+            assert!(
+                comment.bytes().all(|b| (0x20..=0x7e).contains(&b)),
+                "non-printable comment: {comment:?}"
+            );
+        }
+    }
+
+    /// Regression test for the Fleet Ping flooding sshd journals with
+    /// `error: kex_exchange_identification: Connection closed by remote host`:
+    /// an SSH banner must be answered with a conformant client identification
+    /// (RFC 4253 §4.2) before the probe closes the connection.
+    #[tokio::test]
+    async fn probe_sends_client_identification_after_ssh_banner() {
+        let (port, server) = serve_banner_then_collect(Some(b"SSH-2.0-OpenSSH_8.4\r\n")).await;
+        let res =
+            probe_tcp_and_banner(None, "srv".to_string(), "127.0.0.1".to_string(), port).await;
+        assert!(res.reachable);
+        assert_eq!(res.banner, "SSH-2.0-OpenSSH_8.4");
+
+        let received = collected(server).await;
+        assert_rfc4253_identification(&received);
+        assert_eq!(received, PROBE_CLIENT_IDENT.as_bytes());
+    }
+
+    /// Telnet, raw TCP and other protocols must never receive SSH bytes.
+    #[tokio::test]
+    async fn probe_sends_nothing_after_non_ssh_banner() {
+        let telnet_banner =
+            b"\xff\xfb\x01\xff\xfb\x03\r\nUser Access Verification\r\n\r\nPassword: ";
+        let (port, server) = serve_banner_then_collect(Some(telnet_banner)).await;
+        let res = probe_tcp_and_banner(None, "sw".to_string(), "127.0.0.1".to_string(), port).await;
+        assert!(res.reachable);
+
+        let received = collected(server).await;
+        assert!(received.is_empty(), "non-SSH peer received {received:?}");
+    }
+
+    /// No banner within 450 ms: same result as before, and nothing sent.
+    #[tokio::test]
+    async fn probe_sends_nothing_without_banner() {
+        let (port, server) = serve_banner_then_collect(None).await;
+        let res =
+            probe_tcp_and_banner(None, "raw".to_string(), "127.0.0.1".to_string(), port).await;
+        assert!(res.reachable);
+        assert_eq!(res.banner, "Port TCP ouvert (pas de bannière immédiate)");
+
+        let received = collected(server).await;
+        assert!(received.is_empty(), "silent peer received {received:?}");
     }
 
     /// Regression test for "selecting several files only copies the first":
