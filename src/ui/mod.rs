@@ -16,6 +16,7 @@ use crate::protocols::{
     RemoteServerMetrics, SessionHandle, SftpFileEntry, USER_DISCONNECT_REASON, calculate_ipv4_cidr,
     probe_tcp_and_banner,
 };
+use crate::ssh::agent::keep_unlocked_key;
 use crate::ssh::agent_wmcopydata::WmCompatStatus;
 use crate::ssh::ppk::{
     AgentKeyEntry, AgentProbeReport, KeyInspection, export_to_openssh_pem, export_to_ppk_v3,
@@ -31,6 +32,7 @@ use egui::{
     Align, Color32, Context, Key, Layout, Pos2, Rect, RichText, Stroke, Ui, Vec2, ViewportCommand,
     WindowLevel,
 };
+use russh::keys::ssh_key::PrivateKey;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -1683,6 +1685,30 @@ impl CutySshApp {
         self.refresh_agent_keys();
     }
 
+    /// A session unlocked a key file (passphrase typed at the prompt or stored
+    /// in the profile): the running integrated agent keeps the key in memory,
+    /// like the "load every session key" button, so the next session using it
+    /// connects without a passphrase. A stopped agent is never started for it.
+    fn keep_unlocked_key_in_agent(&mut self, key: Box<PrivateKey>, key_path: &str) {
+        let Some(agent) = self.native_agent.as_ref() else {
+            return;
+        };
+        let newly_loaded =
+            keep_unlocked_key(&agent.core, &mut self.native_agent_pending, *key, key_path);
+        if newly_loaded {
+            let name = Path::new(key_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| key_path.to_string());
+            self.set_toast(tr(
+                self.config.language,
+                &format!("🔑 Clé chargée dans Cuty Agent (en mémoire) : {name}"),
+                &format!("🔑 Key loaded into Cuty Agent (in memory): {name}"),
+            ));
+        }
+        self.refresh_agent_keys();
+    }
+
     pub fn launch_session(&mut self, mut profile: SessionProfile) {
         if profile.protocol != ProtocolType::LocalShell {
             let (user, clean_host) = split_user_and_host(&profile.host, &profile.username);
@@ -1871,6 +1897,7 @@ impl CutySshApp {
         let mut refresh_known_hosts = false;
         let mut auto_deploy_tabs: Vec<usize> = Vec::new();
         let mut migrated_sessions: Vec<(Uuid, SessionProfile, String, String, bool)> = Vec::new();
+        let mut unlocked_keys: Vec<(Box<PrivateKey>, String)> = Vec::new();
 
         for (tab_idx, tab) in self.tabs.iter_mut().enumerate() {
             if matches!(
@@ -1986,6 +2013,9 @@ impl CutySshApp {
                             is_passphrase,
                             input_value: String::new(),
                         });
+                    }
+                    BackendEvent::KeyUnlocked { key, key_path } => {
+                        unlocked_keys.push((key, key_path));
                     }
                     BackendEvent::PublicKeyDeployed {
                         private_key_path,
@@ -2288,6 +2318,10 @@ impl CutySshApp {
 
         if refresh_known_hosts {
             self.known_hosts = crate::config::load_known_hosts();
+        }
+
+        for (key, key_path) in unlocked_keys {
+            self.keep_unlocked_key_in_agent(key, &key_path);
         }
 
         if any_activity {

@@ -89,6 +89,7 @@ Il réconcilie l'écosystème classique **PuTTY / KiTTY** avec les méthodes de 
   - Connexion sans saisie de mot de passe via l'agent **Pageant** en cours d'exécution (IPC mémoire partagée Windows).
   - Détection et bascule automatique sur le service natif **Windows OpenSSH Authentication Agent** (`\\.\pipe\openssh-ssh-agent`).
   - Lanceur Pageant intégré et chargement groupé en 1 clic de l'ensemble des clés des sessions enregistrées.
+  - Une passphrase saisie à la connexion reste en mémoire : la clé déverrouillée est gardée par l'agent intégré Cuty Agent (en RAM uniquement, comme le chargement groupé), et la session suivante qui l'utilise se connecte sans la redemander. Un agent arrêté n'est jamais relancé pour autant.
 - **Inspecteur, convertisseur et générateur de clés intégré** :
   - Inspection détaillée de clés `.ppk`, OpenSSH, PEM, PKCS#8 ou `.pub` (format, algorithme, KDF, empreinte SHA-256, commentaire, ligne publique `authorized_keys`).
   - Conversion bidirectionnelle `.ppk` ↔ OpenSSH (`id_ed25519` / `id_rsa`).

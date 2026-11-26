@@ -2,10 +2,12 @@ use crate::config::{
     HostKeyCheckResult, PortForwardType, ProtocolType, SessionProfile, SshAuthMethod,
     split_user_and_host, verify_or_record_known_host,
 };
-use crate::ssh::ppk::{build_ssh_copy_id_script, inspect_key_file, load_private_key_any};
+use crate::ssh::ppk::{
+    KeyInspection, build_ssh_copy_id_script, inspect_key_file, load_private_key_any,
+};
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use russh::keys::ssh_key::{HashAlg, PublicKey};
+use russh::keys::ssh_key::{HashAlg, PrivateKey, PublicKey};
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyBase64, PublicKeyOrCertificate};
 use russh::{ChannelMsg, Disconnect, client};
 use russh_sftp::client::SftpSession;
@@ -152,6 +154,13 @@ pub enum BackendEvent {
         title: String,
         prompt: String,
         is_passphrase: bool,
+    },
+    /// A session unlocked a private key file (passphrase typed or stored):
+    /// the UI keeps the key in the memory of the integrated agent. Boxed: a
+    /// key held directly would triple the size of every `BackendEvent`.
+    KeyUnlocked {
+        key: Box<PrivateKey>,
+        key_path: String,
     },
     PublicKeyDeployed {
         private_key_path: String,
@@ -362,6 +371,60 @@ async fn wait_for_secret_input(
         }
     }
     anyhow::bail!("Canal fermé en attente de saisie")
+}
+
+/// Loads the private key file of a session: asks for its passphrase when the
+/// key is encrypted and the profile stores none, and again when the stored or
+/// typed one is wrong. The unlocked key is handed over to the UI with
+/// [`BackendEvent::KeyUnlocked`], so that the integrated agent keeps it in
+/// memory like the "load every session key" button does.
+async fn unlock_session_key(
+    cmd_rx: &mut UnboundedReceiver<BackendCommand>,
+    evt_tx: &UnboundedSender<BackendEvent>,
+    path: &Path,
+    passphrase: &str,
+) -> Result<(PrivateKey, KeyInspection)> {
+    let inspection = inspect_key_file(path)?;
+    let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
+        "Chargement de la clé {} ({})...",
+        inspection.format_name, inspection.algorithm
+    )));
+
+    let mut pass = passphrase.to_string();
+    if inspection.is_encrypted && pass.is_empty() {
+        pass = wait_for_secret_input(
+            cmd_rx,
+            evt_tx,
+            "Passphrase de clé PuTTY (.ppk) / SSH",
+            &format!(
+                "Entrez la passphrase pour déverrouiller la clé\n{} ({}) :",
+                path.display(),
+                inspection.format_name
+            ),
+            true,
+        )
+        .await?;
+    }
+
+    let priv_key = match load_private_key_any(path, Some(&pass)) {
+        Ok(key) => key,
+        Err(_) => {
+            let retry_pass = wait_for_secret_input(
+                cmd_rx,
+                evt_tx,
+                "Passphrase requise ou erronée (.ppk / SSH)",
+                &format!("Passphrase pour {} :", path.display()),
+                true,
+            )
+            .await?;
+            load_private_key_any(path, Some(&retry_pass))?
+        }
+    };
+    let _ = evt_tx.send(BackendEvent::KeyUnlocked {
+        key: Box::new(priv_key.clone()),
+        key_path: path.to_string_lossy().into_owned(),
+    });
+    Ok((priv_key, inspection))
 }
 
 pub(crate) fn rsa_hash_candidates(preferred: Option<HashAlg>) -> Vec<Option<HashAlg>> {
@@ -714,42 +777,8 @@ async fn authenticate_ssh_handle(
             } => {
                 if !key_path.trim().is_empty() {
                     let path = PathBuf::from(key_path.trim());
-                    let inspection = inspect_key_file(&path)?;
-                    let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
-                        "Chargement de la clé {} ({})...",
-                        inspection.format_name, inspection.algorithm
-                    )));
-
-                    let mut pass = passphrase.clone();
-                    if inspection.is_encrypted && pass.is_empty() {
-                        pass = wait_for_secret_input(
-                            cmd_rx,
-                            evt_tx,
-                            "Passphrase de clé PuTTY (.ppk) / SSH",
-                            &format!(
-                                "Entrez la passphrase pour déverrouiller la clé\n{} ({}) :",
-                                path.display(),
-                                inspection.format_name
-                            ),
-                            true,
-                        )
-                        .await?;
-                    }
-
-                    let priv_key = match load_private_key_any(&path, Some(&pass)) {
-                        Ok(k) => k,
-                        Err(_) => {
-                            let retry_pass = wait_for_secret_input(
-                                cmd_rx,
-                                evt_tx,
-                                "Passphrase requise ou erronée (.ppk / SSH)",
-                                &format!("Passphrase pour {} :", path.display()),
-                                true,
-                            )
-                            .await?;
-                            load_private_key_any(&path, Some(&retry_pass))?
-                        }
-                    };
+                    let (priv_key, inspection) =
+                        unlock_session_key(cmd_rx, evt_tx, &path, passphrase).await?;
 
                     let rsa_hash = session
                         .best_supported_rsa_hash()
@@ -3832,6 +3861,201 @@ mod tests {
         let _ = handle.cmd_tx.send(BackendCommand::Disconnect);
         std::env::set_current_dir(previous_cwd).expect("restore the working directory");
         std::fs::remove_dir_all(&isolated).ok();
+    }
+    /// Writes a key file for the `unlock_session_key` checks: an encrypted
+    /// OpenSSH key when `passphrase` is given, a plain one otherwise. Returns
+    /// its path and its OpenSSH public key line.
+    fn write_test_key(dir: &Path, name: &str, passphrase: Option<&str>) -> (PathBuf, String) {
+        use crate::ssh::ppk::{generate_new_ssh_key, generate_openssh_key_encrypted};
+        use russh::keys::ssh_key::LineEnding;
+
+        let (pem, public) = match passphrase {
+            Some(pass) => generate_openssh_key_encrypted("unlock-test", pass)
+                .expect("generate an encrypted key"),
+            None => {
+                let key = generate_new_ssh_key("ed25519", "unlock-test").expect("generate a key");
+                let pem = key.to_openssh(LineEnding::LF).expect("OpenSSH private key");
+                let public = key.public_key().to_openssh().expect("OpenSSH public key");
+                (pem, public)
+            }
+        };
+        let path = dir.join(name);
+        std::fs::write(&path, pem.as_str()).expect("write the key file");
+        (path, public)
+    }
+
+    /// Events sent so far: titles of the passphrase prompts, and the keys
+    /// handed over (public key line, key file path).
+    fn take_unlock_events(
+        evt_rx: &mut UnboundedReceiver<BackendEvent>,
+    ) -> (Vec<String>, Vec<(String, String)>) {
+        let mut prompts = Vec::new();
+        let mut unlocked = Vec::new();
+        while let Ok(evt) = evt_rx.try_recv() {
+            match evt {
+                BackendEvent::PromptSecret { title, .. } => prompts.push(title),
+                BackendEvent::KeyUnlocked { key, key_path } => {
+                    unlocked.push((key.public_key().to_openssh().expect("public key"), key_path))
+                }
+                _ => {}
+            }
+        }
+        (prompts, unlocked)
+    }
+
+    fn temp_key_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cuty_unlock_test_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create the key directory");
+        dir
+    }
+
+    #[tokio::test]
+    async fn unlock_session_key_hands_over_a_plain_key_without_prompting() {
+        let dir = temp_key_dir();
+        let (path, public) = write_test_key(&dir, "plain_key", None);
+        let (cmd_tx, mut cmd_rx) = unbounded_channel();
+        let (evt_tx, mut evt_rx) = unbounded_channel();
+
+        // The prompt would never be answered: the timeout catches an unexpected one.
+        let (key, inspection) = tokio::time::timeout(
+            Duration::from_secs(5),
+            unlock_session_key(&mut cmd_rx, &evt_tx, &path, ""),
+        )
+        .await
+        .expect("a plain key needs no passphrase")
+        .expect("the key loads");
+        assert!(!inspection.is_encrypted);
+        assert_eq!(key.public_key().to_openssh().unwrap(), public);
+        let (prompts, unlocked) = take_unlock_events(&mut evt_rx);
+        assert!(prompts.is_empty(), "{prompts:?}");
+        assert_eq!(unlocked, [(public, path.to_string_lossy().into_owned())]);
+        drop(cmd_tx);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Unlocks `path` with `stored_passphrase`, answering every passphrase
+    /// prompt with the next entry of `answers` after checking the prompt
+    /// title. Returns what `unlock_session_key` returned.
+    async fn unlock_answering(
+        path: &Path,
+        stored_passphrase: &str,
+        expected_titles: &[&str],
+        answers: &[&str],
+    ) -> (
+        Result<(PrivateKey, KeyInspection)>,
+        UnboundedReceiver<BackendEvent>,
+    ) {
+        let (cmd_tx, mut cmd_rx) = unbounded_channel();
+        let (evt_tx, mut evt_rx) = unbounded_channel();
+        let unlock = unlock_session_key(&mut cmd_rx, &evt_tx, path, stored_passphrase);
+        let answer = async {
+            for (title, passphrase) in expected_titles.iter().zip(answers) {
+                loop {
+                    match evt_rx.recv().await {
+                        Some(BackendEvent::PromptSecret {
+                            title: asked,
+                            is_passphrase,
+                            ..
+                        }) => {
+                            assert_eq!(asked, *title);
+                            assert!(is_passphrase);
+                            break;
+                        }
+                        // Status lines sent before the prompt.
+                        Some(_) => continue,
+                        None => panic!("backend events closed before the prompt"),
+                    }
+                }
+                cmd_tx
+                    .send(BackendCommand::ProvideSecret(passphrase.to_string()))
+                    .expect("answer the prompt");
+            }
+        };
+        (
+            tokio::time::timeout(Duration::from_secs(20), async {
+                tokio::join!(unlock, answer).0
+            })
+            .await
+            .expect("unlock_session_key did not finish"),
+            evt_rx,
+        )
+    }
+
+    #[tokio::test]
+    async fn unlock_session_key_asks_for_the_passphrase_then_hands_the_key_over() {
+        let dir = temp_key_dir();
+        let (path, public) = write_test_key(&dir, "locked_key", Some("secret"));
+
+        let (result, mut evt_rx) = unlock_answering(
+            &path,
+            "",
+            &["Passphrase de clé PuTTY (.ppk) / SSH"],
+            &["secret"],
+        )
+        .await;
+        assert_eq!(
+            result
+                .expect("the typed passphrase unlocks the key")
+                .0
+                .public_key()
+                .to_openssh()
+                .unwrap(),
+            public
+        );
+        // The prompt was consumed by `unlock_answering`, which checked its title.
+        let (_, unlocked) = take_unlock_events(&mut evt_rx);
+        assert_eq!(unlocked, [(public, path.to_string_lossy().into_owned())]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn unlock_session_key_asks_again_when_the_stored_passphrase_is_wrong() {
+        let dir = temp_key_dir();
+        let (path, public) = write_test_key(&dir, "locked_key", Some("secret"));
+
+        let (result, mut evt_rx) = unlock_answering(
+            &path,
+            "wrong",
+            &["Passphrase requise ou erronée (.ppk / SSH)"],
+            &["secret"],
+        )
+        .await;
+        assert_eq!(
+            result
+                .expect("the retyped passphrase unlocks the key")
+                .0
+                .public_key()
+                .to_openssh()
+                .unwrap(),
+            public
+        );
+        let (_, unlocked) = take_unlock_events(&mut evt_rx);
+        assert_eq!(unlocked, [(public, path.to_string_lossy().into_owned())]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn unlock_session_key_hands_over_nothing_when_the_passphrase_stays_wrong() {
+        let dir = temp_key_dir();
+        let (path, _) = write_test_key(&dir, "locked_key", Some("secret"));
+
+        let (result, mut evt_rx) = unlock_answering(
+            &path,
+            "",
+            &[
+                "Passphrase de clé PuTTY (.ppk) / SSH",
+                "Passphrase requise ou erronée (.ppk / SSH)",
+            ],
+            &["wrong", "wrong again"],
+        )
+        .await;
+        assert!(result.is_err(), "the key stays locked");
+        let (_, unlocked) = take_unlock_events(&mut evt_rx);
+        assert!(
+            unlocked.is_empty(),
+            "a key that never unlocked is not handed over"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 
