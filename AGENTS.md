@@ -104,6 +104,14 @@ cargo run
 - **Zero plaintext secrets on disk**: Passwords and private key passphrases must never be serialized to `sessions.json` (`#[serde(skip)]`) or written to the Windows Registry; store them exclusively in Windows Credential Manager (`src/config/wincred.rs`) and wrap in-memory secrets in `zeroize::Zeroizing<String>`.
 - **Zero external binary dependency**: Never invoke `kitty.exe` or `putty.exe`; use native Windows `ssh.exe` inside the embedded ConPTY (`pty_bridge.rs`) or pure-Rust `russh` (`ssh/mod.rs`).
 - **Atomic configuration saves**: Always write configuration files to `.json.tmp` and atomically rename over `.json`.
+- **The app version is never hardcoded in `src/`**: derive display strings from `env!("CARGO_PKG_VERSION")` (see `src/ui/help_modal.rs`); a hardcoded label read "v0.6" for ten releases.
+
+### Release checklist (in order, no step skipped)
+1. `chore/release-vX.Y.Z` branch: bump `Cargo.toml` (regenerate `Cargo.lock` via `cargo check`), READMEs, new `RELEASE_NOTES_vX.Y.Z.md`; in the same PR scan `git grep -nE "v0\.[0-9]+" src/` — only `CARGO_PKG_VERSION`-derived text may match. Gates, PR, review, merge.
+2. Tag `vX.Y.Z` on the release merge commit (verify with `git show vX.Y.Z^{}`), push the tag.
+3. Build the artifacts: `cargo build --release`; portable ZIP (`cuty-ssh.exe` + `LICENSE` + both READMEs, flat); WiX MSI (`wix build installer/cuty-ssh.wxs -arch x64 -d Version=X.Y.Z -d CutySshExe=target/release/cuty-ssh.exe -o cuty-ssh-vX.Y.Z-windows-x64.msi`); verify the MSI by administrative extraction (`msiexec /a`): extracted exe `FileVersion` = X.Y.Z and SHA-256 = release exe.
+4. **Deploy and wait for the user's smoke test BEFORE publishing**: install the fresh exe in `D:\Installation\Outils\cuty-ssh` (rename the working exe to `cuty-ssh.exe.bak-<date>-<label>`, copy the new one, verify SHA-256; never touch `cuty-ssh-portable/`), then wait for the user's explicit visual OK (About dialog, guide title, main flows). `gh release create` without that OK is a process bug — v0.11.0 shipped a stale guide title because this step was skipped.
+5. Publish only then: `gh release create vX.Y.Z <msi> <zip> cuty-ssh.exe --title "..." --notes-file RELEASE_NOTES_vX.Y.Z.md` (the bare `cuty-ssh.exe` asset must exist in the repo root first); verify the three assets report `uploaded`, and archive the msi/zip in `dist/`.
 
 ### Pitfalls & lessons (dated format)
 - [2026-10-17] GUI verification — the agent's shell runs on an isolated desktop: `EnumWindows`/`MainWindowHandle` see no window at all (not even the IDE), so "no window found" proves nothing. Verify visually by running a probe script on the interactive desktop (`schtasks /Create ... /IT` + `/Run`, then delete the task) that dumps the app's windows and saves a screenshot. Exit code `0xc000013a` in the user's terminal = Ctrl+C / console closed, not a crash.
