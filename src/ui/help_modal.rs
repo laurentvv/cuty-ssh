@@ -453,6 +453,11 @@ impl CutySshApp {
                 ),
                 tr(
                     lang,
+                    "• Passphrase saisie = clé chargée : quand une session demande la passphrase d'une clé chiffrée, la clé déverrouillée reste en mémoire dans Cuty Agent (comme avec « Charger toutes les clés des sessions ») — la prochaine session qui l'utilise se connecte sans la redemander. Un agent arrêté n'est jamais relancé pour cela.",
+                    "• Typed passphrase = loaded key: when a session asks for the passphrase of an encrypted key, the unlocked key stays in Cuty Agent's memory (like 'Load all session keys') — the next session using it connects without asking again. A stopped agent is never restarted for it.",
+                ),
+                tr(
+                    lang,
                     "• Compatible PuTTY / KiTTY / WinSCP : l'agent intégré expose aussi la fenêtre « Pageant » (WM_COPYDATA) que ces clients recherchent — ils voient vos clés sans aucune configuration. Si un vrai pageant.exe tourne déjà, Cuty-SSH ne s'impose pas : les clients continuent de parler à ce Pageant externe (conflit signalé dans la modale « 🔑 Clés »).",
                     "• PuTTY / KiTTY / WinSCP compatible: the integrated agent also exposes the legacy 'Pageant' window (WM_COPYDATA) those clients look for — they see your keys with zero configuration. If a real pageant.exe is already running, Cuty-SSH stands down: clients keep talking to that external Pageant (conflict reported in the '🔑 Keys' modal).",
                 ),

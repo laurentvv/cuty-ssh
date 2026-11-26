@@ -362,6 +362,23 @@ impl NativeAgentCore {
     }
 }
 
+/// Keeps a key that a session just unlocked in the memory of the agent, and
+/// drops its file from the keys parked for a passphrase. Returns `false` when
+/// the same key was already loaded (it is replaced), `true` when it is new.
+pub fn keep_unlocked_key(
+    core: &NativeAgentCore,
+    waiting_for_passphrase: &mut Vec<String>,
+    key: PrivateKey,
+    key_path: &str,
+) -> bool {
+    if public_blob(key.public_key().key_data()).is_empty() {
+        return false;
+    }
+    waiting_for_passphrase.retain(|p| !p.eq_ignore_ascii_case(key_path));
+    let comment = key.public_key().comment().to_string();
+    !core.add_key(key, &comment, key_path)
+}
+
 /// Maps draft-miller signature flags to an RSA hash, rejecting unknown bits —
 /// "We MUST reject any message containing flags we don't understand" (pageant.c).
 fn rsa_hash_from_flags(algorithm: &russh::keys::Algorithm, flags: u32) -> Option<Option<HashAlg>> {
@@ -573,5 +590,34 @@ mod tests {
         assert!(core.add_key(key, "second", "b"));
         assert_eq!(core.key_count(), 1);
         assert_eq!(core.list()[0].comment, "second");
+    }
+
+    #[test]
+    fn keep_unlocked_key_replaces_the_same_key_and_unparks_its_file() {
+        let core = NativeAgentCore::new();
+        let key = generate_new_ssh_key("ed25519", "session").unwrap();
+        let mut waiting = vec![
+            "C:\\Keys\\other.ppk".to_string(),
+            "C:\\Keys\\session.ppk".to_string(),
+        ];
+        // First unlock: the key is new, and its file leaves the waiting list.
+        assert!(keep_unlocked_key(
+            &core,
+            &mut waiting,
+            key.clone(),
+            "C:\\keys\\session.ppk"
+        ));
+        assert_eq!(core.key_count(), 1);
+        assert_eq!(core.list()[0].comment, "session");
+        assert_eq!(core.list()[0].source_path, "C:\\keys\\session.ppk");
+        assert_eq!(waiting, ["C:\\Keys\\other.ppk"]);
+        // Later sessions unlock the same file: replaced, nothing new to report.
+        assert!(!keep_unlocked_key(
+            &core,
+            &mut waiting,
+            key,
+            "C:\\keys\\session.ppk"
+        ));
+        assert_eq!(core.key_count(), 1);
     }
 }
