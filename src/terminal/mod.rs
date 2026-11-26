@@ -348,10 +348,12 @@ const PROMPT_END_MARKERS: [char; 6] = ['$', '#', '>', '%', '❯', '»'];
 /// `[user@host ~]$`, the `)` of a VCS segment…
 const PROMPT_DIR_SUFFIX: [char; 3] = [']', ')', '}'];
 
-/// Directory displayed by a shell prompt line and, as a character column,
-/// where the prompt ends. Only a directory that starts with `/` or `~` is
-/// recognised: a bare name (`[user@host app]$`, RHEL's `\W`) cannot be
-/// turned into an absolute path.
+/// Directory displayed by a shell prompt line, and the first character column
+/// after the prompt's marker: `web:~/logs# ` has its `#` on column 10, so the
+/// column is 11 — a shell reading a command line never leaves its cursor left
+/// of it. Only a directory that starts with `/` or `~` is recognised: a bare
+/// name (`[user@host app]$`, RHEL's `\W`) cannot be turned into an absolute
+/// path.
 fn prompt_cwd_in(line: &str) -> Option<(String, usize)> {
     let chars: Vec<char> = line.chars().collect();
     for idx in (0..chars.len()).rev() {
@@ -1441,7 +1443,7 @@ mod tests {
             Some("~/src".to_string())
         );
         assert_eq!(cwd("[user@host:~/dir]$ "), Some("~/dir".to_string()));
-        // The prompt end column is right after the marker.
+        // The column is the first one after the marker: `#` is on column 10.
         assert_eq!(
             prompt_cwd_in("web:~/logs# tail -f"),
             Some(("~/logs".to_string(), 11))
