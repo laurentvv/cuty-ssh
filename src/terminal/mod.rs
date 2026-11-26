@@ -1443,11 +1443,13 @@ mod tests {
             Some("~/src".to_string())
         );
         assert_eq!(cwd("[user@host:~/dir]$ "), Some("~/dir".to_string()));
-        // The column is the first one after the marker: `#` is on column 10.
-        assert_eq!(
-            prompt_cwd_in("web:~/logs# tail -f"),
-            Some(("~/logs".to_string(), 11))
-        );
+        // The column returned is the first one after the marker.
+        let line = "web:~/logs# tail -f";
+        let (dir, after_marker) = prompt_cwd_in(line).expect("prompt");
+        let chars: Vec<char> = line.chars().collect();
+        assert_eq!(dir, "~/logs");
+        assert_eq!(chars[after_marker - 1], '#');
+        assert_eq!(chars[after_marker], ' ');
     }
 
     #[test]
