@@ -9139,26 +9139,6 @@ impl CutySshApp {
                     ui.add_space(10.0);
 
                     ui.horizontal(|ui| {
-                        if ui
-                            .button(tr(
-                                lang,
-                                "\u{E24A} Ouvrir le dossier des assets",
-                                "\u{E24A} Open Assets Folder",
-                            ))
-                            .clicked()
-                        {
-                            let _ = open::that("assets");
-                        }
-                        if ui
-                            .button(tr(
-                                lang,
-                                "\u{E288} Ouvrir README du projet",
-                                "\u{E288} Open Project README",
-                            ))
-                            .clicked()
-                        {
-                            let _ = open::that("README.md");
-                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .button(RichText::new(tr(lang, "Fermer", "Close")).strong())
