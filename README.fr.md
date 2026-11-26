@@ -57,7 +57,7 @@ Il réconcilie l'écosystème classique **PuTTY / KiTTY** avec les méthodes de 
 
 | Fonctionnalité | PuTTY / KiTTY classique | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.10.2`)** |
 | :--- | :---: | :---: | :---: |
-| **Moteur SSH2 pur Rust asynchrone (`russh`)** | ❌ Code C historique | ❌ Processus externe | ✅ **Intégré (`russh 0.64`)** |
+| **Moteur SSH2 pur Rust asynchrone (`russh`)** | ❌ Code C historique | ❌ Processus externe | ✅ **Intégré (`russh 0.65`)** |
 | **Clés PuTTY `.ppk` v2 & v3 (Argon2id) natives** | ✅ | ❌ Conversion requise | ✅ **Lecture & inspection directes** |
 | **Double Agent : Pageant + Windows OpenSSH Agent** | Pageant uniquement | OpenSSH Agent uniquement | ✅ **Interrogation des deux agents** |
 | **`ssh-copy-id` 1-clic + bascule auto mot de passe ➡ clé** | ❌ | ❌ Ligne de commande manuelle | ✅ **Bouton 1-clic + migration de profil** |
@@ -108,7 +108,7 @@ Le déploiement manuel d'une clé publique sur un nouveau serveur Linux implique
 ---
 
 ### 2. Moteur multi-protocoles, Bastion (`ProxyJump`) & Coffre de sécurité
-- **SSH2** (`russh 0.64`) : PTY et shell interactif, clé publique (`.ppk` / OpenSSH / certificats OpenSSH `-cert.pub`), Pageant & Windows OpenSSH Agent, mot de passe, clavier-interactif (PAM / 2FA / TOTP), transfert d'agent SSH, keepalive, et tunnels de redirection de ports locaux (`-L`) et distants (`-R`).
+- **SSH2** (`russh 0.65`) : PTY et shell interactif, clé publique (`.ppk` / OpenSSH / certificats OpenSSH `-cert.pub`), Pageant & Windows OpenSSH Agent, mot de passe, clavier-interactif (PAM / 2FA / TOTP), transfert d'agent SSH, keepalive, et tunnels de redirection de ports locaux (`-L`) et distants (`-R`).
 
 #### Bastion SSH / Hôte de rebond (`-J` / `ProxyJump`)
 Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur intermédiaire Bastion grâce au tunnel de flux chiffré `direct-tcpip` :

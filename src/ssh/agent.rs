@@ -10,10 +10,11 @@
 //!   "reject any flag bits we don't understand", owner-SID check on file mappings)
 //!
 //! Why a custom dispatcher instead of `russh::keys::agent::server::serve`:
-//! the russh 0.64 server drops key comments in `IDENTITIES_ANSWER` and signs
-//! RSA with SHA-1 regardless of the client's `SSH_AGENT_RSA_SHA2_*` flags, which
-//! modern OpenSSH servers reject. This core keeps comments and honours the flags
-//! through `ssh-key`'s `(&RsaKeypair, Option<HashAlg>)` signer.
+//! the russh server (0.64 and 0.65 alike) drops key comments in
+//! `IDENTITIES_ANSWER`, and until 0.65 it also signed RSA with SHA-1 regardless
+//! of the client's `SSH_AGENT_RSA_SHA2_*` flags, which modern OpenSSH servers
+//! reject. This core keeps comments and honours the flags through `ssh-key`'s
+//! `(&RsaKeypair, Option<HashAlg>)` signer.
 
 use russh::keys::signature::Signer;
 use russh::keys::ssh_encoding::{Decode, Encode};

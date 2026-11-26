@@ -85,7 +85,7 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 
 | Capability | Classic PuTTY / KiTTY | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.10.2`)** |
 | :--- | :---: | :---: | :---: |
-| **Pure Rust Async SSH2 Engine (`russh`)** | ❌ C legacy | ❌ External process | ✅ **Built-in (`russh 0.64`)** |
+| **Pure Rust Async SSH2 Engine (`russh`)** | ❌ C legacy | ❌ External process | ✅ **Built-in (`russh 0.65`)** |
 | **Native PuTTY `.ppk` v2 & v3 (Argon2id) Keys** | ✅ | ❌ Requires conversion | ✅ **Direct load & inspection** |
 | **Cuty Agent (integrated SSH agent, Pageant replacement)** | External `pageant.exe` | OpenSSH Agent only | ✅ **Built-in Cuty Agent + Pageant/WM_COPYDATA & OpenSSH Agent fallbacks** |
 | **1-Click `ssh-copy-id` + Auto Password ➡ Key Switch** | ❌ | ❌ Manual CLI | ✅ **1-Click button + auto profile migration** |
@@ -137,7 +137,7 @@ Provisioning a brand-new Linux server typically requires logging in with a passw
 ---
 
 ### 2. Multi-Protocol Engine, Bastion (`ProxyJump`) & Security Vault
-- **SSH2** (`russh 0.64`): PTY + interactive shell, public-key (`.ppk` / OpenSSH / OpenSSH `-cert.pub` certificates), Pageant & Windows OpenSSH Agent, Password, Keyboard-Interactive (PAM / 2FA / TOTP), SSH Agent Forwarding, Keepalive, and **Local (`-L`) / Remote (`-R`) Port Forwarding** tunnels.
+- **SSH2** (`russh 0.65`): PTY + interactive shell, public-key (`.ppk` / OpenSSH / OpenSSH `-cert.pub` certificates), Pageant & Windows OpenSSH Agent, Password, Keyboard-Interactive (PAM / 2FA / TOTP), SSH Agent Forwarding, Keepalive, and **Local (`-L`) / Remote (`-R`) Port Forwarding** tunnels.
 
 #### SSH Bastion / Jump Host (`-J` / `ProxyJump`)
 Connect to isolated private or DMZ servers transparently through an intermediate SSH Bastion host using encrypted `direct-tcpip` stream tunneling (`russh::client::connect_stream`):

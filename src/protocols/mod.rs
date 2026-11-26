@@ -2833,7 +2833,7 @@ pub fn calculate_ipv4_cidr(input: &str) -> Result<CidrCalculation> {
 
 /// In-process SSH + SFTP server for integration tests: a real russh server
 /// (password auth, random Ed25519 host key) exposing an SFTP subsystem backed
-/// by a plain temp directory. Modeled on the russh-sftp 3.0.1 `server` example,
+/// by a plain temp directory. Modeled on the russh-sftp 4.0.0 `server` example,
 /// so tests exercise the production client code end to end over the network
 /// stack (loopback) without any external process.
 #[cfg(test)]
@@ -2844,7 +2844,7 @@ mod sftp_test_server {
     use russh::server::{Handler as SshHandler, Session as SshServerSession};
     use russh::{Channel, ChannelId};
     use russh_sftp::protocol::{
-        Attrs, Data, File, FileAttributes, Handle, Name, Status, StatusCode, Version,
+        Attrs, Data, File, FileAttributes, Handle, Name, SftpHandle, Status, StatusCode, Version,
     };
     use russh_sftp::server;
     use std::collections::{HashMap, HashSet};
@@ -2958,6 +2958,11 @@ mod sftp_test_server {
             self.root.join(p.trim_start_matches('/'))
         }
 
+        /// This server stores the path itself in its handles (opaque bytes on the wire).
+        fn handle_path(handle: &SftpHandle) -> String {
+            String::from_utf8_lossy(handle.as_bytes()).into_owned()
+        }
+
         fn fs_attrs(id: u32, md: &std::fs::Metadata) -> Attrs {
             let perms = if md.is_dir() { 0o755 } else { 0o644 };
             Attrs {
@@ -3025,22 +3030,22 @@ mod sftp_test_server {
             }
             Ok(Handle {
                 id,
-                handle: filename,
+                handle: filename.into(),
             })
         }
 
-        async fn close(&mut self, id: u32, _handle: String) -> Result<Status, Self::Error> {
+        async fn close(&mut self, id: u32, _handle: SftpHandle) -> Result<Status, Self::Error> {
             Ok(Self::ok_status(id))
         }
 
         async fn read(
             &mut self,
             id: u32,
-            handle: String,
+            handle: SftpHandle,
             offset: u64,
             len: u32,
         ) -> Result<Data, Self::Error> {
-            let path = self.map(&handle);
+            let path = self.map(&Self::handle_path(&handle));
             let mut f = std::fs::File::open(&path).map_err(|_| StatusCode::NoSuchFile)?;
             f.seek(std::io::SeekFrom::Start(offset))
                 .map_err(|_| StatusCode::Failure)?;
@@ -3056,11 +3061,11 @@ mod sftp_test_server {
         async fn write(
             &mut self,
             id: u32,
-            handle: String,
+            handle: SftpHandle,
             offset: u64,
             data: Vec<u8>,
         ) -> Result<Status, Self::Error> {
-            let path = self.map(&handle);
+            let path = self.map(&Self::handle_path(&handle));
             let mut f = std::fs::OpenOptions::new()
                 .write(true)
                 .open(&path)
@@ -3077,8 +3082,9 @@ mod sftp_test_server {
             Ok(Self::fs_attrs(id, &md))
         }
 
-        async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
-            let md = std::fs::metadata(self.map(&handle)).map_err(|_| StatusCode::NoSuchFile)?;
+        async fn fstat(&mut self, id: u32, handle: SftpHandle) -> Result<Attrs, Self::Error> {
+            let path = Self::handle_path(&handle);
+            let md = std::fs::metadata(self.map(&path)).map_err(|_| StatusCode::NoSuchFile)?;
             Ok(Self::fs_attrs(id, &md))
         }
 
@@ -3094,13 +3100,17 @@ mod sftp_test_server {
         async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
             let mapped = self.map(&path);
             if mapped.is_dir() {
-                Ok(Handle { id, handle: path })
+                Ok(Handle {
+                    id,
+                    handle: path.into(),
+                })
             } else {
                 Err(StatusCode::NoSuchFile)
             }
         }
 
-        async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
+        async fn readdir(&mut self, id: u32, handle: SftpHandle) -> Result<Name, Self::Error> {
+            let handle = Self::handle_path(&handle);
             if !self.listed_dirs.insert(handle.clone()) {
                 return Err(StatusCode::Eof);
             }
