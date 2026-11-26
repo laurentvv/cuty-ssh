@@ -132,6 +132,9 @@ pub enum BackendCommand {
         old_path: String,
         new_path: String,
     },
+    /// Asks for the working directory of the interactive shell of the SSH
+    /// session; answered with [`BackendEvent::ShellCwd`].
+    QueryShellCwd,
     Disconnect,
 }
 
@@ -158,6 +161,14 @@ pub enum BackendEvent {
     TelemetryUpdated(RemoteServerMetrics),
     /// Port of the active one-click SOCKS5 proxy, `None` when stopped.
     SocksState(Option<u16>),
+    /// The SFTP subsystem is up; `home` is the login directory
+    /// (`realpath "."`), the expansion of `~` in a shell prompt.
+    SftpReady {
+        home: String,
+    },
+    /// Answer to [`BackendCommand::QueryShellCwd`]: the working directory of
+    /// the interactive shell, `None` when the server cannot report it.
+    ShellCwd(Option<String>),
     SftpDirListed {
         current_path: String,
         entries: Vec<SftpFileEntry>,
@@ -1098,6 +1109,9 @@ async fn run_ssh_session(
                     .canonicalize(".")
                     .await
                     .unwrap_or_else(|_| "/".to_string());
+                let _ = evt_sftp.send(BackendEvent::SftpReady {
+                    home: start_dir.clone(),
+                });
                 if let Ok(entries) = list_sftp_directory(&sftp, &start_dir).await {
                     let _ = evt_sftp.send(BackendEvent::SftpDirListed {
                         current_path: start_dir,
@@ -1559,6 +1573,14 @@ async fn run_ssh_session(
                                     }
                                 }
                             }
+                        });
+                    }
+                    Some(BackendCommand::QueryShellCwd) => {
+                        let sess_cwd = Arc::clone(&session);
+                        let evt_cwd = evt_tx.clone();
+                        tokio::spawn(async move {
+                            let cwd = probe_shell_cwd(&sess_cwd).await;
+                            let _ = evt_cwd.send(BackendEvent::ShellCwd(cwd));
                         });
                     }
                     Some(BackendCommand::Disconnect) | None => {
@@ -2595,6 +2617,66 @@ async fn fetch_remote_telemetry(
     })
 }
 
+/// Tag the shell cwd probe answers with.
+const SHELL_CWD_TAG: &str = "CUTY_CWD=";
+
+/// `sh` body of the shell cwd probe. Among the children of the server-side
+/// session process (`$PPID`, the parent of every channel of the connection),
+/// the one that owns a controlling terminal is the PTY shell; this very
+/// probe runs in another child, skipped through `$$`. The `/proc/<pid>/stat`
+/// fields after `pid (comm)` are `state ppid pgrp session tty_nr …`, so
+/// `$2` is the parent and `$5` the controlling terminal. POSIX builtins and
+/// globbing only (no external tool), on a single line and without single
+/// quotes or `!`, so that every login shell (sh, bash, zsh, csh, fish)
+/// passes it unchanged to `sh -c`.
+const SHELL_CWD_PROBE: &str = concat!(
+    "for f in /proc/[0-9]*/stat; do ",
+    "read -r s < \"$f\" 2>/dev/null || continue; ",
+    "s=${s##*) }; set -- $s; ",
+    "[ \"$2\" = \"$PPID\" ] || continue; ",
+    "[ \"$5\" = \"0\" ] && continue; ",
+    "p=${f#/proc/}; p=${p%/stat}; ",
+    "[ \"$p\" = \"$$\" ] && continue; ",
+    "(cd \"/proc/$p/cwd\" 2>/dev/null && printf \"CUTY_CWD=%s\\n\" \"$(pwd -P)\") && break; ",
+    "done"
+);
+
+/// Working directory the probe reported, or `None` for anything else (no
+/// procfs, a server that refuses `exec`, a `ForceCommand` wrapper…).
+fn parse_shell_cwd_probe(raw: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(raw);
+    let line = text.lines().rev().find(|l| l.starts_with(SHELL_CWD_TAG))?;
+    let path = line[SHELL_CWD_TAG.len()..].trim_end_matches('\r');
+    (path.starts_with('/') && path.len() < 4096 && !path.chars().any(char::is_control))
+        .then(|| path.to_string())
+}
+
+/// Reads the working directory of the interactive shell out of procfs over a
+/// short-lived SSH exec channel, without typing anything into the terminal
+/// (a keystroke would land in vim, or in a `sudo` password prompt). `None`
+/// when the server cannot report it.
+async fn probe_shell_cwd<H: client::Handler>(session: &client::Handle<H>) -> Option<String> {
+    let mut ch = session.channel_open_session().await.ok()?;
+    let mut out = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        ch.exec(true, format!("exec sh -c '{SHELL_CWD_PROBE}'"))
+            .await
+            .ok()?;
+        while let Some(msg) = ch.wait().await {
+            match msg {
+                ChannelMsg::Data { data } => out.extend_from_slice(&data),
+                ChannelMsg::Failure => return None,
+                ChannelMsg::Eof | ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        Some(())
+    })
+    .await
+    .ok()??;
+    parse_shell_cwd_probe(&out)
+}
+
 /// Client identification (RFC 4253 §4.2) sent by the reachability probe once an
 /// SSH banner has been read. Closing the socket without it makes sshd log
 /// `error: kex_exchange_identification: Connection closed by remote host` on
@@ -2772,6 +2854,10 @@ mod sftp_test_server {
     #[derive(Clone)]
     struct TestSshServer {
         root: PathBuf,
+        /// Bytes every `exec` request answers with (`None`: the request is refused).
+        exec_reply: Option<&'static [u8]>,
+        /// Command line of every `exec` request the server received.
+        exec_log: Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>,
     }
 
     impl russh::server::Server for TestSshServer {
@@ -2781,6 +2867,8 @@ mod sftp_test_server {
             TestSshSession {
                 root: self.root.clone(),
                 channels: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+                exec_reply: self.exec_reply,
+                exec_log: Arc::clone(&self.exec_log),
             }
         }
     }
@@ -2788,6 +2876,8 @@ mod sftp_test_server {
     struct TestSshSession {
         root: PathBuf,
         channels: Arc<tokio::sync::Mutex<HashMap<ChannelId, Channel<Msg>>>>,
+        exec_reply: Option<&'static [u8]>,
+        exec_log: Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>,
     }
 
     impl SshHandler for TestSshSession {
@@ -2830,6 +2920,24 @@ mod sftp_test_server {
             } else {
                 session.channel_failure(channel_id)?;
             }
+            Ok(())
+        }
+
+        async fn exec_request(
+            &mut self,
+            channel_id: ChannelId,
+            data: &[u8],
+            session: &mut SshServerSession,
+        ) -> Result<()> {
+            self.exec_log.lock().await.push(data.to_vec());
+            let Some(reply) = self.exec_reply else {
+                session.channel_failure(channel_id)?;
+                return Ok(());
+            };
+            session.channel_success(channel_id)?;
+            session.data(channel_id, reply.to_vec())?;
+            session.eof(channel_id)?;
+            session.close(channel_id)?;
             Ok(())
         }
     }
@@ -3068,8 +3176,8 @@ mod sftp_test_server {
         }
     }
 
-    /// Client handler accepting any host key (in-process test server).
-    struct AcceptAnyHostKey;
+    /// Client handler accepting any host key (in-process test server, live checks).
+    pub(crate) struct AcceptAnyHostKey;
 
     impl client::Handler for AcceptAnyHostKey {
         type Error = russh::Error;
@@ -3085,6 +3193,21 @@ mod sftp_test_server {
     /// Starts the in-process server on a random loopback port.
     /// Returns `(port, root_dir)`.
     pub(crate) async fn start() -> (u16, PathBuf) {
+        let (port, root, _exec_log) = start_inner(None).await;
+        (port, root)
+    }
+
+    /// Same server, where every `exec` request answers `reply`. Returns
+    /// `(port, root_dir, exec_log)`.
+    pub(crate) async fn start_with_exec(
+        reply: &'static [u8],
+    ) -> (u16, PathBuf, Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>) {
+        start_inner(Some(reply)).await
+    }
+
+    pub(crate) async fn start_inner(
+        exec_reply: Option<&'static [u8]>,
+    ) -> (u16, PathBuf, Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>) {
         let root = std::env::temp_dir().join(format!("cuty_sftp_test_{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("create test server root");
         let config = Arc::new(russh::server::Config {
@@ -3098,11 +3221,55 @@ mod sftp_test_server {
             .await
             .expect("bind loopback listener");
         let port = listener.local_addr().expect("local addr").port();
-        let mut server = TestSshServer { root: root.clone() };
+        let exec_log = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let mut server = TestSshServer {
+            root: root.clone(),
+            exec_reply,
+            exec_log: Arc::clone(&exec_log),
+        };
         tokio::spawn(async move {
             let _ = server.run_on_socket(config, &listener).await;
         });
-        (port, root)
+        (port, root, exec_log)
+    }
+
+    /// Connects and authenticates to the test server like the production
+    /// backend does (any host key, password auth).
+    pub(crate) async fn connect(port: u16) -> client::Handle<AcceptAnyHostKey> {
+        let config = Arc::new(russh::client::Config::default());
+        let mut session = client::connect(config, ("127.0.0.1", port), AcceptAnyHostKey)
+            .await
+            .expect("client connect");
+        let auth = session
+            .authenticate_password("test", "test")
+            .await
+            .expect("password auth");
+        assert!(auth.success(), "password auth accepted");
+        session
+    }
+
+    /// Connects and authenticates with a private key (any host key), for
+    /// checks against a live SSH server.
+    pub(crate) async fn connect_key(
+        host: &str,
+        port: u16,
+        user: &str,
+        key_path: &Path,
+    ) -> client::Handle<AcceptAnyHostKey> {
+        let mut session = client::connect(
+            Arc::new(client::Config::default()),
+            (host, port),
+            AcceptAnyHostKey,
+        )
+        .await
+        .expect("client connect");
+        let key = Arc::new(load_private_key_any(key_path, Some("")).expect("load private key"));
+        let auth = session
+            .authenticate_publickey(user, PrivateKeyWithHashAlg::new(key, None))
+            .await
+            .expect("public key auth");
+        assert!(auth.success(), "public key auth accepted");
+        session
     }
 
     /// Connects a client exactly like the production backend does and wraps
@@ -3115,15 +3282,7 @@ mod sftp_test_server {
         UnboundedSender<BackendEvent>,
         UnboundedReceiver<BackendEvent>,
     ) {
-        let config = Arc::new(russh::client::Config::default());
-        let mut session = client::connect(config, ("127.0.0.1", port), AcceptAnyHostKey)
-            .await
-            .expect("client connect");
-        let auth = session
-            .authenticate_password("test", "test")
-            .await
-            .expect("password auth");
-        assert!(auth.success(), "password auth accepted");
+        let session = connect(port).await;
         let channel = session
             .channel_open_session()
             .await
@@ -3445,6 +3604,224 @@ mod tests {
 
         std::fs::remove_dir_all(&local_dir).ok();
         std::fs::remove_dir_all(&server_root).ok();
+    }
+
+    #[test]
+    fn shell_cwd_probe_answer_is_parsed() {
+        assert_eq!(
+            parse_shell_cwd_probe(b"CUTY_CWD=/srv/www\r\n"),
+            Some("/srv/www".to_string())
+        );
+        // A banner printed first does not matter, the last tagged line wins,
+        // and spaces survive (the directory is a single `printf` argument).
+        assert_eq!(
+            parse_shell_cwd_probe(b"Welcome\nCUTY_CWD=/a\nCUTY_CWD=/srv/my files\n"),
+            Some("/srv/my files".to_string())
+        );
+        // Nothing tagged, or a path that is not an absolute clean one.
+        for raw in [
+            &b""[..],
+            &b"sh: /proc/[0-9]*/stat: not found\n"[..],
+            &b"CUTY_CWD=relative\n"[..],
+            &b"CUTY_CWD=\x1b[0m/a\n"[..],
+            &b"CUTY_CWD=/a\nCUTY_CWD=/b\x08c\n"[..],
+        ] {
+            assert_eq!(parse_shell_cwd_probe(raw), None, "{raw:?}");
+        }
+    }
+
+    /// The script is wrapped in single quotes by the exec command: it must
+    /// stay quotable by every login shell, csh and fish included.
+    #[test]
+    fn shell_cwd_probe_script_stays_shell_agnostic() {
+        assert!(
+            !SHELL_CWD_PROBE.contains(['\'', '\n', '!']),
+            "{SHELL_CWD_PROBE:?}"
+        );
+    }
+
+    /// The probe opens its own exec channel and reads the tagged answer,
+    /// exactly like the `BackendCommand::QueryShellCwd` arm does.
+    #[tokio::test]
+    async fn shell_cwd_probe_reads_the_exec_channel_answer() {
+        let (port, _root, exec_log) =
+            sftp_test_server::start_with_exec(b"Welcome\nCUTY_CWD=/srv/reports\n").await;
+        let session = sftp_test_server::connect(port).await;
+        assert_eq!(
+            probe_shell_cwd(&session).await,
+            Some("/srv/reports".to_string())
+        );
+
+        let log = exec_log.lock().await;
+        assert_eq!(log.len(), 1, "one exec request");
+        let command = String::from_utf8(log[0].clone()).expect("UTF-8 command");
+        assert_eq!(command, format!("exec sh -c '{SHELL_CWD_PROBE}'"));
+    }
+
+    /// A server without procfs answers nothing; one that refuses `exec`
+    /// answers with a failure: `None` both times, never an error.
+    #[tokio::test]
+    async fn shell_cwd_probe_is_none_when_the_server_cannot_answer() {
+        let (port, _root, _log) = sftp_test_server::start_with_exec(b"").await;
+        let session = sftp_test_server::connect(port).await;
+        assert_eq!(probe_shell_cwd(&session).await, None);
+
+        let (port, _root, _log) = sftp_test_server::start_inner(None).await;
+        let session = sftp_test_server::connect(port).await;
+        assert_eq!(probe_shell_cwd(&session).await, None);
+    }
+
+    /// Live check against a real sshd (OpenSSH process tree, procfs). Opt-in:
+    /// `CUTY_LIVE_SSH=user@host:port CUTY_LIVE_KEY=id_ed25519 cargo test live_ -- --ignored`
+    #[tokio::test]
+    #[ignore = "needs a live SSH server: set CUTY_LIVE_SSH and CUTY_LIVE_KEY"]
+    async fn live_shell_cwd_probe_reads_the_pty_shell_directory() {
+        let target = std::env::var("CUTY_LIVE_SSH").expect("CUTY_LIVE_SSH=user@host:port");
+        let (user, host_port) = target.rsplit_once('@').expect("user@host:port");
+        let (host, port) = host_port.rsplit_once(':').expect("host:port");
+        let key_path = PathBuf::from(std::env::var("CUTY_LIVE_KEY").expect("CUTY_LIVE_KEY"));
+        let session = sftp_test_server::connect_key(
+            host,
+            port.parse().expect("numeric port"),
+            user,
+            &key_path,
+        )
+        .await;
+
+        async fn wait_cwd(
+            session: &client::Handle<sftp_test_server::AcceptAnyHostKey>,
+            want: &str,
+        ) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while probe_shell_cwd(session).await.as_deref() != Some(want) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "probe never reported {want}"
+                );
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+
+        // Same PTY + shell channel as the production session.
+        let channel = session.channel_open_session().await.expect("shell channel");
+        channel
+            .request_pty(true, "xterm-256color", 110, 32, 0, 0, &[])
+            .await
+            .expect("request pty");
+        channel.request_shell(true).await.expect("request shell");
+
+        // The shell is up: the probe answers with its login directory.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let login_dir = loop {
+            if let Some(dir) = probe_shell_cwd(&session).await {
+                break dir;
+            }
+            assert!(std::time::Instant::now() < deadline, "probe never answered");
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        assert!(login_dir.starts_with('/'), "{login_dir}");
+
+        // The probe reads the shell, not the exec channel: both start in the
+        // login directory, then only the shell moves.
+        channel.data(&b"cd /var/log\n"[..]).await.expect("send cd");
+        wait_cwd(&session, "/var/log").await;
+
+        // Spaces in a directory name survive the whole round trip.
+        channel
+            .data(&b"mkdir -p \"/tmp/cuty probe dir\" && cd \"/tmp/cuty probe dir\"\n"[..])
+            .await
+            .expect("send cd to a directory with spaces");
+        wait_cwd(&session, "/tmp/cuty probe dir").await;
+        channel
+            .data(&b"cd / && rmdir \"/tmp/cuty probe dir\"\n"[..])
+            .await
+            .expect("clean up");
+        wait_cwd(&session, "/").await;
+    }
+
+    /// Live check of the production backend loop (PTY shell, SFTP subsystem,
+    /// the `QueryShellCwd` arm) against a real sshd. Run it on its own: it
+    /// moves the working directory to a temporary folder so that the TOFU
+    /// host key store never touches the portable config of the developer.
+    /// `CUTY_LIVE_SSH=user@host:port CUTY_LIVE_KEY=id_ed25519 cargo test live_backend -- --ignored`
+    #[tokio::test]
+    #[ignore = "needs a live SSH server: set CUTY_LIVE_SSH and CUTY_LIVE_KEY"]
+    async fn live_backend_reports_the_sftp_home_and_the_shell_cwd() {
+        let target = std::env::var("CUTY_LIVE_SSH").expect("CUTY_LIVE_SSH=user@host:port");
+        let (user, host_port) = target.rsplit_once('@').expect("user@host:port");
+        let (host, port) = host_port.rsplit_once(':').expect("host:port");
+        let key_path = PathBuf::from(std::env::var("CUTY_LIVE_KEY").expect("CUTY_LIVE_KEY"));
+
+        let isolated = std::env::temp_dir().join(format!("cuty_live_backend_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&isolated).expect("create the isolated working directory");
+        let previous_cwd = std::env::current_dir().expect("current directory");
+        std::env::set_current_dir(&isolated).expect("move to the isolated working directory");
+
+        let profile = SessionProfile {
+            host: host.to_string(),
+            port: port.parse().expect("numeric port"),
+            username: user.to_string(),
+            ssh_auth: SshAuthMethod::PrivateKeyFile {
+                key_path: key_path.to_string_lossy().into_owned(),
+                passphrase: String::new(),
+                cert_path: String::new(),
+            },
+            try_pageant: false,
+            startup_command: "cd /var/log".to_string(),
+            ..Default::default()
+        };
+        let mut handle =
+            SessionHandle::spawn(&tokio::runtime::Handle::current(), profile, None, 110, 32);
+
+        // The SFTP subsystem comes up on the login directory and lists it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let (mut home, mut home_listed) = (None, false);
+        while home.is_none() || !home_listed {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let evt = tokio::time::timeout(left, handle.evt_rx.recv())
+                .await
+                .expect("SFTP subsystem not ready in time")
+                .expect("backend closed");
+            match evt {
+                BackendEvent::SftpReady { home: dir } => home = Some(dir),
+                BackendEvent::SftpDirListed { current_path, .. } => {
+                    home_listed = Some(&current_path) == home.as_ref();
+                }
+                BackendEvent::ErrorMessage(msg) => panic!("backend error: {msg}"),
+                _ => {}
+            }
+        }
+        let home = home.expect("SftpReady");
+        assert!(home.starts_with('/'), "{home}");
+
+        // The startup command moved the shell: the probe reports where it is.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let _ = handle.cmd_tx.send(BackendCommand::QueryShellCwd);
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let evt = tokio::time::timeout(left, handle.evt_rx.recv())
+                .await
+                .expect("no answer to the shell cwd probe")
+                .expect("backend closed");
+            match evt {
+                BackendEvent::ShellCwd(cwd) => {
+                    assert!(
+                        cwd.is_some(),
+                        "the server cannot report the shell directory"
+                    );
+                    if cwd.as_deref() == Some("/var/log") {
+                        break;
+                    }
+                }
+                BackendEvent::ErrorMessage(msg) => panic!("backend error: {msg}"),
+                _ => {}
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        let _ = handle.cmd_tx.send(BackendCommand::Disconnect);
+        std::env::set_current_dir(previous_cwd).expect("restore the working directory");
+        std::fs::remove_dir_all(&isolated).ok();
     }
 }
 

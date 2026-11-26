@@ -138,6 +138,7 @@ Connectez-vous à vos serveurs privés ou en DMZ à travers un serveur interméd
   - Glissez-déposez des fichiers depuis l'Explorateur Windows directement sur la fenêtre de Cuty-SSH pour les téléverser dans le dossier SFTP distant actif.
   - Streaming asynchrone par blocs de 64 Ko pour les gros fichiers avec barre de progression de transfert en direct.
   - **Client Bitvise SFTP double-volet intégré** (fichiers locaux & distants côte-à-côte, files d'attente d'upload/download, menu clic-droit complet : Open, Edit, Move to, Erase, Rename, SHA-256, liens symboliques) remplaçant tout besoin de WinSCP externe.
+  - **Suivi du répertoire du terminal** : le volet distant s'ouvre sur le répertoire courant du shell et suit chaque `cd` (bascule « 📍 Suivre le terminal »). Le répertoire est lu dans l'invite affichée (`[user@host ~/www]$`, `host:/var/log#`) ou, quand l'invite ne le montre pas (RHEL `[user@host dir]$`, programme plein écran), demandé au serveur par un canal `exec` dédié qui lit `/proc` — rien n'est jamais tapé dans le terminal.
 - **Rendu graphique haute performance par lots (Run-Length Text Batching)** :
   - Rendu par séquences de texte contiguës partageant la même couleur pour garantir 60+ FPS constants.
   - Cellules de terminal compactes (`TerminalCell` avec drapeaux binaires sur 1 octet), écran alternatif (`?1049h` pour `vim`, `htop`, `tmux`), couleurs 256 et 24-bit TrueColor, et ouverture d'URLs au Ctrl+Clic.

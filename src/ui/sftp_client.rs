@@ -285,6 +285,12 @@ pub struct SftpClientState {
 
     // Watched files for auto-upload on save (Ctrl+S)
     pub watched_files: Vec<WatchedEditFile>,
+
+    // Terminal tracking
+    /// The remote pane follows the working directory of the terminal.
+    pub follow_terminal: bool,
+    /// Parent tab re-syncs the remote pane with the terminal (set by the toggle).
+    pub follow_resync: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -378,6 +384,9 @@ impl SftpClientState {
             mirror_request: false,
 
             watched_files: Vec::new(),
+
+            follow_terminal: true,
+            follow_resync: false,
         };
 
         state.refresh_local();
@@ -686,6 +695,30 @@ impl SftpClientState {
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        // Terminal tracking toggle
+                        if ui
+                            .selectable_label(
+                                self.follow_terminal,
+                                RichText::new(tr(
+                                    lang,
+                                    "📍 Suivre le terminal",
+                                    "📍 Follow terminal",
+                                ))
+                                .strong(),
+                            )
+                            .on_hover_text(tr(
+                                lang,
+                                "Le volet distant ouvre et suit le répertoire courant du terminal (lu dans l'invite, sinon via /proc) — cliquer pour ne plus suivre",
+                                "The remote pane opens on and follows the terminal's working directory (read from the prompt, else through /proc) — click to stop following",
+                            ))
+                            .clicked()
+                        {
+                            self.follow_terminal = !self.follow_terminal;
+                            if self.follow_terminal {
+                                self.follow_resync = true;
+                            }
+                        }
+
                         if ui
                             .button(
                                 RichText::new(tr(
