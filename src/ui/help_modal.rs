@@ -9,6 +9,25 @@ pub fn tr<'a>(lang: UiLanguage, fr: &'a str, en: &'a str) -> &'a str {
     if lang.is_en() { en } else { fr }
 }
 
+/// Guide titles carry the app version, baked in at compile time from the
+/// manifest: a hardcoded label here read "v0.6" for ten releases.
+const GUIDE_WINDOW_TITLE_FR: &str = concat!(
+    "📖 Guide Utilisateur & Documentation Illustrée — Cuty-SSH v",
+    env!("CARGO_PKG_VERSION"),
+);
+const GUIDE_WINDOW_TITLE_EN: &str = concat!(
+    "📖 Illustrated User Guide & Documentation — Cuty-SSH v",
+    env!("CARGO_PKG_VERSION"),
+);
+const GUIDE_EXPORT_TITLE_FR: &str = concat!(
+    "Guide Utilisateur Illustré — Cuty-SSH v",
+    env!("CARGO_PKG_VERSION")
+);
+const GUIDE_EXPORT_TITLE_EN: &str = concat!(
+    "Illustrated User Guide — Cuty-SSH v",
+    env!("CARGO_PKG_VERSION")
+);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HelpTopic {
     #[default]
@@ -111,11 +130,7 @@ impl CutySshApp {
         let mut open = self.show_help;
         let mut close_requested = false;
 
-        let win_title = tr(
-            lang,
-            "📖 Guide Utilisateur & Documentation Illustrée — Cuty-SSH v0.6",
-            "📖 Illustrated User Guide & Documentation — Cuty-SSH v0.6",
-        );
+        let win_title = tr(lang, GUIDE_WINDOW_TITLE_FR, GUIDE_WINDOW_TITLE_EN);
 
         egui::Window::new(win_title)
             .open(&mut open)
@@ -840,11 +855,7 @@ impl CutySshApp {
         let screenshot_b64 = base64::engine::general_purpose::STANDARD
             .encode(include_bytes!("../../assets/screenshot_cockpit.png"));
 
-        let title = tr(
-            lang,
-            "Guide Utilisateur Illustré — Cuty-SSH v0.6",
-            "Illustrated User Guide — Cuty-SSH v0.6",
-        );
+        let title = tr(lang, GUIDE_EXPORT_TITLE_FR, GUIDE_EXPORT_TITLE_EN);
         let subtitle = tr(
             lang,
             "Client SSH2, Bastion (-J), SFTP Drag & Drop, Split View, Clés PuTTY (.ppk v2/v3), Cuty Agent & Sécurité TOFU/DPAPI",
@@ -1168,5 +1179,27 @@ impl CutySshApp {
         let out_path = out_dir.join("user-guide.html");
         std::fs::write(&out_path, html).map_err(|e| format!("Erreur écriture guide HTML: {e}"))?;
         Ok(out_path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The guide titles used to read a hardcoded "v0.6" for ten releases.
+    #[test]
+    fn guide_titles_track_the_package_version() {
+        for title in [
+            GUIDE_WINDOW_TITLE_FR,
+            GUIDE_WINDOW_TITLE_EN,
+            GUIDE_EXPORT_TITLE_FR,
+            GUIDE_EXPORT_TITLE_EN,
+        ] {
+            assert!(
+                title.contains(concat!("v", env!("CARGO_PKG_VERSION"))),
+                "{title:?} misses the manifest version"
+            );
+            assert!(!title.contains("v0.6"), "{title:?} is a stale version");
+        }
     }
 }
