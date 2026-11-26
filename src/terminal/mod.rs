@@ -326,6 +326,89 @@ pub struct DetectedUrl {
     pub url: String,
 }
 
+/// Working directory(s) the shell prompts on screen point to.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PromptCwd {
+    /// Directory of the prompt the cursor sits on: the shell is reading a
+    /// command line, so this is where it currently works.
+    pub at_cursor: Option<String>,
+    /// Directory of the nearest prompt above the cursor: a command is running
+    /// or has just finished, and a shell cannot change directory meanwhile.
+    pub above: Option<String>,
+}
+
+/// Non-empty rows examined upwards from the cursor to find the last prompt.
+const PROMPT_SCAN_ROWS: usize = 6;
+
+/// Characters closing a shell prompt right after the directory: `~$`,
+/// `~#`, `~ >`, `~ %`, and the arrow glyphs of modern themes.
+const PROMPT_END_MARKERS: [char; 6] = ['$', '#', '>', '%', '❯', '»'];
+
+/// Decorations a prompt wraps around the directory: the `]` of
+/// `[user@host ~]$`, the `)` of a VCS segment…
+const PROMPT_DIR_SUFFIX: [char; 3] = [']', ')', '}'];
+
+/// Directory displayed by a shell prompt line and, as a character column,
+/// where the prompt ends. Only a directory that starts with `/` or `~` is
+/// recognised: a bare name (`[user@host app]$`, RHEL's `\W`) cannot be
+/// turned into an absolute path.
+fn prompt_cwd_in(line: &str) -> Option<(String, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    for idx in (0..chars.len()).rev() {
+        if !PROMPT_END_MARKERS.contains(&chars[idx]) {
+            continue;
+        }
+        // A prompt ends its line or is followed by the command being typed.
+        match chars.get(idx + 1) {
+            None | Some(' ') => {}
+            Some(_) => continue,
+        }
+        let before: String = chars[..idx].iter().collect();
+        if let Some(dir) = prompt_dir_token(before.trim_end()) {
+            return Some((dir, idx + 1));
+        }
+    }
+    None
+}
+
+/// Directory of `head` (the text before the prompt end marker): the word
+/// right before the marker, directly (`~/www $`, `[user@host ~/www]$`) or
+/// behind a `user@host:` prefix (`web:~/www#`).
+fn prompt_dir_token(head: &str) -> Option<String> {
+    let run = head.rsplit(' ').next()?.trim_end_matches(PROMPT_DIR_SUFFIX);
+    let candidate = if run.starts_with('/') || run.starts_with('~') {
+        run
+    } else {
+        let (prefix, after) = run.rsplit_once(':')?;
+        // `PATH=$PATH:/usr/bin` and `bash: /usr/bin/ls:` are not prompts.
+        if prefix.contains(['/', '=', '$']) {
+            return None;
+        }
+        after
+    };
+    (candidate.starts_with('/') || candidate.starts_with('~')).then(|| candidate.to_string())
+}
+
+/// Turns the `~`-relative directory of a prompt into an absolute path. `None`
+/// without a home for `~…`, and for another user's home (`~root`).
+pub fn expand_prompt_cwd(dir: &str, home: Option<&str>) -> Option<String> {
+    if dir.starts_with('/') {
+        return Some(dir.to_string());
+    }
+    let rest = dir.strip_prefix('~')?;
+    if let Some(rest) = rest.strip_prefix('/') {
+        Some(format!("{}/{rest}", home?.trim_end_matches('/')))
+    } else if rest.is_empty() {
+        Some(home?.trim_end_matches('/').to_string())
+    } else {
+        None
+    }
+}
+
+fn row_text(row: &[TerminalCell]) -> String {
+    row.iter().map(|c| c.ch).collect()
+}
+
 pub struct TerminalEmulator {
     parser: Parser,
     pub state: TerminalState,
@@ -667,6 +750,43 @@ impl TerminalState {
         } else {
             Some(trimmed)
         }
+    }
+
+    /// Directories the shell prompts around the cursor point to. `None` on
+    /// both fields while the alternate screen is shown (vim, less…): rows
+    /// of a full-screen program are not a prompt to trust.
+    pub fn prompt_cwd(&self) -> PromptCwd {
+        let mut found = PromptCwd::default();
+        if self.using_alt_screen || self.grid.is_empty() {
+            return found;
+        }
+
+        let cursor_row = self.cursor_row.min(self.grid.len() - 1);
+        let cursor_line = row_text(&self.grid[cursor_row]);
+        // The cursor is at or after the end of the prompt (a command may be typed).
+        if let Some((dir, prompt_end)) = prompt_cwd_in(cursor_line.trim_end())
+            && self.cursor_col >= prompt_end
+        {
+            found.at_cursor = Some(dir);
+            return found;
+        }
+
+        let mut examined = 0;
+        for row in (0..cursor_row).rev() {
+            let line = row_text(&self.grid[row]);
+            if line.trim().is_empty() {
+                continue;
+            }
+            examined += 1;
+            if let Some((dir, _)) = prompt_cwd_in(line.trim_end()) {
+                found.above = Some(dir);
+                break;
+            }
+            if examined >= PROMPT_SCAN_ROWS {
+                break;
+            }
+        }
+        found
     }
 
     pub fn dump_all_text(&self) -> String {
@@ -1281,6 +1401,157 @@ mod tests {
         let responses = term.take_pending_responses();
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0], b"\x1b[8;24;80t");
+    }
+
+    fn cwd(line: &str) -> Option<String> {
+        prompt_cwd_in(line).map(|(dir, _)| dir)
+    }
+
+    #[test]
+    fn test_prompt_cwd_common_prompt_styles() {
+        // Alpine / BusyBox `ash` (`\h:\w\$ `): the prompt of the reported session.
+        assert_eq!(
+            cwd("ALPINE-01:/srv/reports# "),
+            Some("/srv/reports".to_string())
+        );
+        // Debian / Ubuntu bash (`\u@\h:\w\$ `), home abbreviated.
+        assert_eq!(cwd("deploy@web-prod-01:~$ "), Some("~".to_string()));
+        assert_eq!(
+            cwd("deploy@web-prod-01:/var/www/app$ ls -la"),
+            Some("/var/www/app".to_string())
+        );
+        // Brackets, a command being typed, `$`/`#`/`>` inside that command.
+        assert_eq!(cwd("[deploy@web-prod-01 ~]$ "), Some("~".to_string()));
+        assert_eq!(
+            cwd("[deploy@web-prod-01 /var/www/app]$ cat > /tmp/out"),
+            Some("/var/www/app".to_string())
+        );
+        assert_eq!(
+            cwd("[deploy@web-prod-01 ~]$ echo $HOME # note"),
+            Some("~".to_string())
+        );
+        // Directory-first prompts and theme arrows.
+        assert_eq!(cwd("/var/www/app $ "), Some("/var/www/app".to_string()));
+        assert_eq!(
+            cwd("deploy@web-prod-01 ~/logs ❯ "),
+            Some("~/logs".to_string())
+        );
+        assert_eq!(
+            cwd("(main) deploy@web-prod-01:~/src » "),
+            Some("~/src".to_string())
+        );
+        assert_eq!(cwd("[user@host:~/dir]$ "), Some("~/dir".to_string()));
+        // The prompt end column is right after the marker.
+        assert_eq!(
+            prompt_cwd_in("web:~/logs# tail -f"),
+            Some(("~/logs".to_string(), 11))
+        );
+    }
+
+    #[test]
+    fn test_prompt_cwd_rejects_non_prompts() {
+        // A bare directory name cannot be expanded: RHEL `[user@host dir]$`.
+        assert_eq!(cwd("[deploy@web-prod-01 app]$ ls"), None);
+        assert_eq!(cwd("bash-5.1$ "), None);
+        assert_eq!(cwd("# "), None);
+        assert_eq!(cwd("# cd /tmp && ls"), None);
+        assert_eq!(cwd(">>> "), None);
+        assert_eq!(cwd("mysql> "), None);
+        // Output and status lines that merely contain a path or a marker.
+        assert_eq!(
+            cwd("-rw-r--r-- 1 root root 8466 Sep  4 02:00 report.html"),
+            None
+        );
+        assert_eq!(cwd("drwxr-xr-x 2 root root /srv/reports"), None);
+        assert_eq!(cwd("/dev/sda2 40G 5% 35G /"), None);
+        assert_eq!(cwd("usage: /usr/bin/app <path>"), None);
+        assert_eq!(cwd("bash: /usr/bin/ls: No such file or directory"), None);
+        assert_eq!(cwd("export PATH=$PATH:/usr/bin$ "), None);
+        assert_eq!(
+            cwd("✅ Connecté à root@192.0.2.10:22 | Auth: Ed25519"),
+            None
+        );
+        // A long path wrapped by a narrow terminal leaves no marker on the row.
+        assert_eq!(cwd("fix-log# "), None);
+    }
+
+    #[test]
+    fn test_expand_prompt_cwd() {
+        let home = Some("/home/deploy");
+        assert_eq!(
+            expand_prompt_cwd("/var/log", home),
+            Some("/var/log".to_string())
+        );
+        assert_eq!(
+            expand_prompt_cwd("~", home),
+            Some("/home/deploy".to_string())
+        );
+        assert_eq!(
+            expand_prompt_cwd("~/logs/app", home),
+            Some("/home/deploy/logs/app".to_string())
+        );
+        // Another user's home, or `~` without a known home: not expandable.
+        assert_eq!(expand_prompt_cwd("~root/etc", home), None);
+        assert_eq!(expand_prompt_cwd("~/logs", None), None);
+        assert_eq!(
+            expand_prompt_cwd("/var/log", None),
+            Some("/var/log".to_string())
+        );
+    }
+
+    #[test]
+    fn test_prompt_cwd_follows_cursor_and_screen() {
+        let mut term = TerminalEmulator::new(80, 24, 1000, "Cuty Dark");
+        // Banner without any prompt.
+        term.feed_bytes(b"=== Cuty-SSH - Session : ALPINE-01 ===\r\n");
+        assert_eq!(term.state.prompt_cwd(), PromptCwd::default());
+
+        term.feed_bytes(b"ALPINE-01:~# cd /srv/reports\r\n");
+        // While the command runs (cursor on the row below the prompt).
+        assert_eq!(
+            term.state.prompt_cwd().above,
+            Some("~".to_string()),
+            "nearest prompt above the cursor"
+        );
+        assert_eq!(term.state.prompt_cwd().at_cursor, None);
+
+        // Fresh prompt: the cursor sits on it, right after the marker.
+        term.feed_bytes(b"ALPINE-01:/srv/reports# ");
+        assert_eq!(
+            term.state.prompt_cwd().at_cursor,
+            Some("/srv/reports".to_string())
+        );
+        assert_eq!(term.state.prompt_cwd().above, None);
+
+        // Output scrolls the prompt away, the next prompt is still found.
+        term.feed_bytes(b"ls -l\r\n");
+        for _ in 0..40 {
+            term.feed_bytes(b"-rw-r--r-- 1 root root 8466 Sep 4 02:00 report.html\r\n");
+        }
+        term.feed_bytes(b"ALPINE-01:/srv/reports# ");
+        assert_eq!(
+            term.state.prompt_cwd().at_cursor,
+            Some("/srv/reports".to_string())
+        );
+
+        // A full-screen program takes over: nothing on screen is a prompt.
+        term.feed_bytes(b"vim report.html");
+        term.feed_bytes(b"\x1b[?1049h");
+        assert_eq!(term.state.prompt_cwd(), PromptCwd::default());
+        term.feed_bytes(b"\x1b[?1049l");
+        assert_eq!(
+            term.state.prompt_cwd().at_cursor,
+            Some("/srv/reports".to_string()),
+            "the prompt is trusted again once vim leaves"
+        );
+
+        // More than PROMPT_SCAN_ROWS of output above the cursor: the prompt
+        // is too far up to be read reliably.
+        term.feed_bytes(b"ls\r\n");
+        for _ in 0..PROMPT_SCAN_ROWS + 1 {
+            term.feed_bytes(b"file.txt\r\n");
+        }
+        assert_eq!(term.state.prompt_cwd(), PromptCwd::default());
     }
 
     #[test]

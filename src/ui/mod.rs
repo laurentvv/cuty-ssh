@@ -22,7 +22,7 @@ use crate::ssh::ppk::{
     generate_openssh_key_encrypted, inspect_key_file, list_agent_keys, load_private_key_any,
     resolve_or_create_primary_key,
 };
-use crate::terminal::{TerminalEmulator, TerminalTheme};
+use crate::terminal::{TerminalEmulator, TerminalTheme, expand_prompt_cwd};
 use crate::ui::help_modal::{HelpTopic, tr};
 use crate::ui::terminal_view::{format_bytes, protocol_badge_style};
 use arboard::Clipboard;
@@ -126,6 +126,8 @@ pub struct SessionTab {
     pub sftp_progress: Option<SftpTransferProgress>,
     pub sftp_props: Option<SftpPropsDialog>,
     pub sftp_mirror: SftpMirrorDialog,
+    /// SFTP panes follow the working directory of the interactive shell.
+    pub sftp_follow: SftpFollowState,
 
     // Terminal search
     pub show_search_bar: bool,
@@ -328,6 +330,135 @@ impl SessionTab {
 
             primary.then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
+    }
+}
+
+/// State of "the SFTP panes follow the terminal": the remote pane lists the
+/// working directory of the interactive shell whenever it changes.
+#[derive(Debug, Default)]
+pub struct SftpFollowState {
+    /// Login directory of the SFTP session (`realpath "."`): expands the `~`
+    /// of shell prompts.
+    home: Option<String>,
+    /// Directory last followed from a prompt on screen, and from the server:
+    /// a source navigates only when its own answer changes, so a manual
+    /// navigation in the pane stays put until the shell moves.
+    followed_prompt: Option<String>,
+    followed_probe: Option<String>,
+    /// Latest answer of the server and when it arrived: stale afterwards,
+    /// the shell may have moved since.
+    probe: Option<(String, std::time::Instant)>,
+    /// The server cannot report the directory (no procfs, `exec` refused).
+    probe_unsupported: bool,
+    probe_sent_at: Option<std::time::Instant>,
+    /// Earliest time the next probe may be sent.
+    next_probe_at: Option<std::time::Instant>,
+    /// SFTP panes visible at the previous frame: opening them re-syncs.
+    was_visible: bool,
+}
+
+/// A probe answer older than this may predate the last `cd`: ask again.
+const SFTP_FOLLOW_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+/// The backend answers a probe within 5 s; an older unanswered one is sent again.
+const SFTP_FOLLOW_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
+impl SessionTab {
+    /// SFTP panes follow the shell: forget what was followed so that the next
+    /// tick lists the working directory again.
+    pub fn sftp_follow_resync(&mut self) {
+        let follow = &mut self.sftp_follow;
+        follow.followed_prompt = None;
+        follow.followed_probe = None;
+        follow.probe = None;
+        follow.probe_unsupported = false;
+        follow.probe_sent_at = None;
+        follow.next_probe_at = None;
+    }
+
+    /// Answer of the backend to [`BackendCommand::QueryShellCwd`].
+    fn on_shell_cwd(&mut self, cwd: Option<String>, now: std::time::Instant) {
+        let follow = &mut self.sftp_follow;
+        follow.probe_sent_at = None;
+        match cwd {
+            Some(cwd) => follow.probe = Some((cwd, now)),
+            None => {
+                follow.probe = None;
+                follow.probe_unsupported = true;
+            }
+        }
+    }
+
+    /// Makes the remote pane list the working directory of the shell. Read
+    /// from the prompt the cursor sits on; else from the server (`/proc`,
+    /// without typing in the terminal); else, where the server cannot
+    /// answer, from the nearest prompt above the cursor.
+    fn sftp_follow_tick(&mut self, now: std::time::Instant, lang: UiLanguage) {
+        if !self.sftp_client.follow_terminal || self.state != TabConnectionState::Connected {
+            return;
+        }
+
+        let prompt = self.terminal.state.prompt_cwd();
+        let home = self.sftp_follow.home.as_deref();
+        if let Some(dir) = prompt.at_cursor {
+            if Some(&dir) != self.sftp_follow.followed_prompt.as_ref()
+                && let Some(path) = expand_prompt_cwd(&dir, home)
+            {
+                self.sftp_follow.followed_prompt = Some(dir.clone());
+                self.sftp_follow_navigate(path, lang);
+            }
+            return;
+        }
+
+        let fresh_probe = self
+            .sftp_follow
+            .probe
+            .as_ref()
+            .filter(|(_, at)| now.duration_since(*at) < SFTP_FOLLOW_PROBE_INTERVAL);
+        if let Some((dir, _)) = fresh_probe {
+            if Some(dir) != self.sftp_follow.followed_probe.as_ref() {
+                self.sftp_follow.followed_probe = Some(dir.clone());
+                self.sftp_follow_navigate(dir.clone(), lang);
+            }
+        } else if self.sftp_follow.probe_unsupported
+            && let Some(dir) = prompt.above
+            && Some(&dir) != self.sftp_follow.followed_prompt.as_ref()
+            && let Some(path) = expand_prompt_cwd(&dir, home)
+        {
+            self.sftp_follow.followed_prompt = Some(dir.clone());
+            self.sftp_follow_navigate(path, lang);
+        }
+        self.sftp_follow_poll(now);
+    }
+
+    fn sftp_follow_navigate(&mut self, path: String, lang: UiLanguage) {
+        let _ = self
+            .handle
+            .cmd_tx
+            .send(BackendCommand::SftpListDir(path.clone()));
+        self.sftp_client.log(
+            tr(
+                lang,
+                &format!("📍 Suivi du répertoire du terminal : {path}"),
+                &format!("📍 Following the terminal directory: {path}"),
+            ),
+            false,
+        );
+    }
+
+    /// Asks the server for the working directory, at most once per interval.
+    fn sftp_follow_poll(&mut self, now: std::time::Instant) {
+        let follow = &mut self.sftp_follow;
+        if follow.probe_unsupported
+            || follow
+                .probe_sent_at
+                .is_some_and(|sent| now.duration_since(sent) < SFTP_FOLLOW_PROBE_TIMEOUT)
+            || follow.next_probe_at.is_some_and(|at| at > now)
+        {
+            return;
+        }
+        follow.probe_sent_at = Some(now);
+        follow.next_probe_at = Some(now + SFTP_FOLLOW_PROBE_INTERVAL);
+        let _ = self.handle.cmd_tx.send(BackendCommand::QueryShellCwd);
     }
 }
 
@@ -1080,6 +1211,83 @@ impl CutySshApp {
                     });
                 }
             }
+            "sftp_follow" => {
+                // SSH tab whose SFTP client follows the terminal, over a
+                // scripted server: the shell sits in /srv/reports.
+                self.launch_session(SessionProfile {
+                    name: "ALPINE-01".to_string(),
+                    protocol: ProtocolType::Ssh,
+                    host: "127.0.0.1".to_string(),
+                    port: 9,
+                    username: "root".to_string(),
+                    ..Default::default()
+                });
+                if let Some(tab) = self.tabs.last_mut() {
+                    let (cmd_tx, mut cmd_rx) = unbounded_channel();
+                    let (evt_tx, evt_rx) = unbounded_channel();
+                    tab.handle = SessionHandle { cmd_tx, evt_rx };
+                    tab.state = TabConnectionState::Connected;
+                    tab.status_line = "Connected to ALPINE-01".to_string();
+                    tab.sftp_follow.home = Some("/root".to_string());
+                    tab.terminal.feed_str(
+                        "Last login: Tue Oct 21 08:12:44 2026 from 10.0.0.12\r\n\
+                         ALPINE-01:~# cd /srv/reports && ls -l\r\n\
+                         -rw-r--r-- 1 root root 8466 Sep  4 02:00 report_20260904_020011.html\r\n\
+                         -rw-r--r-- 1 root root 8466 Sep  6 02:00 report_20260906_020014.html\r\n\
+                         -rw-r--r-- 1 root root 7009 Sep  8 02:00 report_20260908_020007.html\r\n\
+                         ALPINE-01:/srv/reports# ",
+                    );
+                    tab.show_sftp_full = true;
+                    std::thread::spawn(move || {
+                        let entry =
+                            |dir: &str, name: &str, is_dir: bool, size: u64| SftpFileEntry {
+                                name: name.to_string(),
+                                full_path: format!("{dir}/{name}"),
+                                is_dir,
+                                is_symlink: false,
+                                size,
+                                permissions: if is_dir { 0o040755 } else { 0o100644 },
+                                mtime: 1_762_000_000,
+                            };
+                        let work = "/srv/reports";
+                        let home = "/root";
+                        while let Some(cmd) = cmd_rx.blocking_recv() {
+                            match cmd {
+                                BackendCommand::SftpListDir(path) => {
+                                    let entries = match path.as_str() {
+                                        "/srv/reports" => vec![
+                                            entry(work, "report_20261028_020006.html", false, 6621),
+                                            entry(work, "report_20261026_020002.html", false, 5799),
+                                            entry(work, "report_20261024_020015.html", false, 6682),
+                                            entry(work, "report_20261022_020004.html", false, 6620),
+                                            entry(work, "report_20261020_020004.html", false, 6591),
+                                        ],
+                                        "/root" => vec![
+                                            entry(home, ".ansible", true, 0),
+                                            entry(home, ".cache", true, 0),
+                                            entry(home, ".ssh", true, 0),
+                                            entry(home, ".ash_history", false, 33_700),
+                                            entry(home, ".viminfo", false, 21_100),
+                                        ],
+                                        _ => Vec::new(),
+                                    };
+                                    let _ = evt_tx.send(BackendEvent::SftpDirListed {
+                                        current_path: path,
+                                        entries,
+                                    });
+                                }
+                                BackendCommand::QueryShellCwd => {
+                                    let _ = evt_tx.send(BackendEvent::ShellCwd(Some(
+                                        "/srv/reports".to_string(),
+                                    )));
+                                }
+                                BackendCommand::Disconnect => break,
+                                _ => {}
+                            }
+                        }
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -1540,6 +1748,7 @@ impl CutySshApp {
             sftp_progress: None,
             sftp_props: None,
             sftp_mirror: SftpMirrorDialog::default(),
+            sftp_follow: SftpFollowState::default(),
             show_search_bar: false,
             search_query: String::new(),
             log_file_path,
@@ -1683,6 +1892,8 @@ impl CutySshApp {
                         tab.was_connected = true;
                         tab.reconnect_attempt = 0;
                         tab.reconnect_at = None;
+                        // A new shell starts in its login directory: follow it afresh.
+                        tab.sftp_follow = SftpFollowState::default();
                         tab.connect_instant = Some(std::time::Instant::now());
                         tab.host_fingerprint = host_key_fingerprint.clone();
                         tab.auth_summary = auth_used.clone();
@@ -1837,6 +2048,12 @@ impl CutySshApp {
                     }
                     BackendEvent::TelemetryUpdated(metrics) => {
                         tab.telemetry = Some(metrics);
+                    }
+                    BackendEvent::SftpReady { home } => {
+                        tab.sftp_follow.home = Some(home);
+                    }
+                    BackendEvent::ShellCwd(cwd) => {
+                        tab.on_shell_cwd(cwd, std::time::Instant::now());
                     }
                     BackendEvent::SftpDirListed {
                         current_path,
@@ -2206,6 +2423,7 @@ impl eframe::App for CutySshApp {
 
         self.poll_backend_events(&ctx);
         self.process_auto_reconnect(&ctx);
+        self.sync_sftp_follow();
 
         for tab in &mut self.tabs {
             tab.sftp_client
@@ -4132,11 +4350,17 @@ impl CutySshApp {
                                     active_tab.show_sftp_full = !active_tab.show_sftp_full;
                                     active_tab.show_sftp_panel = false;
                                     if active_tab.show_sftp_full {
-                                        let _ = active_tab.handle.cmd_tx.send(
-                                            BackendCommand::SftpListDir(
-                                                active_tab.sftp_current_path.clone(),
-                                            ),
-                                        );
+                                        // Following the shell, the pane opens on its working
+                                        // directory instead (next frame, `sync_sftp_follow`).
+                                        let follows = active_tab.sftp_client.follow_terminal
+                                            && active_tab.state == TabConnectionState::Connected;
+                                        if !follows {
+                                            let _ = active_tab.handle.cmd_tx.send(
+                                                BackendCommand::SftpListDir(
+                                                    active_tab.sftp_current_path.clone(),
+                                                ),
+                                            );
+                                        }
                                         active_tab.sftp_client.refresh_local();
                                     }
                                 }
@@ -4353,6 +4577,25 @@ impl CutySshApp {
                     }
                 });
             });
+    }
+
+    /// SFTP follows the terminal, on the visible tab only, re-synced each
+    /// time its SFTP panes open.
+    fn sync_sftp_follow(&mut self) {
+        let now = std::time::Instant::now();
+        let lang = self.config.language;
+        let Some(tab) = self.tabs.get_mut(self.active_tab_idx) else {
+            return;
+        };
+        let visible = (tab.show_sftp_full || tab.show_sftp_panel)
+            && tab.profile.protocol == ProtocolType::Ssh;
+        if visible && !tab.sftp_follow.was_visible {
+            tab.sftp_follow_resync();
+        }
+        tab.sftp_follow.was_visible = visible;
+        if visible {
+            tab.sftp_follow_tick(now, lang);
+        }
     }
 
     fn render_sftp_side_panel(&mut self, ui: &mut Ui) {
@@ -4969,6 +5212,11 @@ impl CutySshApp {
             &cmd_tx,
             &mut close_requested,
         );
+
+        if tab.sftp_client.follow_resync {
+            tab.sftp_client.follow_resync = false;
+            tab.sftp_follow_resync();
+        }
 
         if let Some(entry) = tab.sftp_client.props_request.take() {
             let mode = entry.permissions & 0o7777;
@@ -9921,4 +10169,226 @@ enum PaletteAction {
     ProbeAll,
     DuplicateActiveTab,
     CloseActiveTab,
+}
+
+#[cfg(test)]
+mod sftp_follow_tests {
+    use super::*;
+
+    /// Connected SSH tab over raw channels: tests read the commands the tab
+    /// sends and feed it backend events by hand.
+    fn tab() -> (SessionTab, UnboundedReceiver<BackendCommand>) {
+        let (cmd_tx, cmd_rx) = unbounded_channel();
+        let (_evt_tx, evt_rx) = unbounded_channel();
+        let tab = SessionTab {
+            tab_id: Uuid::new_v4(),
+            profile: SessionProfile {
+                protocol: ProtocolType::Ssh,
+                ..Default::default()
+            },
+            terminal: TerminalEmulator::new(110, 32, 1000, "Cuty Dark"),
+            handle: SessionHandle { cmd_tx, evt_rx },
+            state: TabConnectionState::Connected,
+            status_line: String::new(),
+            host_fingerprint: None,
+            auth_summary: String::new(),
+            pending_prompt: None,
+            telemetry: None,
+            show_telemetry_bar: false,
+            show_sftp_panel: false,
+            show_sftp_full: true,
+            sftp_client: sftp_client::SftpClientState::new(),
+            sftp_current_path: "/".to_string(),
+            sftp_path_input: "/".to_string(),
+            sftp_entries: Vec::new(),
+            sftp_status: String::new(),
+            sftp_mkdir_name: String::new(),
+            sftp_sort_col: SftpSortColumn::Name,
+            sftp_sort_dir: SortDirection::Ascending,
+            sftp_folders_first: true,
+            sftp_progress: None,
+            sftp_props: None,
+            sftp_mirror: SftpMirrorDialog::default(),
+            sftp_follow: SftpFollowState::default(),
+            show_search_bar: false,
+            search_query: String::new(),
+            log_file_path: None,
+            recorder: None,
+            connect_instant: None,
+            was_connected: true,
+            reconnect_attempt: 0,
+            reconnect_at: None,
+            socks_port: None,
+            socks_listen_port: 1080,
+        };
+        (tab, cmd_rx)
+    }
+
+    /// Every command the tab sent since the last call.
+    fn sent(cmd_rx: &mut UnboundedReceiver<BackendCommand>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            out.push(match cmd {
+                BackendCommand::SftpListDir(path) => format!("list {path}"),
+                BackendCommand::QueryShellCwd => "probe".to_string(),
+                other => format!("other {other:?}"),
+            });
+        }
+        out
+    }
+
+    fn tick(tab: &mut SessionTab, now: std::time::Instant) {
+        tab.sftp_follow_tick(now, UiLanguage::French);
+    }
+
+    fn answered(tab: &mut SessionTab, cwd: Option<&str>, now: std::time::Instant) {
+        tab.on_shell_cwd(cwd.map(str::to_string), now);
+    }
+
+    #[test]
+    fn follows_the_prompt_the_cursor_sits_on() {
+        let (mut tab, mut cmds) = tab();
+        let now = std::time::Instant::now();
+        tab.sftp_follow.home = Some("/root".to_string());
+        tab.terminal
+            .feed_str("ALPINE-01:~# cd /srv/reports\r\nALPINE-01:/srv/reports# ");
+        tick(&mut tab, now);
+        assert_eq!(sent(&mut cmds), ["list /srv/reports"]);
+        // The shell has not moved: a manual navigation in the pane stays put.
+        tick(&mut tab, now);
+        assert!(sent(&mut cmds).is_empty());
+        // A new prompt, a new directory.
+        tab.terminal
+            .feed_str("cd /etc/postfix\r\nALPINE-01:/etc/postfix# ");
+        tick(&mut tab, now);
+        assert_eq!(sent(&mut cmds), ["list /etc/postfix"]);
+    }
+
+    #[test]
+    fn expands_the_tilde_with_the_sftp_login_directory() {
+        let (mut tab, mut cmds) = tab();
+        let now = std::time::Instant::now();
+        tab.terminal.feed_str("deploy@web-prod-01:~/logs$ ");
+        // Without the login directory `~` cannot be expanded: nothing is
+        // listed, and the server is not asked for it either.
+        tick(&mut tab, now);
+        assert!(sent(&mut cmds).is_empty());
+        tab.sftp_follow.home = Some("/home/deploy/".to_string());
+        tick(&mut tab, now);
+        assert_eq!(sent(&mut cmds), ["list /home/deploy/logs"]);
+    }
+
+    #[test]
+    fn asks_the_server_when_the_prompt_shows_no_directory() {
+        let (mut tab, mut cmds) = tab();
+        let now = std::time::Instant::now();
+        // RHEL prompt (`\W`): only the last component of the directory.
+        tab.terminal
+            .feed_str("[root@web-prod-01 ~]# cd /var/log/postfix\r\n[root@web-prod-01 postfix]# ");
+        tick(&mut tab, now);
+        assert_eq!(sent(&mut cmds), ["probe"]);
+        answered(&mut tab, Some("/var/log/postfix"), now);
+        tick(&mut tab, now);
+        assert_eq!(sent(&mut cmds), ["list /var/log/postfix"]);
+        // Same directory, fresh answer: nothing to list.
+        answered(&mut tab, Some("/var/log/postfix"), now);
+        tick(&mut tab, now);
+        assert!(sent(&mut cmds).is_empty());
+    }
+
+    #[test]
+    fn never_applies_a_stale_probe() {
+        let (mut tab, mut cmds) = tab();
+        let now = std::time::Instant::now();
+        tab.terminal.feed_str("[root@web postfix]# ");
+        tick(&mut tab, now);
+        answered(&mut tab, Some("/root"), now);
+        tick(&mut tab, now);
+        assert_eq!(sent(&mut cmds), ["probe", "list /root"]);
+
+        // The shell moves while its prompt shows the directory.
+        tab.terminal
+            .feed_str("cd /srv/app\r\n[root@web:/srv/app]# ");
+        tick(&mut tab, now);
+        assert_eq!(sent(&mut cmds), ["list /srv/app"]);
+
+        // vim takes the screen: the prompt cannot be read and the last probe
+        // answer predates the `cd`. It must not pull the pane back to /root.
+        tab.terminal.feed_str("vim app.conf");
+        tab.terminal.feed_bytes(b"\x1b[?1049h");
+        let later = now + SFTP_FOLLOW_PROBE_INTERVAL + std::time::Duration::from_secs(1);
+        tick(&mut tab, later);
+        assert_eq!(sent(&mut cmds), ["probe"]);
+        answered(&mut tab, Some("/srv/app"), later);
+        tick(&mut tab, later);
+        assert_eq!(sent(&mut cmds), ["list /srv/app"]);
+    }
+
+    #[test]
+    fn reads_the_prompt_above_only_where_the_server_cannot_answer() {
+        let (mut tab, mut cmds) = tab();
+        let now = std::time::Instant::now();
+        // A command is running: the prompt that launched it is above the cursor.
+        tab.terminal.feed_str(
+            "root@web:/srv/app# tail -f app.log\r\nNov 26 14:00:01 web postfix/qmgr[123]: ABCDEF: from=<root@web>\r\n",
+        );
+        tick(&mut tab, now);
+        assert_eq!(sent(&mut cmds), ["probe"]);
+        // The server answers: its directory wins over the prompt above.
+        answered(&mut tab, Some("/srv/app/data"), now);
+        tick(&mut tab, now);
+        assert_eq!(sent(&mut cmds), ["list /srv/app/data"]);
+
+        // A server that cannot answer: the prompt above is all there is.
+        answered(&mut tab, None, now);
+        tick(&mut tab, now);
+        assert_eq!(sent(&mut cmds), ["list /srv/app"]);
+        tick(&mut tab, now);
+        assert!(
+            sent(&mut cmds).is_empty(),
+            "no probe on a server that cannot answer"
+        );
+    }
+
+    #[test]
+    fn follows_again_only_after_a_resync_or_a_disabled_period() {
+        let (mut tab, mut cmds) = tab();
+        let now = std::time::Instant::now();
+        tab.terminal.feed_str("web:/srv/app# ");
+        tick(&mut tab, now);
+        assert_eq!(sent(&mut cmds), ["list /srv/app"]);
+
+        tab.sftp_client.follow_terminal = false;
+        tab.terminal.feed_str("cd /srv/other\r\nweb:/srv/other# ");
+        tick(&mut tab, now);
+        assert!(sent(&mut cmds).is_empty(), "follow is off");
+
+        // On again: the pane opens on the shell directory, like on opening SFTP.
+        tab.sftp_client.follow_terminal = true;
+        tab.sftp_follow_resync();
+        tick(&mut tab, now);
+        assert_eq!(sent(&mut cmds), ["list /srv/other"]);
+
+        // Not connected: nothing is followed, not even asked.
+        tab.state = TabConnectionState::Connecting;
+        tab.terminal.feed_bytes(b"\x1b[?1049h");
+        tick(&mut tab, now);
+        assert!(sent(&mut cmds).is_empty());
+    }
+
+    #[test]
+    fn sends_a_new_probe_when_one_is_never_answered() {
+        let (mut tab, mut cmds) = tab();
+        let now = std::time::Instant::now();
+        tab.terminal.feed_str("[root@web postfix]# ");
+        tick(&mut tab, now);
+        tick(&mut tab, now + SFTP_FOLLOW_PROBE_INTERVAL);
+        assert_eq!(
+            sent(&mut cmds),
+            ["probe"],
+            "an unanswered probe is not repeated"
+        );
+        tick(&mut tab, now + SFTP_FOLLOW_PROBE_TIMEOUT);
+        assert_eq!(sent(&mut cmds), ["probe"]);
+    }
 }

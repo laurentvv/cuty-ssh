@@ -578,6 +578,11 @@ impl CutySshApp {
                     "6. Multi-sélection : Ctrl+clic ajoute/retire une entrée, Maj+clic sélectionne la plage entre l'ancre et la ligne cliquée, Ctrl+Maj+clic étend la sélection. Toute la sélection part d'un coup (glisser ou boutons Téléverser/Télécharger) ; avec la règle « Demander si existe », chaque fichier en conflit est proposé l'un après l'autre, avec « Écraser tout » et « Ignorer tout » pour trancher le lot en un clic.",
                     "6. Multi-selection: Ctrl+click adds/removes an entry, Shift+click selects the range between the anchor and the clicked row, Ctrl+Shift+click extends the selection. The whole selection transfers at once (drag or the Upload/Download buttons); with the 'Ask if file exists' rule, every conflicting file is offered one after another, with 'Overwrite all' and 'Skip all' to settle the whole batch in one click.",
                 ),
+                tr(
+                    lang,
+                    "7. Suivre le terminal (« 📍 Suivre le terminal », activé par défaut) : le volet distant s'ouvre sur le répertoire courant du shell et le suit à chaque cd. Ce répertoire est lu dans l'invite de commandes ([user@host ~/www]$, host:/var/log#) ou, quand l'invite ne l'affiche pas, demandé au serveur par un canal exec dédié (lecture de /proc) : rien n'est jamais tapé dans le terminal. Une navigation manuelle dans le volet reste en place tant que le shell ne change pas de répertoire ; cliquez sur le bouton pour désactiver le suivi.",
+                    "7. Follow terminal ('📍 Follow terminal', on by default): the remote pane opens on the working directory of the shell and follows every cd. That directory is read from the prompt ([user@host ~/www]$, host:/var/log#) or, when the prompt does not show it, asked to the server over a dedicated exec channel (reading /proc): nothing is ever typed into the terminal. A manual navigation in the pane stays put until the shell changes directory; click the button to turn following off.",
+                ),
             ],
         );
 
@@ -971,6 +976,7 @@ impl CutySshApp {
         <li>{c6_b1}</li>
         <li>{c6_b2}</li>
         <li>{c6_b3}</li>
+        <li>{c6_b4}</li>
       </ul>
     </div>
     <div class="card">
@@ -1081,6 +1087,11 @@ impl CutySshApp {
                 lang,
                 "<strong>… Propriétés / ⇅ Miroir</strong> : chmod, lien symbolique, SHA-256, miroir Local ↔ Distant avec prévisualisation, et reprise automatique des transferts interrompus (<code>.cutypart</code>).",
                 "<strong>… Properties / ⇅ Mirror</strong>: chmod, symlink, SHA-256, Local ↔ Remote mirror with preview, and automatic resume of interrupted transfers (<code>.cutypart</code>)."
+            ),
+            c6_b4 = tr(
+                lang,
+                "<strong>📍 Suivre le terminal</strong> : le volet distant du client SFTP s'ouvre sur le répertoire courant du shell et le suit à chaque <code>cd</code> (lu dans l'invite, sinon via <code>/proc</code> sur un canal <code>exec</code> dédié, sans rien taper dans le terminal).",
+                "<strong>📍 Follow terminal</strong>: the remote pane of the SFTP client opens on the working directory of the shell and follows every <code>cd</code> (read from the prompt, else through <code>/proc</code> over a dedicated <code>exec</code> channel, without typing into the terminal)."
             ),
             c9_title = tr(
                 lang,
