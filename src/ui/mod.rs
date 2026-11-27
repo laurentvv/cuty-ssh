@@ -6874,7 +6874,10 @@ impl CutySshApp {
                                                 .set_file_name("id_exported_openssh")
                                                 .save_file()
                                         {
-                                            let _ = std::fs::write(&save_p, pem);
+                                            let _ = crate::ssh::ppk::write_private_key_file(
+                                                &save_p,
+                                                pem.as_bytes(),
+                                            );
                                             self.key_manager_status = format!(
                                                 "{} {}",
                                                 tr(
@@ -6921,7 +6924,10 @@ impl CutySshApp {
                                                     .set_file_name("key_exported.ppk")
                                                     .save_file()
                                                 {
-                                                    let _ = std::fs::write(&save_p, ppk_str);
+                                                    let _ = crate::ssh::ppk::write_private_key_file(
+                                                        &save_p,
+                                                        ppk_str.as_bytes(),
+                                                    );
                                                     self.key_manager_status = format!(
                                                         "{} {}",
                                                         tr(

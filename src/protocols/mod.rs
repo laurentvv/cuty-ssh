@@ -1325,11 +1325,19 @@ async fn run_ssh_session(
                                     && exec_ch.exec(true, script.as_str()).await.is_ok()
                                 {
                                     let mut out = Vec::new();
+                                    const MAX_DEPLOY_OUT: usize = 64 * 1024;
                                     let _ = tokio::time::timeout(Duration::from_secs(6), async {
                                         while let Some(msg) = exec_ch.wait().await {
                                             match msg {
                                                 ChannelMsg::Data { data } => {
-                                                    out.extend_from_slice(&data);
+                                                    let remaining =
+                                                        MAX_DEPLOY_OUT.saturating_sub(out.len());
+                                                    if remaining == 0 {
+                                                        break;
+                                                    }
+                                                    out.extend_from_slice(
+                                                        &data[..data.len().min(remaining)],
+                                                    );
                                                 }
                                                 ChannelMsg::Eof | ChannelMsg::Close => break,
                                                 _ => {}
@@ -1352,13 +1360,11 @@ async fn run_ssh_session(
                                     }
                                 }
                                 if !exec_done {
-                                    let line = format!("{script}\n");
-                                    channel.data(line.as_bytes()).await?;
-                                    let _ = evt_tx.send(BackendEvent::PublicKeyDeployed {
-                                        private_key_path,
-                                        key_comment,
-                                        already_present: false,
-                                    });
+                                    // Never inject raw shell commands into the interactive PTY
+                                    // (could corrupt a foreground program like vim/sudo).
+                                    let _ = evt_tx.send(BackendEvent::ErrorMessage(
+                                        "Échec ssh-copy-id : le canal SSH exec n'a pas confirmé l'installation de la clé publique.".to_string(),
+                                    ));
                                 }
                             }
                             Err(e) => {

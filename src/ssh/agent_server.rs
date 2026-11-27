@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::NamedPipeServer;
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE, LocalFree,
 };
@@ -28,15 +28,42 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
 };
 use windows_sys::Win32::System::Pipes::{
-    CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows_sys::Win32::System::WindowsProgramming::GetUserNameA;
+use zeroize::Zeroizing;
+
+/// Maximum concurrent local clients accepted on the Cuty Agent named pipe.
+const MAX_CONCURRENT_PIPE_CLIENTS: usize = 64;
+/// Per-frame read/write timeout to prevent stalled local clients from holding buffers indefinitely.
+const PIPE_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Raw pipe handle wrapped so it can cross into the async task (`*mut c_void`
 /// is not `Send` by default; a pipe handle is safe to move between threads).
+/// Automatically closes the handle if dropped without being transferred.
 struct SendPipeHandle(WinHandle);
 unsafe impl Send for SendPipeHandle {}
+
+impl SendPipeHandle {
+    fn into_raw(mut self) -> WinHandle {
+        let h = self.0;
+        self.0 = INVALID_HANDLE_VALUE;
+        h
+    }
+}
+
+impl Drop for SendPipeHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+            unsafe {
+                CloseHandle(self.0);
+            }
+            self.0 = INVALID_HANDLE_VALUE;
+        }
+    }
+}
 
 type WinHandle = *mut core::ffi::c_void;
 
@@ -126,10 +153,15 @@ async fn run_accept_loop(
     alive: Arc<AtomicBool>,
 ) {
     let mut pending = Some(first);
+    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_PIPE_CLIENTS));
     while let Some(handle) = pending.take() {
-        let server = match unsafe { NamedPipeServer::from_raw_handle(handle.0 as _) } {
+        let raw = handle.into_raw();
+        let server = match unsafe { NamedPipeServer::from_raw_handle(raw as _) } {
             Ok(s) => s,
             Err(e) => {
+                unsafe {
+                    CloseHandle(raw);
+                }
                 tracing::error!("native agent: wrapping pipe handle failed: {e}");
                 break;
             }
@@ -140,15 +172,25 @@ async fn run_accept_loop(
                 if res.is_err() {
                     break;
                 }
-                let core = core.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_client(server, &core).await {
-                        tracing::debug!("native agent: connection ended: {e}");
+                if let Ok(permit) = permits.clone().try_acquire_owned() {
+                    let core = core.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        if let Err(e) = handle_client(server, &core).await {
+                            tracing::debug!("native agent: connection ended: {e}");
+                        }
+                    });
+                } else {
+                    tracing::warn!("native agent: max concurrent pipe clients reached, dropping client");
+                    drop(server);
+                }
+                pending = match create_pipe_instance(&pipe_name, false) {
+                    Ok(h) => Some(SendPipeHandle(h)),
+                    Err(e) => {
+                        tracing::error!("native agent: creating next pipe instance failed: {e}");
+                        None
                     }
-                });
-                pending = create_pipe_instance(&pipe_name, false)
-                    .ok()
-                    .map(SendPipeHandle);
+                };
             }
         }
     }
@@ -158,7 +200,9 @@ async fn run_accept_loop(
 async fn handle_client(mut stream: NamedPipeServer, core: &NativeAgentCore) -> io::Result<()> {
     let mut len_buf = [0u8; 4];
     loop {
-        stream.read_exact(&mut len_buf).await?;
+        tokio::time::timeout(PIPE_IO_TIMEOUT, stream.read_exact(&mut len_buf))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "agent frame header timeout"))??;
         let len = u32::from_be_bytes(len_buf) as usize;
         if len == 0 || len > MAX_AGENT_FRAME_LEN {
             return Err(io::Error::new(
@@ -166,14 +210,22 @@ async fn handle_client(mut stream: NamedPipeServer, core: &NativeAgentCore) -> i
                 "agent frame length out of bounds",
             ));
         }
-        let mut payload = vec![0u8; len];
-        stream.read_exact(&mut payload).await?;
+        let mut payload = Zeroizing::new(vec![0u8; len]);
+        tokio::time::timeout(PIPE_IO_TIMEOUT, stream.read_exact(&mut payload))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "agent frame body timeout"))??;
         let response = core.process(&payload);
+        let resp_len = u32::try_from(response.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "agent response too large"))?;
         let mut out = Vec::with_capacity(4 + response.len());
-        out.extend_from_slice(&(response.len() as u32).to_be_bytes());
+        out.extend_from_slice(&resp_len.to_be_bytes());
         out.extend_from_slice(&response);
-        stream.write_all(&out).await?;
-        stream.flush().await?;
+        tokio::time::timeout(PIPE_IO_TIMEOUT, stream.write_all(&out))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "agent write timeout"))??;
+        tokio::time::timeout(PIPE_IO_TIMEOUT, stream.flush())
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "agent flush timeout"))??;
     }
 }
 
@@ -221,7 +273,7 @@ fn current_username() -> String {
 }
 
 /// SID of the current process token, in SDDL string form (`S-1-5-21-…`).
-fn current_user_sid_string() -> Option<String> {
+pub(crate) fn current_user_sid_string() -> Option<String> {
     unsafe {
         let mut token: WinHandle = std::ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
@@ -229,11 +281,12 @@ fn current_user_sid_string() -> Option<String> {
         }
         let mut needed: u32 = 0;
         let _ = GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
-        if needed == 0 {
+        if (needed as usize) < std::mem::size_of::<TOKEN_USER>() {
             CloseHandle(token);
             return None;
         }
-        let mut buf = vec![0u8; needed as usize];
+        let words = (needed as usize).div_ceil(std::mem::size_of::<u64>());
+        let mut buf = vec![0u64; words];
         let ok = GetTokenInformation(
             token,
             TokenUser,
@@ -242,12 +295,15 @@ fn current_user_sid_string() -> Option<String> {
             &mut needed,
         ) != 0;
         CloseHandle(token);
-        if !ok {
+        if !ok || (needed as usize) < std::mem::size_of::<TOKEN_USER>() {
             return None;
         }
-        let user = &*(buf.as_ptr() as *const TOKEN_USER);
+        let user = std::ptr::read_unaligned(buf.as_ptr() as *const TOKEN_USER);
+        if user.User.Sid.is_null() {
+            return None;
+        }
         let mut sid_str: *mut u16 = std::ptr::null_mut();
-        if ConvertSidToStringSidW(user.User.Sid as PSID, &mut sid_str) == 0 {
+        if ConvertSidToStringSidW(user.User.Sid as PSID, &mut sid_str) == 0 || sid_str.is_null() {
             return None;
         }
         let mut len = 0usize;
@@ -263,29 +319,35 @@ fn current_user_sid_string() -> Option<String> {
 fn create_pipe_instance(pipe_name: &str, first: bool) -> io::Result<WinHandle> {
     let name_w: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
 
-    // DACL: full control for the current user only. Without this, the default
-    // named-pipe descriptor lets every local account read/write the pipe.
-    let sddl = current_user_sid_string()
-        .map(|sid| format!("D:P(A;;GA;;;{sid})"))
-        .unwrap_or_else(|| "D:P(A;;GA;;;)".to_string());
+    // DACL: full control for the current user only. Fail closed if we cannot
+    // determine our SID or build the security descriptor — never fall back to
+    // Windows' default permissive named-pipe DACL.
+    let sid = current_user_sid_string().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "failed to query current user SID for named pipe DACL",
+        )
+    })?;
+    let sddl = format!("D:P(A;;GA;;;{sid})");
     let sddl_w: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
 
     unsafe {
         let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-        let mut sa = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: std::ptr::null_mut(),
-            bInheritHandle: 0,
-        };
-        let have_custom_sd = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl_w.as_ptr(),
             SDDL_REVISION_1,
             &mut sd,
             std::ptr::null_mut(),
-        ) != 0;
-        if have_custom_sd {
-            sa.lpSecurityDescriptor = sd.cast();
+        ) == 0
+            || sd.is_null()
+        {
+            return Err(io::Error::last_os_error());
         }
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd.cast(),
+            bInheritHandle: 0,
+        };
 
         let mut open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
         if first {
@@ -294,7 +356,7 @@ fn create_pipe_instance(pipe_name: &str, first: bool) -> io::Result<WinHandle> {
         let handle = CreateNamedPipeW(
             name_w.as_ptr(),
             open_mode,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,
             8192,
             8192,
@@ -302,9 +364,7 @@ fn create_pipe_instance(pipe_name: &str, first: bool) -> io::Result<WinHandle> {
             &sa,
         );
 
-        if have_custom_sd {
-            let _ = LocalFree(sd as _);
-        }
+        let _ = LocalFree(sd as _);
 
         if handle == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
