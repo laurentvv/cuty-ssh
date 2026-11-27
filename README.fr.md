@@ -313,15 +313,11 @@ Options générales :
 
 ## Téléchargement & Démarrage rapide
 
-### Option 1 — Installateur Windows (.msi) & WinGet (Recommandé)
+### Option 1 — Installateur Windows (.msi) (Recommandé)
 - **Téléchargement direct** : Téléchargez et exécutez [**`cuty-ssh-v0.11.1-windows-x64.msi`**](https://github.com/laurentvv/cuty-ssh/releases/download/v0.11.1/cuty-ssh-v0.11.1-windows-x64.msi).
   - S'installe proprement dans `%LOCALAPPDATA%\Programs\Cuty-SSH` sans demande d'élévation administrateur (sans popup UAC).
   - Crée automatiquement un raccourci dans le Menu Démarrer avec l'icône de l'application.
   - Désinstallation propre en 1 clic depuis les Paramètres Windows / Applications installées.
-- **Via le gestionnaire de paquets Windows (`winget`)** :
-  ```powershell
-  winget install LaurentVolff.Cuty-SSH
-  ```
 
 ### Option 2 — Binaire autonome portable
 1. Téléchargez **`cuty-ssh.exe`** (ou **`cuty-ssh-v0.11.1-windows-x64.zip`**) depuis la page des [**Releases GitHub**](https://github.com/laurentvv/cuty-ssh/releases/latest).

@@ -385,22 +385,15 @@ General Options:
 
 ## Download & Quick Start
 
-> [!TIP]
-> Stay up to date with `winget upgrade LaurentVolff.Cuty-SSH`.
-
 ### Requirements
 - **Windows 10 or 11 (x64)** — no administrator rights required (per-user install or fully portable).
 - A GPU with **DirectX 12**, Vulkan, or OpenGL support (`wgpu` backend; defaults to DirectX 12, override with `WGPU_BACKEND=vulkan` or `WGPU_BACKEND=gl`).
 
-### Option 1 — Windows Installer (.msi) & WinGet (Recommended)
+### Option 1 — Windows Installer (.msi) (Recommended)
 - **Direct Download**: Download and run [**`cuty-ssh-v0.11.1-windows-x64.msi`**](https://github.com/laurentvv/cuty-ssh/releases/download/v0.11.1/cuty-ssh-v0.11.1-windows-x64.msi).
   - Installs cleanly to `%LOCALAPPDATA%\Programs\Cuty-SSH` without administrator/UAC prompts.
   - Automatically adds a **Cuty-SSH** Start Menu shortcut with application icon.
   - Clean 1-click uninstall from Windows Settings / Installed apps.
-- **Via Windows Package Manager (`winget`)**:
-  ```powershell
-  winget install LaurentVolff.Cuty-SSH
-  ```
 
 ### Option 2 — Portable Standalone Binary
 1. Download **`cuty-ssh.exe`** (or **`cuty-ssh-v0.11.1-windows-x64.zip`**) from the [**GitHub Releases**](https://github.com/laurentvv/cuty-ssh/releases/latest) page.
