@@ -450,10 +450,19 @@ pub struct TerminalState {
     pub pending_responses: Vec<Vec<u8>>,
 }
 
+/// Upper bounds on terminal grid and response queue sizes to prevent CPU/memory DoS
+/// from untrusted remote escape sequences or `.cast` recording headers.
+const MAX_TERMINAL_COLS: usize = 1_000;
+const MAX_TERMINAL_ROWS: usize = 500;
+const MAX_SCROLLBACK_LINES: usize = 200_000;
+const MAX_PENDING_RESPONSES: usize = 16;
+const MAX_OSC_TITLE_CHARS: usize = 256;
+
 impl TerminalEmulator {
     pub fn new(cols: usize, rows: usize, max_scrollback: usize, theme_name: &str) -> Self {
-        let cols = cols.max(10);
-        let rows = rows.max(4);
+        let cols = cols.clamp(10, MAX_TERMINAL_COLS);
+        let rows = rows.clamp(4, MAX_TERMINAL_ROWS);
+        let max_scrollback = max_scrollback.clamp(500, MAX_SCROLLBACK_LINES);
         let grid = vec![vec![TerminalCell::default(); cols]; rows];
         let alt_grid = vec![vec![TerminalCell::default(); cols]; rows];
         Self {
@@ -465,7 +474,7 @@ impl TerminalEmulator {
                 alt_grid,
                 using_alt_screen: false,
                 scrollback: VecDeque::with_capacity(max_scrollback.min(20_000)),
-                max_scrollback: max_scrollback.max(500),
+                max_scrollback,
                 scroll_offset: 0,
                 cursor_col: 0,
                 cursor_row: 0,
@@ -847,11 +856,19 @@ impl TerminalState {
         urls
     }
 
+    fn push_response(&mut self, resp: Vec<u8>) {
+        if self.pending_responses.len() < MAX_PENDING_RESPONSES {
+            self.pending_responses.push(resp);
+        }
+    }
+
     fn scroll_up_region(&mut self, top: usize, bottom: usize, count: usize) {
         let bottom = bottom.min(self.rows.saturating_sub(1));
         if top > bottom {
             return;
         }
+        // Clamp count to the region height so a single CSI 65535 S cannot stall the UI thread.
+        let count = count.min(bottom - top + 1);
         let cols = self.cols;
         for _ in 0..count {
             if !self.using_alt_screen && top == 0 {
@@ -875,6 +892,7 @@ impl TerminalState {
         if top > bottom {
             return;
         }
+        let count = count.min(bottom - top + 1);
         let cols = self.cols;
         let grid = self.active_grid_mut();
         for _ in 0..count {
@@ -1273,11 +1291,11 @@ impl Perform for TerminalState {
                         let r = (self.cursor_row + 1).min(self.rows);
                         let c = (self.cursor_col + 1).min(self.cols);
                         let resp = format!("\x1b[{};{}R", r, c).into_bytes();
-                        self.pending_responses.push(resp);
+                        self.push_response(resp);
                     }
                     5 => {
                         // Operating status: 0 = OK (ready, no malfunction)
-                        self.pending_responses.push(b"\x1b[0n".to_vec());
+                        self.push_response(b"\x1b[0n".to_vec());
                     }
                     _ => {}
                 }
@@ -1286,16 +1304,16 @@ impl Perform for TerminalState {
                 // Device Attributes (DA)
                 if intermediates.is_empty() || intermediates == b"?" {
                     // Primary Device Attributes: report VT100 with Advanced Video Option
-                    self.pending_responses.push(b"\x1b[?1;2c".to_vec());
+                    self.push_response(b"\x1b[?1;2c".to_vec());
                 } else if intermediates == b">" {
                     // Secondary Device Attributes (DA2): terminal type 0, firmware 10, ROM 0
-                    self.pending_responses.push(b"\x1b[>0;10;0c".to_vec());
+                    self.push_response(b"\x1b[>0;10;0c".to_vec());
                 }
             }
             't' if p0 == 18 => {
                 // Window manipulation: Report terminal size in characters: CSI 8 ; rows ; cols t
                 let resp = format!("\x1b[8;{};{}t", self.rows, self.cols).into_bytes();
-                self.pending_responses.push(resp);
+                self.push_response(resp);
             }
             _ => {}
         }
@@ -1328,7 +1346,7 @@ impl Perform for TerminalState {
             }
             ([], b'Z') => {
                 // Obsolete VT100 identification query (DECID)
-                self.pending_responses.push(b"\x1b[?1;2c".to_vec());
+                self.push_response(b"\x1b[?1;2c".to_vec());
             }
             _ => {}
         }
@@ -1338,7 +1356,22 @@ impl Perform for TerminalState {
         if params.len() >= 2 {
             let cmd = params[0];
             if cmd == b"0" || cmd == b"2" {
-                let title = String::from_utf8_lossy(params[1]).to_string();
+                let raw = String::from_utf8_lossy(params[1]);
+                let title: String = raw
+                    .chars()
+                    .filter(|&c| {
+                        !c.is_control()
+                            && !matches!(
+                                c,
+                                '\u{061C}'
+                                    | '\u{200E}'
+                                    | '\u{200F}'
+                                    | '\u{202A}'..='\u{202E}'
+                                    | '\u{2066}'..='\u{2069}'
+                            )
+                    })
+                    .take(MAX_OSC_TITLE_CHARS)
+                    .collect();
                 if !title.is_empty() {
                     self.dynamic_title = Some(title);
                 }

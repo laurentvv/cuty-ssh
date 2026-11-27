@@ -46,7 +46,22 @@ pub enum CliTarget {
     },
 }
 
+/// Restricts Windows default DLL search paths to System32 to mitigate CWD / portable DLL sideloading.
+#[cfg(windows)]
+fn harden_windows_dll_search_order() {
+    use windows_sys::Win32::System::LibraryLoader::{
+        LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
+    };
+    unsafe {
+        let _ = SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+    }
+}
+
+#[cfg(not(windows))]
+fn harden_windows_dll_search_order() {}
+
 fn main() -> eframe::Result {
+    harden_windows_dll_search_order();
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "-V" || a == "--version") {
         #[cfg(windows)]
@@ -262,11 +277,18 @@ fn main() -> eframe::Result {
 }
 
 /// Helper function to parse user@host:port (and optional IPv6 like `[::1]:22`).
+/// Strips URI query/fragment/path suffixes, uses the last `@`, and drops any `:password`
+/// embedded in userinfo so passwords are never leaked as SSH usernames.
 fn parse_user_host_port(raw: &str, default_port: u16) -> (Option<String>, String, Option<u16>) {
-    let (user, remainder) = if let Some((u, r)) = raw.split_once('@') {
-        (Some(u.to_string()), r)
+    let authority = raw.split(['/', '?', '#']).next().unwrap_or(raw).trim();
+    let (user, remainder) = if let Some((u, r)) = authority.rsplit_once('@') {
+        let clean_user = u.split(':').next().unwrap_or(u);
+        (
+            (!clean_user.is_empty()).then(|| clean_user.to_string()),
+            r,
+        )
     } else {
-        (None, raw)
+        (None, authority)
     };
 
     let (host, port) = if let Some(stripped) = remainder.strip_prefix('[') {
@@ -278,7 +300,9 @@ fn parse_user_host_port(raw: &str, default_port: u16) -> (Option<String>, String
         } else {
             (remainder.to_string(), None)
         }
-    } else if let Some((h, p_str)) = remainder.split_once(':') {
+    } else if remainder.matches(':').count() == 1
+        && let Some((h, p_str)) = remainder.split_once(':')
+    {
         (h.to_string(), p_str.parse::<u16>().ok())
     } else {
         (remainder.to_string(), None)
@@ -405,6 +429,7 @@ pub fn parse_cli_target(args: &[String], config: &config::AppConfig) -> Option<C
     }
 
     // 3. Positional argument handling
+    let mut host_already_parsed = false;
     if let Some(first_pos) = positional.first() {
         if first_pos.starts_with("ssh://")
             || first_pos.starts_with("sftp://")
@@ -426,12 +451,13 @@ pub fn parse_cli_target(args: &[String], config: &config::AppConfig) -> Option<C
             open_sftp = scheme_open_sftp;
             protocol = Some(proto);
 
-            let authority = rest.split('/').next().unwrap_or(rest);
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
             let (u, h, p) = parse_user_host_port(authority, def_port);
             if user.is_none() && u.is_some() {
                 user = u;
             }
             host = Some(h);
+            host_already_parsed = true;
             if port.is_none() && p.is_some() {
                 port = p;
             }
@@ -444,6 +470,7 @@ pub fn parse_cli_target(args: &[String], config: &config::AppConfig) -> Option<C
             }
             if host.is_none() {
                 host = Some(h);
+                host_already_parsed = true;
             }
             if port.is_none() && p.is_some() {
                 port = p;
@@ -457,10 +484,15 @@ pub fn parse_cli_target(args: &[String], config: &config::AppConfig) -> Option<C
     // 4. Construct AdHoc profile if host is present
     if let Some(raw_host) = host {
         let proto = protocol.unwrap_or(config::ProtocolType::Ssh);
-        let (u, target_host, p) = parse_user_host_port(&raw_host, proto.default_port());
-        if user.is_none() && u.is_some() {
-            user = u;
-        }
+        let (target_host, p) = if host_already_parsed {
+            (raw_host, None)
+        } else {
+            let (u, h, p) = parse_user_host_port(&raw_host, proto.default_port());
+            if user.is_none() && u.is_some() {
+                user = u;
+            }
+            (h, p)
+        };
         let final_port = port.or(p).unwrap_or_else(|| proto.default_port());
         let final_user = user.unwrap_or_else(|| "root".to_string());
         let session_name = if proto == config::ProtocolType::Ssh {

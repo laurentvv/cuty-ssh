@@ -440,7 +440,10 @@ pub fn parse_cli_invocation(args: &[String], config: &AppConfig) -> Result<Optio
         bail!("No action specified");
     };
 
-    let jump_profile = parse_inline_proxy_jump(&profile.proxy_jump);
+    let jump_profile = profile
+        .jump_host_id
+        .and_then(|jid| config.sessions.iter().find(|s| s.id == jid).cloned())
+        .or_else(|| parse_inline_proxy_jump(&profile.proxy_jump));
 
     Ok(Some(CliInvocation {
         action,
@@ -810,9 +813,24 @@ pub async fn authenticate_cli_session(
                     }
                     client::KeyboardInteractiveAuthResponse::Failure { .. } => break,
                     client::KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
-                        if !replied {
+                        if !replied && prompts.len() <= 16 {
                             replied = true;
-                            let answers = vec![profile.password.clone(); prompts.len()];
+                            // Only send the stored password to prompts that actually ask for a password.
+                            let mut used_pwd = false;
+                            let mut answers = Vec::with_capacity(prompts.len());
+                            let mut unexpected = false;
+                            for p in &prompts {
+                                if !used_pwd && crate::protocols::is_password_prompt(&p.prompt) {
+                                    used_pwd = true;
+                                    answers.push(profile.password.clone());
+                                } else {
+                                    unexpected = true;
+                                    break;
+                                }
+                            }
+                            if unexpected {
+                                break;
+                            }
                             cur = session
                                 .authenticate_keyboard_interactive_respond(answers)
                                 .await?;

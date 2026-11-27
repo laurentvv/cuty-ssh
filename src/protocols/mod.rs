@@ -626,14 +626,25 @@ pub(crate) fn parse_inline_proxy_jump(spec: &str) -> Option<SessionProfile> {
         trimmed,
         &std::env::var("USERNAME").unwrap_or_else(|_| "root".to_string()),
     );
-    let (host, port) = if let Some((h, p_str)) = host_port_part.rsplit_once(':')
+    let (host, port) = if let Some(rest) = host_port_part.strip_prefix('[') {
+        if let Some((ipv6, tail)) = rest.split_once(']') {
+            let p = tail
+                .strip_prefix(':')
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(22);
+            (ipv6.to_string(), p)
+        } else {
+            return None;
+        }
+    } else if host_port_part.matches(':').count() == 1
+        && let Some((h, p_str)) = host_port_part.rsplit_once(':')
         && let Ok(p) = p_str.parse::<u16>()
     {
         (h.to_string(), p)
     } else {
         (host_port_part, 22)
     };
-    if host.is_empty() {
+    if host.is_empty() || port == 0 || host.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return None;
     }
     Some(SessionProfile {
@@ -652,7 +663,7 @@ pub(crate) fn parse_inline_proxy_jump(spec: &str) -> Option<SessionProfile> {
 }
 
 /// Whether a keyboard-interactive prompt asks for the account password (EN/FR/DE/ES).
-fn is_password_prompt(prompt: &str) -> bool {
+pub(crate) fn is_password_prompt(prompt: &str) -> bool {
     let p = prompt.to_lowercase();
     ["password", "mot de passe", "passwort", "contraseña"]
         .iter()
@@ -1024,10 +1035,28 @@ async fn run_ssh_session(
         authenticate_ssh_handle(&mut session, &profile, &mut cmd_rx, &evt_tx).await?;
     let fp = server_fp.lock().ok().and_then(|g| g.clone());
 
-    // Start port forwarding rules (-L / -R)
+    // Start port forwarding rules (-L / -R / -D) with automatic abort-on-drop
+    // so local listeners and Arc<Handle> are never leaked after disconnect.
+    struct TunnelGuard(Vec<tokio::task::JoinHandle<()>>);
+    impl Drop for TunnelGuard {
+        fn drop(&mut self) {
+            for task in self.0.drain(..) {
+                task.abort();
+            }
+        }
+    }
+    struct QuickSocksGuard(Option<(u16, tokio::task::JoinHandle<()>)>);
+    impl Drop for QuickSocksGuard {
+        fn drop(&mut self) {
+            if let Some((_, task)) = self.0.take() {
+                task.abort();
+            }
+        }
+    }
+
     let session = Arc::new(session);
-    let mut socks_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-    let mut quick_socks: Option<(u16, tokio::task::JoinHandle<()>)> = None;
+    let mut tunnel_tasks = TunnelGuard(Vec::new());
+    let mut quick_socks = QuickSocksGuard(None);
     for rule in &profile.port_forwards {
         if !rule.enabled {
             continue;
@@ -1039,7 +1068,7 @@ async fn run_ssh_session(
                 let target_port = rule.target_port as u32;
                 let sess_clone = Arc::clone(&session);
                 let evt_clone = evt_tx.clone();
-                tokio::spawn(async move {
+                tunnel_tasks.0.push(tokio::spawn(async move {
                     match TcpListener::bind(&bind_addr).await {
                         Ok(listener) => {
                             let _ = evt_clone.send(BackendEvent::StatusMessage(format!(
@@ -1076,13 +1105,13 @@ async fn run_ssh_session(
                             )));
                         }
                     }
-                });
+                }));
             }
             PortForwardType::Dynamic => {
                 let bind = format!("{}:{}", rule.bind_address, rule.bind_port);
                 match start_socks_proxy(Arc::clone(&session), &bind).await {
                     Ok(task) => {
-                        socks_tasks.push(task);
+                        tunnel_tasks.0.push(task);
                         let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
                             "SOCKS5 actif : {bind}"
                         )));
@@ -1215,8 +1244,7 @@ async fn run_ssh_session(
                         if expect_rules.iter().any(|r| r.enabled) {
                             recent_text_window.push_str(&String::from_utf8_lossy(&bytes));
                             if recent_text_window.len() > 2048 {
-                                let drain = recent_text_window.len() - 1024;
-                                recent_text_window.drain(..drain);
+                                drain_prefix_utf8_safe(&mut recent_text_window, 1024);
                             }
                             for rule in &mut expect_rules {
                                 if rule.enabled && !rule.trigger_prompt.is_empty() && recent_text_window.contains(&rule.trigger_prompt) {
@@ -1259,7 +1287,7 @@ async fn run_ssh_session(
                         let _ = channel.window_change(cols as u32, rows as u32, 0, 0).await;
                     }
                     Some(BackendCommand::ToggleSocks(port)) => {
-                        if let Some((p, task)) = quick_socks.take() {
+                        if let Some((p, task)) = quick_socks.0.take() {
                             task.abort();
                             let _ = evt_tx.send(BackendEvent::SocksState(None));
                             let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
@@ -1269,7 +1297,7 @@ async fn run_ssh_session(
                             let bind = format!("127.0.0.1:{port}");
                             match start_socks_proxy(Arc::clone(&session), &bind).await {
                                 Ok(task) => {
-                                    quick_socks = Some((port, task));
+                                    quick_socks.0 = Some((port, task));
                                     let _ = evt_tx.send(BackendEvent::SocksState(Some(port)));
                                     let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
                                         "SOCKS5 actif : {bind}"
@@ -1651,6 +1679,19 @@ async fn run_ssh_session(
     Ok(())
 }
 
+/// Drains the oldest bytes of `s` so at most `keep_bytes` remain, aligning to a
+/// valid UTF-8 character boundary so multi-byte network output can never panic.
+fn drain_prefix_utf8_safe(s: &mut String, keep_bytes: usize) {
+    if s.len() <= keep_bytes {
+        return;
+    }
+    let mut drain = s.len() - keep_bytes;
+    while drain < s.len() && !s.is_char_boundary(drain) {
+        drain += 1;
+    }
+    s.drain(..drain);
+}
+
 /// Minimal SOCKS5 server side (RFC 1928): no authentication, CONNECT only.
 /// Returns the requested destination `(host, port)` after answering the greeting.
 async fn socks5_negotiate<S>(s: &mut S) -> Result<(String, u16)>
@@ -1670,7 +1711,7 @@ where
 
     let mut req = [0u8; 4];
     s.read_exact(&mut req).await?;
-    anyhow::ensure!(req[0] == 5, "bad SOCKS5 request");
+    anyhow::ensure!(req[0] == 5 && req[2] == 0, "bad SOCKS5 request");
     if req[1] != 1 {
         s.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
         anyhow::bail!("unsupported SOCKS5 command {}", req[1]);
@@ -1684,9 +1725,15 @@ where
         3 => {
             let mut len = [0u8; 1];
             s.read_exact(&mut len).await?;
+            anyhow::ensure!(len[0] > 0, "empty SOCKS5 domain");
             let mut name = vec![0u8; len[0] as usize];
             s.read_exact(&mut name).await?;
-            String::from_utf8(name).context("invalid SOCKS5 host name")?
+            let domain = String::from_utf8(name).context("invalid SOCKS5 host name")?;
+            anyhow::ensure!(
+                !domain.chars().any(|c| c.is_control() || c.is_whitespace()),
+                "invalid characters in SOCKS5 domain"
+            );
+            domain
         }
         4 => {
             let mut a = [0u8; 16];
@@ -1700,23 +1747,49 @@ where
     };
     let mut port = [0u8; 2];
     s.read_exact(&mut port).await?;
-    Ok((host, u16::from_be_bytes(port)))
+    let port_num = u16::from_be_bytes(port);
+    anyhow::ensure!(port_num > 0, "invalid SOCKS5 port 0");
+    Ok((host, port_num))
 }
 
-/// Parses an HTTP `CONNECT host:port` request head. Only CONNECT is supported.
+/// Parses an HTTP `CONNECT host:port HTTP/1.x` request head. Only CONNECT is supported;
+/// rejects body-carrying headers (`Content-Length`/`Transfer-Encoding`) to prevent smuggling.
 fn parse_http_connect(head: &str) -> Option<(String, u16)> {
-    let line = head.lines().next()?;
+    let mut lines = head.lines();
+    let line = lines.next()?;
     let mut parts = line.split_whitespace();
     if !parts.next()?.eq_ignore_ascii_case("CONNECT") {
         return None;
     }
     let authority = parts.next()?;
-    let (host, port) = authority.rsplit_once(':')?;
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    if host.is_empty() {
+    let version = parts.next()?;
+    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") || parts.next().is_some() {
         return None;
     }
-    Some((host.to_string(), port.parse().ok()?))
+    for header in lines {
+        if let Some((name, _)) = header.split_once(':') {
+            let n = name.trim();
+            if n.eq_ignore_ascii_case("content-length")
+                || n.eq_ignore_ascii_case("transfer-encoding")
+            {
+                return None;
+            }
+        }
+    }
+    let (host, port_str) = if let Some(rest) = authority.strip_prefix('[') {
+        let (ipv6, tail) = rest.split_once(']')?;
+        (ipv6, tail.strip_prefix(':')?)
+    } else {
+        authority.rsplit_once(':')?
+    };
+    if host.is_empty() || host.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return None;
+    }
+    let port: u16 = port_str.parse().ok()?;
+    if port == 0 {
+        return None;
+    }
+    Some((host.to_string(), port))
 }
 
 /// Reads an HTTP proxy request head (up to the blank line, 8 KiB max) and returns the
@@ -1743,27 +1816,44 @@ where
 }
 
 /// Binds `bind` and serves SOCKS5 and HTTP CONNECT clients (detected from the first byte)
-/// through SSH `direct-tcpip` channels.
+/// through SSH `direct-tcpip` channels, bounded by concurrency and handshake timeouts.
 async fn start_socks_proxy(
     session: Arc<client::Handle<SshClientHandler>>,
     bind: &str,
 ) -> Result<tokio::task::JoinHandle<()>> {
+    const MAX_PROXY_CONNS: usize = 256;
+    const PROXY_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
     let listener = TcpListener::bind(bind).await?;
+    let permits = Arc::new(tokio::sync::Semaphore::new(MAX_PROXY_CONNS));
     Ok(tokio::spawn(async move {
         while let Ok((mut local, peer)) = listener.accept().await {
+            let Ok(permit) = permits.clone().try_acquire_owned() else {
+                drop(local);
+                continue;
+            };
             let session = Arc::clone(&session);
             tokio::spawn(async move {
+                let _permit = permit;
                 let mut first = [0u8; 1];
-                if local.peek(&mut first).await.unwrap_or(0) == 0 {
+                let peek_ok = tokio::time::timeout(PROXY_HANDSHAKE_TIMEOUT, local.peek(&mut first))
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .unwrap_or(0);
+                if peek_ok == 0 {
                     return;
                 }
                 let http = first[0] != 5;
-                let negotiated = if http {
-                    http_connect_negotiate(&mut local).await
-                } else {
-                    socks5_negotiate(&mut local).await
-                };
-                let Ok((host, port)) = negotiated else {
+                let negotiated = tokio::time::timeout(PROXY_HANDSHAKE_TIMEOUT, async {
+                    if http {
+                        http_connect_negotiate(&mut local).await
+                    } else {
+                        socks5_negotiate(&mut local).await
+                    }
+                })
+                .await;
+                let Ok(Ok((host, port))) = negotiated else {
                     return;
                 };
                 match session
@@ -2443,6 +2533,8 @@ async fn run_tcp_or_telnet_session(
     let mut cur_rows = initial_rows;
     let mut auto_user_sent = false;
     let mut auto_pass_sent = false;
+    let mut user_interacted = false;
+    let connected_at = std::time::Instant::now();
     let mut recent_text = String::new();
 
     loop {
@@ -2464,27 +2556,39 @@ async fn run_tcp_or_telnet_session(
                         if !display_bytes.is_empty() {
                             let _ = evt_tx.send(BackendEvent::Output(display_bytes.clone()));
 
-                            // Telnet connection automation (auto-login & auto-password)
-                            recent_text.push_str(&String::from_utf8_lossy(&display_bytes));
-                            if recent_text.len() > 1024 {
-                                let drain = recent_text.len() - 512;
-                                recent_text.drain(..drain);
-                            }
-                            let lower = recent_text.to_lowercase();
-                            if profile.auto_login && !auto_user_sent && !profile.username.is_empty()
-                                && (lower.contains("login:") || lower.contains("username:"))
+                            // Telnet-only logon automation: restricted to initial 30 s window,
+                            // disarmed once the user interacts manually, and matched at prompt end.
+                            if is_telnet
+                                && !user_interacted
+                                && connected_at.elapsed() < Duration::from_secs(30)
+                                && ((profile.auto_login && !auto_user_sent && !profile.username.is_empty())
+                                    || (profile.auto_password && !auto_pass_sent && !profile.password.is_empty()))
                             {
-                                auto_user_sent = true;
-                                let u = format!("{}\r\n", profile.username);
-                                let _ = stream.write_all(u.as_bytes()).await;
-                                recent_text.clear();
-                            } else if profile.auto_password && !auto_pass_sent && !profile.password.is_empty()
-                                && lower.contains("password:")
-                            {
-                                auto_pass_sent = true;
-                                let p = format!("{}\r\n", profile.password);
-                                let _ = stream.write_all(p.as_bytes()).await;
-                                recent_text.clear();
+                                recent_text.push_str(&String::from_utf8_lossy(&display_bytes));
+                                if recent_text.len() > 1024 {
+                                    drain_prefix_utf8_safe(&mut recent_text, 512);
+                                }
+                                let tail = recent_text.trim_end().to_lowercase();
+                                if profile.auto_login
+                                    && !auto_user_sent
+                                    && !profile.username.is_empty()
+                                    && (tail.ends_with("login:") || tail.ends_with("username:"))
+                                {
+                                    auto_user_sent = true;
+                                    let u = format!("{}\r\n", profile.username);
+                                    let _ = stream.write_all(u.as_bytes()).await;
+                                    recent_text.clear();
+                                } else if profile.auto_password
+                                    && !auto_pass_sent
+                                    && !profile.password.is_empty()
+                                    && (auto_user_sent || profile.username.is_empty())
+                                    && tail.ends_with("password:")
+                                {
+                                    auto_pass_sent = true;
+                                    let p = format!("{}\r\n", profile.password);
+                                    let _ = stream.write_all(p.as_bytes()).await;
+                                    recent_text.clear();
+                                }
                             }
                         }
                     }
@@ -2497,6 +2601,7 @@ async fn run_tcp_or_telnet_session(
             cmd_opt = cmd_rx.recv() => {
                 match cmd_opt {
                     Some(BackendCommand::SendInput(bytes)) => {
+                        user_interacted = true;
                         stream.write_all(&bytes).await?;
                     }
                     Some(BackendCommand::Resize { cols, rows }) => {
@@ -2638,11 +2743,12 @@ fn run_local_pty_session(
         pixel_height: 0,
     })?;
 
-    let shell_cmd = if profile.local_shell_cmd.trim().is_empty() {
+    let raw_shell = if profile.local_shell_cmd.trim().is_empty() {
         "powershell.exe".to_string()
     } else {
         profile.local_shell_cmd.trim().to_string()
     };
+    let shell_cmd = resolve_system_shell_executable(&raw_shell);
 
     let cmd = CommandBuilder::new(&shell_cmd);
     let mut child = pair
@@ -2725,6 +2831,39 @@ fn run_local_pty_session(
     Ok(())
 }
 
+/// Resolves standard bare Windows shell names to their `%SystemRoot%\System32`
+/// absolute paths so portable launches cannot be hijacked by a planted binary in CWD.
+fn resolve_system_shell_executable(shell: &str) -> String {
+    #[cfg(windows)]
+    {
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let sys32 = PathBuf::from(sysroot).join("System32");
+        if shell.eq_ignore_ascii_case("powershell.exe") {
+            let p = sys32
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe");
+            if p.exists() {
+                return p.to_string_lossy().into_owned();
+            }
+        } else if shell.eq_ignore_ascii_case("cmd.exe") {
+            let p = sys32.join("cmd.exe");
+            if p.exists() {
+                return p.to_string_lossy().into_owned();
+            }
+        } else if shell.eq_ignore_ascii_case("wsl.exe") {
+            let p = sys32.join("wsl.exe");
+            if p.exists() {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    shell.to_string()
+}
+
+/// Maximum bytes buffered from short-lived background SSH `exec` probes (prevents client OOM DoS).
+const MAX_PROBE_BYTES: usize = 64 * 1024;
+
 /// Collects non-intrusive system metrics (hostname, kernel, uptime, loadavg, RAM, root disk)
 /// over a short-lived SSH exec channel without disturbing the interactive terminal.
 async fn fetch_remote_telemetry(
@@ -2745,7 +2884,13 @@ async fn fetch_remote_telemetry(
     let collect_res = tokio::time::timeout(Duration::from_secs(4), async {
         while let Some(msg) = ch.wait().await {
             match msg {
-                ChannelMsg::Data { data } => out.extend_from_slice(&data),
+                ChannelMsg::Data { data } => {
+                    let remaining = MAX_PROBE_BYTES.saturating_sub(out.len());
+                    if remaining == 0 {
+                        break;
+                    }
+                    out.extend_from_slice(&data[..data.len().min(remaining)]);
+                }
                 ChannelMsg::Eof | ChannelMsg::Close => break,
                 _ => {}
             }
@@ -2862,7 +3007,13 @@ async fn probe_shell_cwd<H: client::Handler>(session: &client::Handle<H>) -> Opt
             .ok()?;
         while let Some(msg) = ch.wait().await {
             match msg {
-                ChannelMsg::Data { data } => out.extend_from_slice(&data),
+                ChannelMsg::Data { data } => {
+                    let remaining = MAX_PROBE_BYTES.saturating_sub(out.len());
+                    if remaining == 0 {
+                        break;
+                    }
+                    out.extend_from_slice(&data[..data.len().min(remaining)]);
+                }
                 ChannelMsg::Failure => return None,
                 ChannelMsg::Eof | ChannelMsg::Close => break,
                 _ => {}
@@ -4281,5 +4432,31 @@ mod kbdint_tests {
         assert!(safe_join_rel_under(&base, "sub/dir/file.txt").is_ok());
         assert!(safe_join_rel_under(&base, "sub/../escape.txt").is_err());
         assert!(safe_join_rel_under(Path::new("."), "").is_err());
+    }
+
+    #[test]
+    fn drain_prefix_utf8_safe_never_panics_on_multibyte_boundaries() {
+        let mut s = "é".repeat(600); // 1200 bytes (2-byte UTF-8 chars)
+        super::drain_prefix_utf8_safe(&mut s, 513); // odd keep_bytes would split 'é'
+        assert!(s.len() <= 513);
+        let mut s3 = "€".repeat(500); // 1500 bytes (3-byte UTF-8 chars)
+        super::drain_prefix_utf8_safe(&mut s3, 512);
+        assert!(s3.len() <= 512);
+    }
+
+    #[test]
+    fn parse_http_connect_rejects_smuggling_and_zero_port() {
+        assert_eq!(
+            super::parse_http_connect("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"),
+            Some(("example.com".to_string(), 443))
+        );
+        assert_eq!(
+            super::parse_http_connect("CONNECT [::1]:8443 HTTP/1.1\r\n\r\n"),
+            Some(("::1".to_string(), 8443))
+        );
+        assert!(super::parse_http_connect("CONNECT example.com:0 HTTP/1.1\r\n\r\n").is_none());
+        assert!(super::parse_http_connect("CONNECT example.com:443 HTTP/1.1\r\nContent-Length: 5\r\n\r\n").is_none());
+        assert!(super::parse_http_connect("CONNECT example.com:443 HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").is_none());
+        assert!(super::parse_http_connect("CONNECT example.com:443 BOGUS\r\n\r\n").is_none());
     }
 }

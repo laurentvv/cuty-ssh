@@ -40,6 +40,8 @@ impl CutySshApp {
             || self.show_about
             || self.show_session_manager
             || self.show_known_hosts
+            || self.show_audit_modal
+            || self.show_replay_modal
             || self.show_help;
         let lang = self.config.language;
 
@@ -547,8 +549,10 @@ fn render_single_terminal_pane(
         && let Ok(text) = cb.get_text()
     {
         if tab.terminal.state.bracketed_paste {
+            // Strip embedded ESC/bracketed-paste terminators (`\x1b[201~`) to prevent breakout.
+            let clean = text.replace("\x1b[201~", "").replace('\x1b', "");
             bytes_to_send.extend_from_slice(b"\x1b[200~");
-            bytes_to_send.extend_from_slice(text.as_bytes());
+            bytes_to_send.extend_from_slice(clean.as_bytes());
             bytes_to_send.extend_from_slice(b"\x1b[201~");
         } else {
             bytes_to_send.extend_from_slice(text.as_bytes());
@@ -774,8 +778,9 @@ fn render_single_terminal_pane(
                 match event {
                     egui::Event::Paste(text) => {
                         if bracketed {
+                            let clean = text.replace("\x1b[201~", "").replace('\x1b', "");
                             bytes_to_send.extend_from_slice(b"\x1b[200~");
-                            bytes_to_send.extend_from_slice(text.as_bytes());
+                            bytes_to_send.extend_from_slice(clean.as_bytes());
                             bytes_to_send.extend_from_slice(b"\x1b[201~");
                         } else {
                             bytes_to_send.extend_from_slice(text.as_bytes());

@@ -1985,9 +1985,13 @@ impl CutySshApp {
                         if let Some(rec) = &mut tab.recorder {
                             rec.record_output(&bytes);
                         }
-                        // Forward CPR/DA/etc. responses triggered by input immediately
-                        for resp in tab.terminal.take_pending_responses() {
-                            let _ = tab.handle.cmd_tx.send(BackendCommand::SendInput(resp));
+                        // Forward CPR/DA/etc. responses only on interactive non-read-only sessions
+                        // (never inject terminal replies into read-only tabs or RawTcp streams).
+                        let responses = tab.terminal.take_pending_responses();
+                        if !tab.profile.read_only && tab.profile.protocol != ProtocolType::RawTcp {
+                            for resp in responses {
+                                let _ = tab.handle.cmd_tx.send(BackendCommand::SendInput(resp));
+                            }
                         }
                         if let Some(log_path) = &tab.log_file_path
                             && let Ok(mut f) =
@@ -2397,12 +2401,12 @@ impl CutySshApp {
     }
 
     pub(crate) fn send_bytes_to_active_or_broadcast(&mut self, bytes: &[u8]) {
+        // Security: never record raw stdin keystrokes ("i") in `.cast` files by default —
+        // masked prompts (sudo/su/passwd/DB) suppress echo so output stays clean, whereas
+        // recording stdin would persist typed passwords in plaintext.
         if self.broadcast_mode {
             for tab in &mut self.tabs {
                 if !tab.profile.read_only && tab.state == TabConnectionState::Connected {
-                    if let Some(rec) = &mut tab.recorder {
-                        rec.record_input(bytes);
-                    }
                     let _ = tab
                         .handle
                         .cmd_tx
@@ -2412,9 +2416,6 @@ impl CutySshApp {
         } else if let Some(tab) = self.tabs.get_mut(self.active_tab_idx)
             && !tab.profile.read_only
         {
-            if let Some(rec) = &mut tab.recorder {
-                rec.record_input(bytes);
-            }
             let _ = tab
                 .handle
                 .cmd_tx
@@ -8244,7 +8245,9 @@ impl CutySshApp {
                     .send(BackendCommand::ProvideSecret(p.input_value));
             }
         } else if cancel {
-            tab.pending_prompt = None;
+            if let Some(mut p) = tab.pending_prompt.take() {
+                p.input_value.zeroize();
+            }
             let _ = tab.handle.cmd_tx.send(BackendCommand::Disconnect);
         }
     }
