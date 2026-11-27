@@ -1728,10 +1728,27 @@ impl CutySshApp {
         terminal.feed_str(&welcome);
 
         let log_file_path = if profile.log_to_file {
-            let logs_dir = PathBuf::from("cuty-ssh-portable").join("logs");
+            let logs_dir = AppConfig::portable_dir().join("logs");
             let _ = std::fs::create_dir_all(&logs_dir);
             let ts = Local::now().format("%Y%m%d_%H%M%S");
-            Some(logs_dir.join(format!("{}_{}.log", profile.name.replace(' ', "_"), ts)))
+            let safe_name: String = profile
+                .name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .take(80)
+                .collect();
+            let safe_name = if safe_name.is_empty() {
+                "session".to_string()
+            } else {
+                safe_name
+            };
+            Some(logs_dir.join(format!("{safe_name}_{ts}.log")))
         } else {
             None
         };

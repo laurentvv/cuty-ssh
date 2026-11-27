@@ -58,7 +58,7 @@ pub struct SessionRecorder {
 impl SessionRecorder {
     /// Start recording a new session to `cuty-ssh-portable/recordings/<sanitized_name>_<timestamp>.cast`.
     pub fn start(session_name: &str, cols: usize, rows: usize) -> Result<Self> {
-        let base_dir = PathBuf::from("cuty-ssh-portable").join("recordings");
+        let base_dir = crate::config::AppConfig::portable_dir().join("recordings");
         let _ = std::fs::create_dir_all(&base_dir);
 
         let now_unix = SystemTime::now()

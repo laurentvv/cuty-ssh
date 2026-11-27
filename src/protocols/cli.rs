@@ -1,6 +1,6 @@
 use crate::config::{
-    AppConfig, HostKeyCheckResult, SessionProfile, SshAuthMethod, load_known_hosts,
-    split_user_and_host, verify_or_record_known_host,
+    AppConfig, HostKeyCheckResult, SessionProfile, SshAuthMethod, split_user_and_host,
+    verify_or_record_known_host,
 };
 use crate::protocols::{parse_inline_proxy_jump, rsa_hash_candidates};
 use crate::ssh::ppk::{inspect_key_file, load_private_key_any};
@@ -472,22 +472,31 @@ impl client::Handler for CliSshHandler {
                 pk.fingerprint(HashAlg::Sha256).to_string(),
                 pk.public_key_base64(),
             ),
-            PublicKeyOrCertificate::Certificate(cert) => (
-                cert.algorithm().to_string(),
-                format!("CERT:{}", cert.algorithm()),
-                String::new(),
-            ),
+            PublicKeyOrCertificate::Certificate(cert) => {
+                eprintln!(
+                    "cuty-ssh: Host certificate verification rejected for {}:{} ({}): CA validation (@cert-authority) is not configured.",
+                    self.host,
+                    self.port,
+                    cert.algorithm()
+                );
+                return Ok(false);
+            }
         };
 
         if self.batch_mode {
-            let entries = load_known_hosts();
-            let host_port = if self.port == 22 {
-                self.host.trim().to_lowercase()
-            } else {
-                format!("[{}]:{}", self.host.trim().to_lowercase(), self.port)
+            let entries = match crate::config::load_known_hosts_checked() {
+                Ok(e) => e,
+                Err(err) => {
+                    eprintln!("cuty-ssh: Host key store error (fail-closed): {err}");
+                    return Ok(false);
+                }
             };
+            let host_port = crate::config::canonicalize_known_host_port(&self.host, self.port);
             if let Some(existing) = entries.iter().find(|e| e.host_port == host_port) {
-                if existing.fingerprint_sha256 == fp_raw {
+                let b64_ok = existing.public_key_base64.is_empty()
+                    || b64.is_empty()
+                    || existing.public_key_base64 == b64;
+                if existing.fingerprint_sha256 == fp_raw && b64_ok {
                     if let Ok(mut guard) = self.server_fingerprint.lock() {
                         *guard = Some(fp_raw);
                     }
@@ -542,6 +551,10 @@ impl client::Handler for CliSshHandler {
                         "cuty-ssh: Host key mismatch for {}:{} ({})! Expected {}, received {}.",
                         self.host, self.port, algorithm, expected_fingerprint, actual_fingerprint
                     );
+                    Ok(false)
+                }
+                HostKeyCheckResult::StoreError(err) => {
+                    eprintln!("cuty-ssh: Host key store error (fail-closed): {err}");
                     Ok(false)
                 }
             }

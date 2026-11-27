@@ -303,11 +303,15 @@ impl client::Handler for SshClientHandler {
                 pk.fingerprint(HashAlg::Sha256).to_string(),
                 pk.public_key_base64(),
             ),
-            PublicKeyOrCertificate::Certificate(cert) => (
-                cert.algorithm().to_string(),
-                format!("CERT:{}", cert.algorithm()),
-                String::new(),
-            ),
+            PublicKeyOrCertificate::Certificate(cert) => {
+                let _ = self.evt_tx.send(BackendEvent::ErrorMessage(format!(
+                    "🚨 Certificat hôte SSH refusé pour {}:{} ({}) : la vérification d'autorité de certification (@cert-authority) n'est pas configurée.",
+                    self.host,
+                    self.port,
+                    cert.algorithm()
+                )));
+                return Ok(false);
+            }
         };
 
         let check_res = verify_or_record_known_host(&self.host, self.port, &alg, &fp_raw, &b64);
@@ -344,6 +348,12 @@ impl client::Handler for SshClientHandler {
                 let _ = self.evt_tx.send(BackendEvent::ErrorMessage(format!(
                     "🚨 ALERTE SÉCURITÉ MITM — La clé SSH de {}:{} ({}) a changé ! Attendu : {} | Reçu : {}. Révoquez l'ancienne clé dans '🛡 Known Hosts' si le serveur a été réinstallé.",
                     self.host, self.port, algorithm, expected_fingerprint, actual_fingerprint
+                )));
+                Ok(false)
+            }
+            HostKeyCheckResult::StoreError(err) => {
+                let _ = self.evt_tx.send(BackendEvent::ErrorMessage(format!(
+                    "🚨 Erreur de lecture de known_hosts.json (connexion bloquée par sécurité) : {err}"
                 )));
                 Ok(false)
             }
