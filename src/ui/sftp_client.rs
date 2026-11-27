@@ -13,14 +13,86 @@
 //! - Strict bilingual FR / EN localization (zero mixed languages)
 
 use crate::config::UiLanguage;
-use crate::protocols::{BackendCommand, SftpFileEntry};
+use crate::protocols::{BackendCommand, SftpFileEntry, safe_join_under, validate_sftp_entry_name};
 use crate::ui::help_modal::tr;
 use crate::ui::terminal_view::format_bytes;
 use egui::{Align, Color32, Context, Layout, RichText, ScrollArea, Stroke, Ui};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use tokio::sync::mpsc::UnboundedSender;
+
+/// Returns `true` if `name` ends with an executable, script, or shortcut
+/// extension that Windows `ShellExecuteW` (`open::that`) would run directly.
+fn is_dangerous_open_extension(name: &str) -> bool {
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    matches!(
+        ext.as_deref(),
+        Some(
+            "exe"
+                | "bat"
+                | "cmd"
+                | "ps1"
+                | "psm1"
+                | "psd1"
+                | "vbs"
+                | "vbe"
+                | "js"
+                | "jse"
+                | "wsf"
+                | "wsh"
+                | "hta"
+                | "lnk"
+                | "scr"
+                | "msi"
+                | "msp"
+                | "reg"
+                | "msc"
+                | "jar"
+                | "com"
+                | "pif"
+                | "cpl"
+                | "inf"
+                | "scf"
+                | "url"
+                | "appref-ms"
+                | "gadget"
+                | "chm"
+                | "iso"
+                | "img"
+                | "vhd"
+                | "vhdx"
+                | "dll"
+                | "ocx"
+                | "sys"
+        )
+    )
+}
+
+/// Resolves default `"notepad.exe"` to `%SystemRoot%\System32\notepad.exe` on
+/// Windows so bare-name resolution cannot be hijacked by a planted binary in
+/// the current working directory.
+fn resolve_editor_executable(editor_path: &str) -> PathBuf {
+    let trimmed = editor_path.trim();
+    let use_notepad = trimmed.is_empty() || trimmed.eq_ignore_ascii_case("notepad.exe");
+    if use_notepad {
+        #[cfg(windows)]
+        {
+            let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+            return PathBuf::from(sysroot)
+                .join("System32")
+                .join("notepad.exe");
+        }
+        #[cfg(not(windows))]
+        {
+            return PathBuf::from("notepad.exe");
+        }
+    }
+    PathBuf::from(trimmed)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SftpClientTab {
@@ -285,6 +357,9 @@ pub struct SftpClientState {
 
     // Watched files for auto-upload on save (Ctrl+S)
     pub watched_files: Vec<WatchedEditFile>,
+    /// Isolated per-session temporary cache directory for remote Open/Edit
+    /// files, cleaned up automatically when the tab is dropped.
+    edit_session_dir: PathBuf,
 
     // Terminal tracking
     /// The remote pane follows the working directory of the terminal.
@@ -299,6 +374,14 @@ pub enum SftpCol {
     Size,
     Type,
     Date,
+}
+
+impl Drop for SftpClientState {
+    fn drop(&mut self) {
+        if self.edit_session_dir.exists() {
+            let _ = std::fs::remove_dir_all(&self.edit_session_dir);
+        }
+    }
 }
 
 impl Default for SftpClientState {
@@ -384,6 +467,9 @@ impl SftpClientState {
             mirror_request: false,
 
             watched_files: Vec::new(),
+            edit_session_dir: std::env::temp_dir()
+                .join("cuty_ssh_edit")
+                .join(uuid::Uuid::new_v4().to_string()),
 
             follow_terminal: true,
             follow_resync: false,
@@ -526,6 +612,7 @@ impl SftpClientState {
 
         let mut to_upload: Vec<(PathBuf, String)> = Vec::new();
         let mut to_open: Vec<(PathBuf, bool)> = Vec::new();
+        let mut opened_default_paths: Vec<PathBuf> = Vec::new();
 
         for item in &mut self.watched_files {
             if let Ok(meta) = std::fs::metadata(&item.local_path) {
@@ -537,12 +624,20 @@ impl SftpClientState {
                     .unwrap_or(0);
                 let current_size = meta.len();
 
-                // If file just finished downloading, launch editor
+                // If file just finished downloading, launch editor / viewer
                 if item.open_editor_when_ready {
                     item.open_editor_when_ready = false;
                     item.last_mtime = current_mtime;
                     item.last_size = current_size;
+                    if item.use_default_app {
+                        opened_default_paths.push(item.local_path.clone());
+                    }
                     to_open.push((item.local_path.clone(), item.use_default_app));
+                    continue;
+                }
+
+                // Never auto-upload files opened via "Open" (default viewer)
+                if item.use_default_app {
                     continue;
                 }
 
@@ -559,8 +654,28 @@ impl SftpClientState {
             }
         }
 
+        if !opened_default_paths.is_empty() {
+            self.watched_files
+                .retain(|w| !opened_default_paths.contains(&w.local_path));
+        }
+
         for (path, use_def) in to_open {
             if use_def {
+                let fname = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+                if is_dangerous_open_extension(fname) {
+                    self.log(
+                        tr(
+                            lang,
+                            &format!("Ouverture directe bloquée pour extension exécutable : {fname}"),
+                            &format!("Direct open blocked for executable extension: {fname}"),
+                        ),
+                        true,
+                    );
+                    continue;
+                }
                 let _ = open::that(&path);
                 self.log(
                     tr(
@@ -571,17 +686,13 @@ impl SftpClientState {
                     false,
                 );
             } else {
-                let ed = if self.editor_path.trim().is_empty() {
-                    "notepad.exe"
-                } else {
-                    self.editor_path.trim()
-                };
-                let _ = std::process::Command::new(ed).arg(&path).spawn();
+                let ed = resolve_editor_executable(&self.editor_path);
+                let _ = std::process::Command::new(&ed).arg(&path).spawn();
                 self.log(
                     tr(
                         lang,
-                        &format!("Éditeur ({ed}) ouvert pour : {}", path.display()),
-                        &format!("Editor ({ed}) opened for: {}", path.display()),
+                        &format!("Éditeur ({}) ouvert pour : {}", ed.display(), path.display()),
+                        &format!("Editor ({}) opened for: {}", ed.display(), path.display()),
                     ),
                     false,
                 );
@@ -1218,12 +1329,8 @@ impl SftpClientState {
                                             ui.close();
                                         }
                                         if ui.button(tr(lang, "Éditer", "Edit")).clicked() {
-                                            let ed = if self.editor_path.trim().is_empty() {
-                                                "notepad.exe"
-                                            } else {
-                                                self.editor_path.trim()
-                                            };
-                                            let _ = std::process::Command::new(ed)
+                                            let ed = resolve_editor_executable(&self.editor_path);
+                                            let _ = std::process::Command::new(&ed)
                                                 .arg(&entry.path)
                                                 .spawn();
                                             ui.close();
@@ -1799,73 +1906,103 @@ impl SftpClientState {
                                         }
                                         ui.separator();
                                         if ui.button(tr(lang, "Ouvrir", "Open")).clicked() {
-                                            let edit_dir = std::env::temp_dir().join("cuty_ssh_edit");
-                                            let _ = std::fs::create_dir_all(&edit_dir);
-                                            let temp_file = edit_dir.join(&entry.name);
-                                            let _ = std::fs::remove_file(&temp_file);
-                                            let _ = cmd_tx.send(BackendCommand::SftpDownload {
-                                                remote_path: entry.full_path.clone(),
-                                                local_path: temp_file.clone(),
-                                            });
-                                            if let Some(existing) = self.watched_files.iter_mut().find(|w| w.local_path == temp_file) {
-                                                existing.remote_path = entry.full_path.clone();
-                                                existing.open_editor_when_ready = true;
-                                                existing.use_default_app = true;
-                                                existing.last_mtime = 0;
-                                                existing.last_size = 0;
-                                            } else {
-                                                self.watched_files.push(WatchedEditFile {
-                                                    local_path: temp_file,
-                                                    remote_path: entry.full_path.clone(),
-                                                    last_mtime: 0,
-                                                    last_size: 0,
-                                                    open_editor_when_ready: true,
-                                                    use_default_app: true,
-                                                });
+                                            match validate_sftp_entry_name(&entry.name) {
+                                                Err(e) => {
+                                                    self.log(
+                                                        tr(
+                                                            lang,
+                                                            &format!("Nom de fichier distant refusé : {e}"),
+                                                            &format!("Unsafe remote filename rejected: {e}"),
+                                                        ),
+                                                        true,
+                                                    );
+                                                }
+                                                Ok(safe_name) if is_dangerous_open_extension(safe_name) => {
+                                                    self.log(
+                                                        tr(
+                                                            lang,
+                                                            &format!("Ouverture directe bloquée par sécurité ({safe_name}) — utilisez Télécharger ou Éditer."),
+                                                            &format!("Direct open blocked for security ({safe_name}) — use Download or Edit instead."),
+                                                        ),
+                                                        true,
+                                                    );
+                                                }
+                                                Ok(safe_name) => {
+                                                    let file_dir = self
+                                                        .edit_session_dir
+                                                        .join(uuid::Uuid::new_v4().to_string());
+                                                    if let Err(e) = std::fs::create_dir_all(&file_dir) {
+                                                        self.log(format!("Temp dir error: {e}"), true);
+                                                    } else {
+                                                        let temp_file = file_dir.join(safe_name);
+                                                        let _ = cmd_tx.send(BackendCommand::SftpDownload {
+                                                            remote_path: entry.full_path.clone(),
+                                                            local_path: temp_file.clone(),
+                                                        });
+                                                        self.watched_files.push(WatchedEditFile {
+                                                            local_path: temp_file,
+                                                            remote_path: entry.full_path.clone(),
+                                                            last_mtime: 0,
+                                                            last_size: 0,
+                                                            open_editor_when_ready: true,
+                                                            use_default_app: true,
+                                                        });
+                                                        self.log(
+                                                            tr(
+                                                                lang,
+                                                                &format!("Téléchargement pour ouverture : {}", entry.full_path),
+                                                                &format!("Downloading for open: {}", entry.full_path),
+                                                            ),
+                                                            false,
+                                                        );
+                                                    }
+                                                }
                                             }
-                                            self.log(
-                                                tr(
-                                                    lang,
-                                                    &format!("Téléchargement pour ouverture : {}", entry.full_path),
-                                                    &format!("Downloading for open: {}", entry.full_path),
-                                                ),
-                                                false,
-                                            );
                                             ui.close();
                                         }
                                         if ui.button(tr(lang, "Éditer", "Edit")).clicked() {
-                                            let edit_dir = std::env::temp_dir().join("cuty_ssh_edit");
-                                            let _ = std::fs::create_dir_all(&edit_dir);
-                                            let temp_file = edit_dir.join(&entry.name);
-                                            let _ = std::fs::remove_file(&temp_file);
-                                            let _ = cmd_tx.send(BackendCommand::SftpDownload {
-                                                remote_path: entry.full_path.clone(),
-                                                local_path: temp_file.clone(),
-                                            });
-                                            if let Some(existing) = self.watched_files.iter_mut().find(|w| w.local_path == temp_file) {
-                                                existing.remote_path = entry.full_path.clone();
-                                                existing.open_editor_when_ready = true;
-                                                existing.use_default_app = false;
-                                                existing.last_mtime = 0;
-                                                existing.last_size = 0;
-                                            } else {
-                                                self.watched_files.push(WatchedEditFile {
-                                                    local_path: temp_file,
-                                                    remote_path: entry.full_path.clone(),
-                                                    last_mtime: 0,
-                                                    last_size: 0,
-                                                    open_editor_when_ready: true,
-                                                    use_default_app: false,
-                                                });
+                                            match validate_sftp_entry_name(&entry.name) {
+                                                Err(e) => {
+                                                    self.log(
+                                                        tr(
+                                                            lang,
+                                                            &format!("Nom de fichier distant refusé : {e}"),
+                                                            &format!("Unsafe remote filename rejected: {e}"),
+                                                        ),
+                                                        true,
+                                                    );
+                                                }
+                                                Ok(safe_name) => {
+                                                    let file_dir = self
+                                                        .edit_session_dir
+                                                        .join(uuid::Uuid::new_v4().to_string());
+                                                    if let Err(e) = std::fs::create_dir_all(&file_dir) {
+                                                        self.log(format!("Temp dir error: {e}"), true);
+                                                    } else {
+                                                        let temp_file = file_dir.join(safe_name);
+                                                        let _ = cmd_tx.send(BackendCommand::SftpDownload {
+                                                            remote_path: entry.full_path.clone(),
+                                                            local_path: temp_file.clone(),
+                                                        });
+                                                        self.watched_files.push(WatchedEditFile {
+                                                            local_path: temp_file,
+                                                            remote_path: entry.full_path.clone(),
+                                                            last_mtime: 0,
+                                                            last_size: 0,
+                                                            open_editor_when_ready: true,
+                                                            use_default_app: false,
+                                                        });
+                                                        self.log(
+                                                            tr(
+                                                                lang,
+                                                                &format!("Téléchargement pour édition (Ctrl+S surveillé) : {}", entry.full_path),
+                                                                &format!("Downloading for edit (Ctrl+S monitored): {}", entry.full_path),
+                                                            ),
+                                                            false,
+                                                        );
+                                                    }
+                                                }
                                             }
-                                            self.log(
-                                                tr(
-                                                    lang,
-                                                    &format!("Téléchargement pour édition (Ctrl+S surveillé) : {}", entry.full_path),
-                                                    &format!("Downloading for edit (Ctrl+S monitored): {}", entry.full_path),
-                                                ),
-                                                false,
-                                            );
                                             ui.close();
                                         }
                                         if ui.button(tr(lang, "Choisir l'éditeur...", "Choose editor...")).clicked() {
@@ -2240,12 +2377,25 @@ impl SftpClientState {
         lang: UiLanguage,
     ) {
         for name in names {
+            let local_dst = match safe_join_under(&self.local_path, name) {
+                Ok(p) => p,
+                Err(e) => {
+                    self.log(
+                        tr(
+                            lang,
+                            &format!("Téléchargement bloqué (nom distant dangereux) : {e}"),
+                            &format!("Download blocked (unsafe remote name): {e}"),
+                        ),
+                        true,
+                    );
+                    continue;
+                }
+            };
             let remote_src = if remote_path.ends_with('/') {
                 format!("{}{}", remote_path, name)
             } else {
                 format!("{}/{}", remote_path, name)
             };
-            let local_dst = self.local_path.join(name);
 
             let existing_remote = remote_entries.iter().find(|e| e.name == *name);
             let remote_size = existing_remote.map(|e| e.size).unwrap_or(0);
@@ -2442,11 +2592,16 @@ impl SftpClientState {
             });
         } else {
             let local_dst = match renamed {
-                Some(new_name) => m
-                    .local_path
-                    .parent()
-                    .map(|p| p.join(new_name))
-                    .unwrap_or_else(|| PathBuf::from(new_name)),
+                Some(new_name) => {
+                    let parent = m.local_path.parent().unwrap_or(&self.local_path);
+                    match safe_join_under(parent, new_name) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            self.log(format!("Unsafe rename target rejected: {e}"), true);
+                            return;
+                        }
+                    }
+                }
                 None => m.local_path.clone(),
             };
             let _ = cmd_tx.send(BackendCommand::SftpDownload {
@@ -3740,5 +3895,24 @@ mod tests {
         );
 
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn dangerous_open_extensions_are_blocked_and_safe_ones_allowed() {
+        for bad in [
+            "setup.exe",
+            "RUN.BAT",
+            "script.ps1",
+            "payload.lnk",
+            "dropper.hta",
+            "macro.vbs",
+            "app.msi",
+            "hook.dll",
+        ] {
+            assert!(is_dangerous_open_extension(bad), "expected block for {bad}");
+        }
+        for ok in ["readme.txt", "nginx.conf", "report.pdf", "photo.png", "Makefile"] {
+            assert!(!is_dangerous_open_extension(ok), "unexpected block for {ok}");
+        }
     }
 }

@@ -1,6 +1,9 @@
 //! SFTP directory mirroring (one-way sync): planning, local/remote walkers and execution.
 
-use super::{BackendEvent, download_sftp_file, join_remote, list_sftp_directory, upload_sftp_file};
+use super::{
+    BackendEvent, download_sftp_file, join_remote, list_sftp_directory, safe_join_rel_under,
+    upload_sftp_file, validate_sftp_entry_name,
+};
 use anyhow::Result;
 use russh_sftp::client::SftpSession;
 use std::collections::BTreeMap;
@@ -111,6 +114,9 @@ async fn walk_remote(sftp: &SftpSession, root: &str) -> Result<BTreeMap<String, 
             if e.name == "." || e.name == ".." || e.is_symlink {
                 continue;
             }
+            if validate_sftp_entry_name(&e.name).is_err() {
+                continue;
+            }
             let rel = if prefix.is_empty() {
                 e.name.clone()
             } else {
@@ -197,22 +203,25 @@ pub async fn run_mirror(
                     .await
                     .map(|_| ())
             }
-            MirrorAction::Copy(rel) => {
-                let local = local_dir.join(rel);
-                if let Some(parent) = local.parent() {
-                    tokio::fs::create_dir_all(parent).await?;
+            MirrorAction::Copy(rel) => match safe_join_rel_under(local_dir, rel) {
+                Ok(local) => {
+                    if let Some(parent) = local.parent() {
+                        tokio::fs::create_dir_all(parent).await?;
+                    }
+                    download_sftp_file(sftp, &join_remote(remote_dir, rel), &local, evt_tx)
+                        .await
+                        .map(|_| ())
                 }
-                download_sftp_file(sftp, &join_remote(remote_dir, rel), &local, evt_tx)
-                    .await
-                    .map(|_| ())
-            }
+                Err(e) => Err(e),
+            },
             MirrorAction::Delete(rel) if upload => sftp
                 .remove_file(join_remote(remote_dir, rel))
                 .await
                 .map_err(Into::into),
-            MirrorAction::Delete(rel) => tokio::fs::remove_file(local_dir.join(rel))
-                .await
-                .map_err(Into::into),
+            MirrorAction::Delete(rel) => match safe_join_rel_under(local_dir, rel) {
+                Ok(local) => tokio::fs::remove_file(local).await.map_err(Into::into),
+                Err(e) => Err(e),
+            },
         };
         match (&action, result) {
             (MirrorAction::Copy(_), Ok(())) => summary.copied += 1,

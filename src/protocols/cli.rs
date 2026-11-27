@@ -1147,6 +1147,15 @@ async fn sftp_get_file(
         .and_then(|m| m.size)
         .unwrap_or(0);
 
+    if let Ok(meta) = tokio::fs::symlink_metadata(local_path).await
+        && meta.file_type().is_symlink()
+    {
+        bail!(
+            "Refusing to overwrite local symlink '{}'",
+            local_path.display()
+        );
+    }
+
     let mut remote_file = sftp
         .open(remote_path)
         .await
@@ -1156,10 +1165,14 @@ async fn sftp_get_file(
         .await
         .with_context(|| format!("Failed to create local file '{}'", local_path.display()))?;
 
-    let filename = local_path
+    let raw_filename = local_path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| remote_path.to_string());
+    let filename: String = raw_filename
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
 
     let mut buf = vec![0u8; 64 * 1024];
     let mut transferred: u64 = 0;
@@ -1187,6 +1200,8 @@ async fn sftp_get_file(
     }
 
     local_file.flush().await?;
+    drop(local_file);
+    crate::protocols::write_mark_of_the_web(local_path);
 
     if show_progress {
         let elapsed = start_time.elapsed().as_secs_f32().max(0.01);
@@ -1302,11 +1317,12 @@ pub async fn run_cli_sftp_get(
             let entries = sftp.read_dir(&cur_remote).await?;
             for entry in entries {
                 let fname = entry.file_name();
-                if fname == "." || fname == ".." {
+                if fname == "." || fname == ".." || entry.file_type().is_symlink() {
                     continue;
                 }
+                let sub_local = crate::protocols::safe_join_under(&cur_local, &fname)
+                    .with_context(|| format!("Unsafe remote SFTP entry name {:?}", fname))?;
                 let sub_remote = format!("{}/{}", cur_remote, fname);
-                let sub_local = cur_local.join(fname);
 
                 if entry.metadata().is_dir() {
                     tokio::fs::create_dir_all(&sub_local).await?;
@@ -1323,8 +1339,12 @@ pub async fn run_cli_sftp_get(
             || local_path.to_string_lossy().ends_with('/')
             || local_path.to_string_lossy().ends_with('\\')
         {
-            let fname = remote_path.rsplit('/').next().unwrap_or("downloaded_file");
-            final_local = local_path.join(fname);
+            let fname = remote_path
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or("downloaded_file");
+            final_local = crate::protocols::safe_join_under(local_path, fname)
+                .with_context(|| format!("Unsafe remote filename {:?}", fname))?;
         }
         if let Some(parent) = final_local.parent() {
             tokio::fs::create_dir_all(parent).await?;

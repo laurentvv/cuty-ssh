@@ -2062,12 +2062,147 @@ async fn upload_sftp_file(
     Ok(transferred)
 }
 
+/// Returns true if `c` is a Unicode bidirectional override/isolate control
+/// character that can disguise file extensions (e.g., RLO `\u{202E}`).
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Validates a single untrusted remote SFTP entry name so joining it onto a
+/// local directory can never escape the target root on Windows or Unix.
+///
+/// Rejects empty strings, `.`, `..`, path separators (`/` and `\`), colons
+/// (Windows drive letters and NTFS Alternate Data Streams), NUL / control /
+/// BiDi characters, trailing dots or spaces, and Windows reserved device names.
+pub(crate) fn validate_sftp_entry_name(name: &str) -> Result<&str> {
+    if name.is_empty() || name == "." || name == ".." {
+        anyhow::bail!("invalid remote SFTP entry name: {name:?}");
+    }
+    if name.ends_with('.') || name.ends_with(' ') {
+        anyhow::bail!("unsafe trailing dot/space in remote SFTP entry name: {name:?}");
+    }
+    if name.chars().any(|c| {
+        matches!(c, '/' | '\\' | ':' | '\0') || c.is_control() || is_bidi_control(c)
+    }) {
+        anyhow::bail!("unsafe character in remote SFTP entry name: {name:?}");
+    }
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        anyhow::bail!("Windows reserved device name in remote SFTP entry: {name:?}");
+    }
+    let mut comps = Path::new(name).components();
+    match (comps.next(), comps.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(name),
+        _ => anyhow::bail!("non-normal path component in remote SFTP entry: {name:?}"),
+    }
+}
+
+/// Safely joins a single validated remote SFTP entry name beneath `base`,
+/// refusing symlinks and ensuring canonical containment when `base` exists.
+pub(crate) fn safe_join_under(base: &Path, name: &str) -> Result<PathBuf> {
+    let clean = validate_sftp_entry_name(name)?;
+    let joined = base.join(clean);
+    if let Ok(meta) = std::fs::symlink_metadata(&joined)
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!("refusing to write through local symlink: {}", joined.display());
+    }
+    if let (Ok(canon_base), Ok(canon_parent)) = (
+        std::fs::canonicalize(base),
+        joined
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("missing parent"))
+            .and_then(|p| std::fs::canonicalize(p).map_err(Into::into)),
+    ) && !canon_parent.starts_with(&canon_base)
+    {
+        anyhow::bail!(
+            "resolved local target escapes base directory: {}",
+            joined.display()
+        );
+    }
+    Ok(joined)
+}
+
+/// Safely joins a `/`-separated relative path (used by SFTP mirror) beneath `base`,
+/// validating every segment and refusing symlink escapes.
+pub(crate) fn safe_join_rel_under(base: &Path, rel: &str) -> Result<PathBuf> {
+    if rel.is_empty() {
+        anyhow::bail!("empty relative SFTP path");
+    }
+    let mut cur = base.to_path_buf();
+    for seg in rel.split('/') {
+        let clean = validate_sftp_entry_name(seg)?;
+        cur = cur.join(clean);
+        if let Ok(meta) = std::fs::symlink_metadata(&cur)
+            && meta.file_type().is_symlink()
+        {
+            anyhow::bail!("refusing to traverse local symlink: {}", cur.display());
+        }
+    }
+    Ok(cur)
+}
+
+/// Attaches a Windows Mark-of-the-Web (`Zone.Identifier` ADS, ZoneId=3) to an
+/// SFTP-downloaded file so Windows SmartScreen and Office Protected View treat
+/// it as coming from an untrusted remote source.
+pub(crate) fn write_mark_of_the_web(path: &Path) {
+    #[cfg(windows)]
+    {
+        let mut ads = path.as_os_str().to_os_string();
+        ads.push(":Zone.Identifier");
+        let _ = std::fs::write(ads, b"[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+    }
+}
+
 async fn download_sftp_file(
     sftp: &SftpSession,
     remote_path: &str,
     local_path: &Path,
     evt_tx: &UnboundedSender<BackendEvent>,
 ) -> Result<u64> {
+    if let Ok(meta) = tokio::fs::symlink_metadata(local_path).await
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!(
+            "refusing to overwrite local symlink: {}",
+            local_path.display()
+        );
+    }
     let filename = local_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -2084,6 +2219,14 @@ async fn download_sftp_file(
     let mut part_name = local_path.as_os_str().to_owned();
     part_name.push(PART_SUFFIX);
     let part_path = PathBuf::from(part_name);
+    if let Ok(meta) = tokio::fs::symlink_metadata(&part_path).await
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!(
+            "refusing to write through partial symlink: {}",
+            part_path.display()
+        );
+    }
     let existing = tokio::fs::metadata(&part_path)
         .await
         .map(|m| m.len())
@@ -2132,6 +2275,7 @@ async fn download_sftp_file(
         let _ = tokio::fs::remove_file(local_path).await;
     }
     tokio::fs::rename(&part_path, local_path).await?;
+    write_mark_of_the_web(local_path);
     let _ = evt_tx.send(BackendEvent::SftpProgress {
         filename,
         transferred,
@@ -2170,7 +2314,16 @@ pub(crate) async fn download_sftp_tree(
             if entry.name == "." || entry.name == ".." || entry.is_symlink {
                 continue;
             }
-            let local_child = local_dir.join(&entry.name);
+            let local_child = match safe_join_under(&local_dir, &entry.name) {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = evt_tx.send(BackendEvent::SftpStatus(format!(
+                        "Entrée SFTP distante ignorée (nom dangereux) {} : {e}",
+                        entry.full_path
+                    )));
+                    continue;
+                }
+            };
             if entry.is_dir {
                 tokio::fs::create_dir_all(&local_child).await?;
                 stack.push((entry.full_path.clone(), local_child));
@@ -4061,7 +4214,10 @@ mod tests {
 
 #[cfg(test)]
 mod kbdint_tests {
-    use super::is_password_prompt;
+    use super::{
+        is_password_prompt, safe_join_rel_under, safe_join_under, validate_sftp_entry_name,
+    };
+    use std::path::Path;
 
     #[test]
     fn password_prompts_are_detected_in_several_languages() {
@@ -4071,5 +4227,43 @@ mod kbdint_tests {
         for p in ["Verification code: ", "One-time token:", "Code OTP"] {
             assert!(!is_password_prompt(p), "{p}");
         }
+    }
+
+    #[test]
+    fn sftp_entry_validation_blocks_traversal_drive_unc_ads_and_reserved_names() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../evil.txt",
+            r"..\..\Startup\run.bat",
+            r"C:\Windows\win.ini",
+            r"\Windows\win.ini",
+            r"\\attacker\share\file.txt",
+            "notes.txt:hidden_stream",
+            "CON",
+            "nul.txt",
+            "COM1",
+            "LPT9.log",
+            "trailing_dot.",
+            "trailing_space ",
+            "bad\0name.txt",
+            "esc\x1bname.txt",
+            "invoice\u{202E}gpj.exe",
+        ] {
+            assert!(
+                validate_sftp_entry_name(bad).is_err(),
+                "expected rejection for {bad:?}"
+            );
+        }
+        for good in ["readme.txt", ".bashrc", "archive.tar.gz", "notes (1).md"] {
+            assert_eq!(validate_sftp_entry_name(good).unwrap(), good);
+        }
+        let base = std::env::temp_dir().join("cuty_sftp_safe_join_test");
+        assert!(safe_join_under(&base, "ok.txt").is_ok());
+        assert!(safe_join_under(&base, r"..\escape.txt").is_err());
+        assert!(safe_join_rel_under(&base, "sub/dir/file.txt").is_ok());
+        assert!(safe_join_rel_under(&base, "sub/../escape.txt").is_err());
+        assert!(safe_join_rel_under(Path::new("."), "").is_err());
     }
 }
