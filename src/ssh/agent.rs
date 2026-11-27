@@ -150,10 +150,7 @@ impl NativeAgentCore {
     }
 
     pub fn is_locked(&self) -> bool {
-        self.lock_state
-            .read()
-            .map(|p| p.is_some())
-            .unwrap_or(true)
+        self.lock_state.read().map(|p| p.is_some()).unwrap_or(true)
     }
 
     /// Adds (or replaces, when the same public key is already loaded) a key.

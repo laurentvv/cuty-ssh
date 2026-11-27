@@ -46,7 +46,8 @@ pub(crate) fn fill_os_random(dst: &mut [u8]) -> Result<()> {
     {
         use std::io::Read;
         let mut f = fs::File::open("/dev/urandom").context("Failed to open /dev/urandom")?;
-        f.read_exact(dst).context("Failed to read OS random bytes")?;
+        f.read_exact(dst)
+            .context("Failed to read OS random bytes")?;
         Ok(())
     }
 }
@@ -72,8 +73,9 @@ pub fn write_private_key_file(path: &Path, content: &[u8]) -> Result<()> {
 
         const WIN32_GENERIC_WRITE: u32 = 0x4000_0000;
 
-        let sid = crate::ssh::agent_server::current_user_sid_string()
-            .ok_or_else(|| anyhow::anyhow!("Failed to resolve current user SID for private key ACL"))?;
+        let sid = crate::ssh::agent_server::current_user_sid_string().ok_or_else(|| {
+            anyhow::anyhow!("Failed to resolve current user SID for private key ACL")
+        })?;
         let sddl = format!("D:P(A;;FA;;;{sid})");
         let sddl_w: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
         let path_w: Vec<u16> = path
@@ -606,9 +608,7 @@ pub fn resolve_pageant_executable_with_hints(
                 .file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.eq_ignore_ascii_case("key") || n.eq_ignore_ascii_case("keys"));
-            if is_key_subdir
-                && let Some(grandparent) = parent.parent()
-            {
+            if is_key_subdir && let Some(grandparent) = parent.parent() {
                 dirs_to_check.push(grandparent.to_path_buf());
             }
         }
@@ -1051,7 +1051,9 @@ mod tests {
         let ppk = export_to_ppk_v3(&key, "user\r\nPrivate-MAC: fake").unwrap();
         assert!(!ppk.lines().any(|l| l == "Private-MAC: fake"));
         assert_eq!(
-            ppk.lines().filter(|l| l.starts_with("Private-MAC:")).count(),
+            ppk.lines()
+                .filter(|l| l.starts_with("Private-MAC:"))
+                .count(),
             1
         );
         let decoded = decode_private_key_any(&ppk, None).expect("high-MSB Ed25519 PPK roundtrip");
@@ -1066,7 +1068,8 @@ mod tests {
         let key = generate_new_ssh_key("ed25519", "ok").unwrap();
         let pub_b64 = key.public_key().public_key_base64();
         let malicious = format!("ssh-ed25519 {pub_b64} user\\'$(id);whoami");
-        let script = build_ssh_copy_id_script(&malicious).expect("valid pubkey with sanitized comment");
+        let script =
+            build_ssh_copy_id_script(&malicious).expect("valid pubkey with sanitized comment");
         assert!(!script.contains("$("));
         assert!(!script.contains(";whoami"));
         assert!(!script.contains("\\'"));

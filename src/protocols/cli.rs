@@ -1200,10 +1200,7 @@ async fn sftp_get_file(
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| remote_path.to_string());
-    let filename: String = raw_filename
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect();
+    let filename: String = raw_filename.chars().filter(|c| !c.is_control()).collect();
 
     let mut buf = vec![0u8; 64 * 1024];
     let mut transferred: u64 = 0;

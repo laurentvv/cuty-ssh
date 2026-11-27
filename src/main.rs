@@ -283,10 +283,7 @@ fn parse_user_host_port(raw: &str, default_port: u16) -> (Option<String>, String
     let authority = raw.split(['/', '?', '#']).next().unwrap_or(raw).trim();
     let (user, remainder) = if let Some((u, r)) = authority.rsplit_once('@') {
         let clean_user = u.split(':').next().unwrap_or(u);
-        (
-            (!clean_user.is_empty()).then(|| clean_user.to_string()),
-            r,
-        )
+        ((!clean_user.is_empty()).then(|| clean_user.to_string()), r)
     } else {
         (None, authority)
     };

@@ -117,7 +117,8 @@ impl CutySshApp {
                     }
 
                     // Quick list of available recordings in cuty-ssh-portable/recordings
-                    let recordings_dir = crate::config::AppConfig::portable_dir().join("recordings");
+                    let recordings_dir =
+                        crate::config::AppConfig::portable_dir().join("recordings");
                     if let Ok(entries) = std::fs::read_dir(recordings_dir) {
                         let mut cast_files: Vec<PathBuf> = entries
                             .filter_map(|e| e.ok().map(|de| de.path()))

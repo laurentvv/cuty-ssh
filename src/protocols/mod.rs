@@ -2194,9 +2194,10 @@ pub(crate) fn validate_sftp_entry_name(name: &str) -> Result<&str> {
     if name.ends_with('.') || name.ends_with(' ') {
         anyhow::bail!("unsafe trailing dot/space in remote SFTP entry name: {name:?}");
     }
-    if name.chars().any(|c| {
-        matches!(c, '/' | '\\' | ':' | '\0') || c.is_control() || is_bidi_control(c)
-    }) {
+    if name
+        .chars()
+        .any(|c| matches!(c, '/' | '\\' | ':' | '\0') || c.is_control() || is_bidi_control(c))
+    {
         anyhow::bail!("unsafe character in remote SFTP entry name: {name:?}");
     }
     let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
@@ -2242,7 +2243,10 @@ pub(crate) fn safe_join_under(base: &Path, name: &str) -> Result<PathBuf> {
     if let Ok(meta) = std::fs::symlink_metadata(&joined)
         && meta.file_type().is_symlink()
     {
-        anyhow::bail!("refusing to write through local symlink: {}", joined.display());
+        anyhow::bail!(
+            "refusing to write through local symlink: {}",
+            joined.display()
+        );
     }
     if let (Ok(canon_base), Ok(canon_parent)) = (
         std::fs::canonicalize(base),
@@ -4447,7 +4451,9 @@ mod kbdint_tests {
     #[test]
     fn parse_http_connect_rejects_smuggling_and_zero_port() {
         assert_eq!(
-            super::parse_http_connect("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"),
+            super::parse_http_connect(
+                "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"
+            ),
             Some(("example.com".to_string(), 443))
         );
         assert_eq!(
@@ -4455,8 +4461,18 @@ mod kbdint_tests {
             Some(("::1".to_string(), 8443))
         );
         assert!(super::parse_http_connect("CONNECT example.com:0 HTTP/1.1\r\n\r\n").is_none());
-        assert!(super::parse_http_connect("CONNECT example.com:443 HTTP/1.1\r\nContent-Length: 5\r\n\r\n").is_none());
-        assert!(super::parse_http_connect("CONNECT example.com:443 HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").is_none());
+        assert!(
+            super::parse_http_connect(
+                "CONNECT example.com:443 HTTP/1.1\r\nContent-Length: 5\r\n\r\n"
+            )
+            .is_none()
+        );
+        assert!(
+            super::parse_http_connect(
+                "CONNECT example.com:443 HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+            )
+            .is_none()
+        );
         assert!(super::parse_http_connect("CONNECT example.com:443 BOGUS\r\n\r\n").is_none());
     }
 }

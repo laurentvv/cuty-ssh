@@ -698,7 +698,7 @@ impl AppConfig {
             if !s.password.is_empty() {
                 match dpapi_decrypt_checked(&s.password) {
                     Ok(plain) => s.password = plain,
-                    Err(()) => {
+                    Err(_) => {
                         had_decrypt_failure = true;
                         s.password.clear();
                     }
@@ -709,7 +709,7 @@ impl AppConfig {
             {
                 match dpapi_decrypt_checked(passphrase) {
                     Ok(plain) => *passphrase = plain,
-                    Err(()) => {
+                    Err(_) => {
                         had_decrypt_failure = true;
                         passphrase.clear();
                     }
@@ -719,7 +719,7 @@ impl AppConfig {
                 if !rule.send_response.is_empty() {
                     match dpapi_decrypt_checked(&rule.send_response) {
                         Ok(plain) => rule.send_response = plain,
-                        Err(()) => {
+                        Err(_) => {
                             had_decrypt_failure = true;
                             rule.send_response.clear();
                         }
@@ -1912,9 +1912,7 @@ pub fn verify_or_record_known_host(
     fingerprint_sha256: &str,
     public_key_base64: &str,
 ) -> HostKeyCheckResult {
-    let _guard = KNOWN_HOSTS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut entries = match load_known_hosts_checked() {
         Ok(e) => e,
         Err(err) => return HostKeyCheckResult::StoreError(err.to_string()),
@@ -1938,9 +1936,7 @@ pub fn verify_or_record_known_host(
 
 /// Removes a host entry from `known_hosts.json` (e.g., to accept a newly reinstalled server's key).
 pub fn remove_known_host(host_port: &str) -> bool {
-    let _guard = KNOWN_HOSTS_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(mut entries) = load_known_hosts_checked() else {
         return false;
     };
@@ -2128,9 +2124,9 @@ pub fn dpapi_encrypt(plaintext: &str) -> String {
     dpapi_encrypt_strict(plaintext).unwrap_or_default()
 }
 
-/// Decrypts a `"dpapi:<base64>"` credential string, returning `Err(())` if a DPAPI blob
+/// Decrypts a `"dpapi:<base64>"` credential string, returning `Err` if a DPAPI blob
 /// cannot be decrypted (so callers can avoid destructively overwriting stored blobs).
-pub fn dpapi_decrypt_checked(stored: &str) -> Result<String, ()> {
+pub fn dpapi_decrypt_checked(stored: &str) -> anyhow::Result<String> {
     let Some(b64) = stored.strip_prefix("dpapi:") else {
         return Ok(stored.to_string());
     };
@@ -2147,7 +2143,7 @@ pub fn dpapi_decrypt_checked(stored: &str) -> Result<String, ()> {
         if let Ok(mut cipher_bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
             let Ok(cb_data) = u32::try_from(cipher_bytes.len()) else {
                 cipher_bytes.zeroize();
-                return Err(());
+                anyhow::bail!("DPAPI ciphertext too large");
             };
             let in_blob = CRYPT_INTEGER_BLOB {
                 cbData: cb_data,
@@ -2181,7 +2177,7 @@ pub fn dpapi_decrypt_checked(stored: &str) -> Result<String, ()> {
             }
         }
     }
-    Err(())
+    anyhow::bail!("DPAPI decryption failed")
 }
 
 /// Decrypts a `"dpapi:<base64>"` credential string using Windows DPAPI (`CryptUnprotectData`).
@@ -2347,7 +2343,10 @@ Host app-internal db-internal
 
     #[test]
     fn test_known_host_canonicalization_ipv6_and_trailing_dot() {
-        assert_eq!(canonicalize_known_host_port("Example.COM.", 22), "example.com");
+        assert_eq!(
+            canonicalize_known_host_port("Example.COM.", 22),
+            "example.com"
+        );
         assert_eq!(
             canonicalize_known_host_port("[2001:0db8::1]", 22),
             "[2001:db8::1]:22"

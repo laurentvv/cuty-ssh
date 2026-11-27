@@ -82,9 +82,7 @@ fn resolve_editor_executable(editor_path: &str) -> PathBuf {
         #[cfg(windows)]
         {
             let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
-            return PathBuf::from(sysroot)
-                .join("System32")
-                .join("notepad.exe");
+            return PathBuf::from(sysroot).join("System32").join("notepad.exe");
         }
         #[cfg(not(windows))]
         {
@@ -669,7 +667,9 @@ impl SftpClientState {
                     self.log(
                         tr(
                             lang,
-                            &format!("Ouverture directe bloquée pour extension exécutable : {fname}"),
+                            &format!(
+                                "Ouverture directe bloquée pour extension exécutable : {fname}"
+                            ),
                             &format!("Direct open blocked for executable extension: {fname}"),
                         ),
                         true,
@@ -691,7 +691,11 @@ impl SftpClientState {
                 self.log(
                     tr(
                         lang,
-                        &format!("Éditeur ({}) ouvert pour : {}", ed.display(), path.display()),
+                        &format!(
+                            "Éditeur ({}) ouvert pour : {}",
+                            ed.display(),
+                            path.display()
+                        ),
                         &format!("Editor ({}) opened for: {}", ed.display(), path.display()),
                     ),
                     false,
@@ -3911,8 +3915,17 @@ mod tests {
         ] {
             assert!(is_dangerous_open_extension(bad), "expected block for {bad}");
         }
-        for ok in ["readme.txt", "nginx.conf", "report.pdf", "photo.png", "Makefile"] {
-            assert!(!is_dangerous_open_extension(ok), "unexpected block for {ok}");
+        for ok in [
+            "readme.txt",
+            "nginx.conf",
+            "report.pdf",
+            "photo.png",
+            "Makefile",
+        ] {
+            assert!(
+                !is_dangerous_open_extension(ok),
+                "unexpected block for {ok}"
+            );
         }
     }
 }
