@@ -549,8 +549,9 @@ fn render_single_terminal_pane(
         && let Ok(text) = cb.get_text()
     {
         if tab.terminal.state.bracketed_paste {
-            // Strip embedded ESC/bracketed-paste terminators (`\x1b[201~`) to prevent breakout.
-            let clean = text.replace("\x1b[201~", "").replace('\x1b', "");
+            // Strip embedded bracketed-paste terminators/initiators (`\x1b[201~` / `\x1b[200~`) to prevent breakout
+            // while preserving legitimate ANSI escape codes in the pasted payload.
+            let clean = text.replace("\x1b[201~", "").replace("\x1b[200~", "");
             bytes_to_send.extend_from_slice(b"\x1b[200~");
             bytes_to_send.extend_from_slice(clean.as_bytes());
             bytes_to_send.extend_from_slice(b"\x1b[201~");
@@ -778,7 +779,9 @@ fn render_single_terminal_pane(
                 match event {
                     egui::Event::Paste(text) => {
                         if bracketed {
-                            let clean = text.replace("\x1b[201~", "").replace('\x1b', "");
+                            // Strip embedded bracketed-paste terminators/initiators (`\x1b[201~` / `\x1b[200~`) to prevent breakout
+                            // while preserving legitimate ANSI escape codes in the pasted payload.
+                            let clean = text.replace("\x1b[201~", "").replace("\x1b[200~", "");
                             bytes_to_send.extend_from_slice(b"\x1b[200~");
                             bytes_to_send.extend_from_slice(clean.as_bytes());
                             bytes_to_send.extend_from_slice(b"\x1b[201~");

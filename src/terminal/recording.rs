@@ -200,6 +200,9 @@ impl SessionPlayer {
 
         for line_res in lines {
             if events.len() >= MAX_CAST_EVENTS {
+                tracing::warn!(
+                    "Session recording truncated: reached MAX_CAST_EVENTS ({MAX_CAST_EVENTS})"
+                );
                 break;
             }
             let line = line_res?;
