@@ -19,7 +19,7 @@
   <img src="assets/cuty_ssh_icon.png" width="88" alt="Cuty-SSH App Icon" style="border-radius: 18px;" />
 </p>
 
-[**⬇ Download Latest Release (`v0.11.1`)**](#download--quick-start) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#screenshots--animated-tour) · [**Key Features**](#key-features) · [**CLI Automation**](#8-universal-cli-launcher--headless-automation-plink--ssh-alternative) · [**Architecture**](#architecture) · [**Contributing**](#contributing)
+[**⬇ Download Latest Release (`v0.11.2`)**](#download--quick-start) · [**🇫🇷 Version Française**](README.fr.md) · [**Animated Tour**](#screenshots--animated-tour) · [**Key Features**](#key-features) · [**CLI Automation**](#8-universal-cli-launcher--headless-automation-plink--ssh-alternative) · [**Architecture**](#architecture) · [**Contributing**](#contributing)
 
 </div>
 
@@ -27,7 +27,7 @@
 
 ## Overview
 
-**Cuty-SSH** (`v0.11.1`) is a single-binary, portable, GPU-accelerated (**DirectX 12 / wgpu**) terminal emulator and sysadmin connection cockpit for Windows written in **100% safe, async Rust (`russh` + `egui` + `tokio`)** with **zero external binary dependencies** (no `putty.exe` or `kitty.exe` wrapper).
+**Cuty-SSH** (`v0.11.2`) is a single-binary, portable, GPU-accelerated (**DirectX 12 / wgpu**) terminal emulator and sysadmin connection cockpit for Windows written in **100% safe, async Rust (`russh` + `egui` + `tokio`)** with **zero external binary dependencies** (no `putty.exe` or `kitty.exe` wrapper).
 
 It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **OpenSSH** workflows:
 - Load **PuTTY `.ppk` v2 & v3** private keys natively (including **Argon2id** passphrase encryption) alongside OpenSSH/PEM keys.
@@ -83,7 +83,7 @@ It bridges the gap between the classic **PuTTY / KiTTY** ecosystem and modern **
 
 ## Feature Matrix: Why Cuty-SSH?
 
-| Capability | Classic PuTTY / KiTTY | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.11.1`)** |
+| Capability | Classic PuTTY / KiTTY | Windows Terminal + `ssh.exe` | **Cuty-SSH (`v0.11.2`)** |
 | :--- | :---: | :---: | :---: |
 | **Pure Rust Async SSH2 Engine (`russh`)** | ❌ C legacy | ❌ External process | ✅ **Built-in (`russh 0.65`)** |
 | **Native PuTTY `.ppk` v2 & v3 (Argon2id) Keys** | ✅ | ❌ Requires conversion | ✅ **Direct load & inspection** |
@@ -390,13 +390,13 @@ General Options:
 - A GPU with **DirectX 12**, Vulkan, or OpenGL support (`wgpu` backend; defaults to DirectX 12, override with `WGPU_BACKEND=vulkan` or `WGPU_BACKEND=gl`).
 
 ### Option 1 — Windows Installer (.msi) (Recommended)
-- **Direct Download**: Download and run [**`cuty-ssh-v0.11.1-windows-x64.msi`**](https://github.com/laurentvv/cuty-ssh/releases/download/v0.11.1/cuty-ssh-v0.11.1-windows-x64.msi).
+- **Direct Download**: Download and run [**`cuty-ssh-v0.11.2-windows-x64.msi`**](https://github.com/laurentvv/cuty-ssh/releases/download/v0.11.2/cuty-ssh-v0.11.2-windows-x64.msi).
   - Installs cleanly to `%LOCALAPPDATA%\Programs\Cuty-SSH` without administrator/UAC prompts.
   - Automatically adds a **Cuty-SSH** Start Menu shortcut with application icon.
   - Clean 1-click uninstall from Windows Settings / Installed apps.
 
 ### Option 2 — Portable Standalone Binary
-1. Download **`cuty-ssh.exe`** (or **`cuty-ssh-v0.11.1-windows-x64.zip`**) from the [**GitHub Releases**](https://github.com/laurentvv/cuty-ssh/releases/latest) page.
+1. Download **`cuty-ssh.exe`** (or **`cuty-ssh-v0.11.2-windows-x64.zip`**) from the [**GitHub Releases**](https://github.com/laurentvv/cuty-ssh/releases/latest) page.
 2. Place `cuty-ssh.exe` in any folder and run it — zero installation required.
 3. Cuty-SSH automatically creates a local **`cuty-ssh-portable/`** directory next to the executable containing:
    - `config.json` (DPAPI-protected session profiles, folders, tags, snippets, UI language & theme)
@@ -413,7 +413,7 @@ Requires the **Rust 2024 toolchain** (`rustup` stable on Windows 10/11 x64):
 git clone https://github.com/laurentvv/cuty-ssh.git
 cd cuty-ssh
 
-# Format check, Clippy linter, and unit tests (55 tests)
+# Format check, Clippy linter, and unit tests (120 tests)
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
@@ -454,7 +454,7 @@ The compiled executable is generated at `target/release/cuty-ssh.exe`.
 ## Release Notes
 
 Detailed notes accompany every release:
-- Current: [`RELEASE_NOTES_v0.11.1.md`](RELEASE_NOTES_v0.11.1.md)
+- Current: [`RELEASE_NOTES_v0.11.2.md`](RELEASE_NOTES_v0.11.2.md)
 - Full history: [**GitHub Releases**](https://github.com/laurentvv/cuty-ssh/releases)
 
 ---

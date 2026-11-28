@@ -12,20 +12,20 @@
 //! mapping gets an in-band `SSH_AGENT_FAILURE`, and the answer is written back
 //! into the same mapping before the wndproc returns 1.
 
-use super::agent::{NativeAgentCore, SSH_AGENT_FAILURE};
+use super::agent::{MAX_AGENT_FRAME_LEN, NativeAgentCore, SSH_AGENT_FAILURE};
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Security::Authorization::GetSecurityInfo;
 use windows_sys::Win32::Security::Authorization::SE_KERNEL_OBJECT;
 use windows_sys::Win32::Security::{
-    EqualSid, GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-    TOKEN_QUERY, TOKEN_USER, TokenUser,
+    EqualSid, GetLengthSid, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Memory::{
-    FILE_MAP_ALL_ACCESS, FILE_MAP_WRITE, MEMORY_BASIC_INFORMATION, MEMORY_MAPPED_VIEW_ADDRESS,
-    MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, VirtualQuery,
+    FILE_MAP_READ, FILE_MAP_WRITE, MEM_COMMIT, MEMORY_BASIC_INFORMATION,
+    MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, VirtualQuery,
 };
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentThreadId, OpenProcessToken,
@@ -36,6 +36,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     RegisterClassW, SetWindowLongPtrW, ShowWindow, TranslateMessage, UnregisterClassW, WM_COPYDATA,
     WM_DESTROY, WM_NCCREATE, WM_QUIT, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
+use zeroize::Zeroizing;
+
+/// Standard Windows `READ_CONTROL` access right (`0x00020000`) for `GetSecurityInfo`.
+const WIN32_READ_CONTROL: u32 = 0x0002_0000;
 
 /// PuTTY's AGENT_COPYDATA_ID (`0x804E50BA`).
 const AGENT_COPYDATA_ID: u64 = 0x804E_50BA;
@@ -112,10 +116,12 @@ impl WmAgentServer {
     }
 
     pub fn stop(&mut self) {
-        unsafe {
-            PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0);
-        }
+        // Only post WM_QUIT while the thread is still owned & alive; posting
+        // again on Drop after join() could target a recycled Windows thread ID.
         if let Some(join) = self.join.take() {
+            unsafe {
+                PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0);
+            }
             let _ = join.join();
         }
     }
@@ -187,6 +193,7 @@ fn wm_thread_main(
             ctx as *const core::ffi::c_void,
         );
         if hwnd.is_null() {
+            let _ = UnregisterClassW(class_name.as_ptr(), hinst);
             drop(Box::from_raw(ctx));
             let _ = tx.send(Err(format!(
                 "CreateWindowExW échoué : {}",
@@ -221,6 +228,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         match msg {
             WM_NCCREATE => {
                 let cs = lp as *const CREATESTRUCTW;
+                if cs.is_null() {
+                    return 0;
+                }
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, (*cs).lpCreateParams as isize);
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
@@ -230,6 +240,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return 0;
                 }
                 let cds = lp as *const COPYDATASTRUCT;
+                if cds.is_null() {
+                    return 0;
+                }
                 if (*cds).dwData != AGENT_COPYDATA_ID as usize {
                     return 0; // not our message, mate
                 }
@@ -294,7 +307,11 @@ unsafe fn answer_filemapping(core: &NativeAgentCore, mapname: &[u8]) -> bool {
             .map(|&b| b as u16)
             .chain(std::iter::once(0))
             .collect();
-        guard.map = OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, name_w.as_ptr());
+        guard.map = OpenFileMappingW(
+            FILE_MAP_WRITE | FILE_MAP_READ | WIN32_READ_CONTROL,
+            0,
+            name_w.as_ptr(),
+        );
         if guard.map.is_null() {
             return false;
         }
@@ -317,6 +334,8 @@ unsafe fn answer_filemapping(core: &NativeAgentCore, mapname: &[u8]) -> bool {
             std::ptr::null_mut(),
             &mut guard.sd,
         ) != 0
+            || owner.is_null()
+            || IsValidSid(owner) == 0
         {
             return false;
         }
@@ -351,6 +370,7 @@ unsafe fn answer_filemapping(core: &NativeAgentCore, mapname: &[u8]) -> bool {
             &mut mbi,
             std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
         ) == 0
+            || mbi.State != MEM_COMMIT
         {
             return false;
         }
@@ -361,27 +381,32 @@ unsafe fn answer_filemapping(core: &NativeAgentCore, mapname: &[u8]) -> bool {
         let view_bytes = guard.view.Value as *mut u8;
 
         let write_answer = |resp: &[u8]| {
-            std::ptr::copy_nonoverlapping(
-                (resp.len() as u32).to_be_bytes().as_ptr(),
-                view_bytes,
-                4,
-            );
-            std::ptr::copy_nonoverlapping(resp.as_ptr(), view_bytes.add(4), resp.len());
+            if let Ok(resp_len) = u32::try_from(resp.len())
+                && resp.len() <= mapsize.saturating_sub(4)
+            {
+                std::ptr::copy_nonoverlapping(resp_len.to_be_bytes().as_ptr(), view_bytes, 4);
+                std::ptr::copy_nonoverlapping(resp.as_ptr(), view_bytes.add(4), resp.len());
+            }
         };
 
-        let msglen = u32::from_be_bytes([
-            *view_bytes,
-            *view_bytes.add(1),
-            *view_bytes.add(2),
-            *view_bytes.add(3),
-        ]) as usize;
-        if msglen == 0 || msglen > mapsize - 4 {
+        let mut hdr = [0u8; 4];
+        std::ptr::copy_nonoverlapping(view_bytes as *const u8, hdr.as_mut_ptr(), 4);
+        let msglen = u32::from_be_bytes(hdr) as usize;
+        if msglen == 0 || msglen > MAX_AGENT_FRAME_LEN || msglen > mapsize.saturating_sub(4) {
             // Emit a failure response without even trying to handle the request.
             write_answer(&[SSH_AGENT_FAILURE]);
         } else {
-            let payload = std::slice::from_raw_parts(view_bytes.add(4), msglen);
-            let response = core.process(payload);
-            if response.len() + 4 <= mapsize {
+            // Copy out of shared memory into a private zeroized buffer so a
+            // concurrent writer in another process cannot trigger Rust aliasing
+            // UB or TOCTOU mutations while `core.process` parses the frame.
+            let mut payload = Zeroizing::new(vec![0u8; msglen]);
+            std::ptr::copy_nonoverlapping(
+                view_bytes.add(4) as *const u8,
+                payload.as_mut_ptr(),
+                msglen,
+            );
+            let response = core.process(&payload);
+            if response.len() <= mapsize.saturating_sub(4) {
                 write_answer(&response);
             } else {
                 write_answer(&[SSH_AGENT_FAILURE]);
@@ -400,11 +425,12 @@ unsafe fn token_user_sid_bytes() -> Option<Vec<u8>> {
         }
         let mut needed: u32 = 0;
         let _ = GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
-        if needed == 0 {
+        if (needed as usize) < std::mem::size_of::<TOKEN_USER>() {
             CloseHandle(token);
             return None;
         }
-        let mut buf = vec![0u8; needed as usize];
+        let words = (needed as usize).div_ceil(std::mem::size_of::<u64>());
+        let mut buf = vec![0u64; words];
         let ok = GetTokenInformation(
             token,
             TokenUser,
@@ -413,19 +439,22 @@ unsafe fn token_user_sid_bytes() -> Option<Vec<u8>> {
             &mut needed,
         ) != 0;
         CloseHandle(token);
-        if !ok {
+        if !ok || (needed as usize) < std::mem::size_of::<TOKEN_USER>() {
             return None;
         }
-        let user = &*(buf.as_ptr() as *const TOKEN_USER);
-        let sid = user.User.Sid as *const u8;
-        // SID layout: Revision(1) + SubAuthorityCount(1) + IdentifierAuthority(6)
-        // + 4 bytes per sub-authority — the second byte is the COUNT, not the size.
-        let sub_count = *sid.add(1) as usize;
-        let len = 8 + 4 * sub_count;
-        if len == 0 || len > buf.len() {
+        let user = std::ptr::read_unaligned(buf.as_ptr() as *const TOKEN_USER);
+        let sid = user.User.Sid as PSID;
+        if sid.is_null() || IsValidSid(sid) == 0 {
             return None;
         }
-        Some(std::slice::from_raw_parts(sid, len).to_vec())
+        let len = GetLengthSid(sid) as usize;
+        let base = buf.as_ptr() as usize;
+        let end = base + (needed as usize);
+        let sid_addr = sid as usize;
+        if len == 0 || sid_addr < base || sid_addr.saturating_add(len) > end {
+            return None;
+        }
+        Some(std::slice::from_raw_parts(sid as *const u8, len).to_vec())
     }
 }
 
@@ -450,13 +479,15 @@ unsafe fn process_default_owner_sid_bytes() -> Option<Vec<u8>> {
         {
             return None;
         }
-        let sid = owner as *const u8;
-        let sub_count = *sid.add(1) as usize;
-        let len = 8 + 4 * sub_count;
-        let out = if len == 0 || len > 256 {
+        let out = if owner.is_null() || IsValidSid(owner) == 0 {
             None
         } else {
-            Some(std::slice::from_raw_parts(sid, len).to_vec())
+            let len = GetLengthSid(owner) as usize;
+            if len == 0 || len > 256 {
+                None
+            } else {
+                Some(std::slice::from_raw_parts(owner as *const u8, len).to_vec())
+            }
         };
         if !sd.is_null() {
             let _ = windows_sys::Win32::Foundation::LocalFree(sd as _);

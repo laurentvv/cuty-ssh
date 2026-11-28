@@ -16,14 +16,19 @@
 //! reject. This core keeps comments and honours the flags through `ssh-key`'s
 //! `(&RsaKeypair, Option<HashAlg>)` signer.
 
+use hmac::{Hmac, KeyInit, Mac};
 use russh::keys::signature::Signer;
 use russh::keys::ssh_encoding::{Decode, Encode};
 use russh::keys::ssh_key::private::KeypairData;
 use russh::keys::ssh_key::public::KeyData;
 use russh::keys::ssh_key::{HashAlg, PrivateKey};
+use sha2::Sha256;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
+
+/// Maximum keys stored simultaneously in the in-memory agent vault.
+const MAX_LOADED_KEYS: usize = 256;
 
 pub const SSH_AGENT_FAILURE: u8 = 5;
 pub const SSH_AGENT_SUCCESS: u8 = 6;
@@ -74,7 +79,8 @@ struct LoadedKey {
     comment: String,
     source_path: String,
     /// Lazy expiry deadline from a constrained ADD_IDENTITY (`ssh-add -t`).
-    expires_at: Option<SystemTime>,
+    /// Monotonic `Instant` prevents wall-clock rollback from extending expired keys.
+    expires_at: Option<Instant>,
 }
 
 impl LoadedKey {
@@ -90,12 +96,43 @@ impl LoadedKey {
     }
 }
 
+/// Salted HMAC-SHA256 digest of the active agent lock passphrase.
+/// Never stores the plaintext lock passphrase in memory and verifies in constant time.
+struct LockDigest {
+    key: Zeroizing<[u8; 32]>,
+    mac: Zeroizing<[u8; 32]>,
+    failed_attempts: u32,
+}
+
+impl LockDigest {
+    fn new(passphrase: &[u8]) -> Option<Self> {
+        let mut key = Zeroizing::new([0u8; 32]);
+        crate::ssh::ppk::fill_os_random(&mut *key).ok()?;
+        let mut mac_ctx = Hmac::<Sha256>::new_from_slice(&*key).ok()?;
+        mac_ctx.update(passphrase);
+        let digest: [u8; 32] = mac_ctx.finalize().into_bytes().into();
+        Some(Self {
+            key,
+            mac: Zeroizing::new(digest),
+            failed_attempts: 0,
+        })
+    }
+
+    fn verify(&self, attempt: &[u8]) -> bool {
+        let Ok(mut mac_ctx) = Hmac::<Sha256>::new_from_slice(&*self.key) else {
+            return false;
+        };
+        mac_ctx.update(attempt);
+        mac_ctx.verify_slice(&*self.mac).is_ok()
+    }
+}
+
 /// In-memory key vault + ssh-agent protocol dispatcher. Shared by every
 /// transport (named pipe, WM_COPYDATA), so all clients see one key set.
 pub struct NativeAgentCore {
     keys: RwLock<Vec<LoadedKey>>,
-    /// Agent lock passphrase (pageant lock feature); empty = unlocked.
-    lock_passphrase: RwLock<Zeroizing<Vec<u8>>>,
+    /// Active lock digest (pageant lock feature); `None` = unlocked.
+    lock_state: RwLock<Option<LockDigest>>,
 }
 
 impl Default for NativeAgentCore {
@@ -108,15 +145,12 @@ impl NativeAgentCore {
     pub fn new() -> Self {
         Self {
             keys: RwLock::new(Vec::new()),
-            lock_passphrase: RwLock::new(Zeroizing::new(Vec::new())),
+            lock_state: RwLock::new(None),
         }
     }
 
     pub fn is_locked(&self) -> bool {
-        self.lock_passphrase
-            .read()
-            .map(|p| !p.is_empty())
-            .unwrap_or(true)
+        self.lock_state.read().map(|p| p.is_some()).unwrap_or(true)
     }
 
     /// Adds (or replaces, when the same public key is already loaded) a key.
@@ -179,7 +213,7 @@ impl NativeAgentCore {
             Ok(k) => k,
             Err(e) => e.into_inner(),
         };
-        let now = SystemTime::now();
+        let now = Instant::now();
         let before = keys.len();
         keys.retain(|k| k.expires_at.is_none_or(|t| t > now));
         if before != keys.len() {
@@ -218,26 +252,33 @@ impl NativeAgentCore {
             SSH2_AGENTC_REMOVE_ALL_IDENTITIES if !locked => self.handle_remove_all(&mut out),
             SSH_AGENTC_LOCK if !locked => match Zeroizing::new(decode_bytes(&mut rest)) {
                 pass if !pass.is_empty() => {
-                    *self
-                        .lock_passphrase
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner()) = pass;
-                    out.push(SSH_AGENT_SUCCESS);
-                    true
+                    let mut guard = self.lock_state.write().unwrap_or_else(|e| e.into_inner());
+                    if guard.is_some() {
+                        false
+                    } else if let Some(digest) = LockDigest::new(&pass) {
+                        *guard = Some(digest);
+                        out.push(SSH_AGENT_SUCCESS);
+                        true
+                    } else {
+                        false
+                    }
                 }
                 _ => false,
             },
-            SSH_AGENTC_UNLOCK if self.is_locked() => {
+            SSH_AGENTC_UNLOCK if locked => {
                 let attempt = Zeroizing::new(decode_bytes(&mut rest));
-                let mut stored = self
-                    .lock_passphrase
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner());
-                let matches = constant_time_eq(&attempt, &stored);
-                if matches {
-                    stored.clear();
+                let mut guard = self.lock_state.write().unwrap_or_else(|e| e.into_inner());
+                let Some(state) = guard.as_mut() else {
+                    return vec![SSH_AGENT_FAILURE];
+                };
+                if state.verify(&attempt) {
+                    *guard = None;
                     out.push(SSH_AGENT_SUCCESS);
                 } else {
+                    state.failed_attempts = state.failed_attempts.saturating_add(1);
+                    let delay_ms = (50u64 << state.failed_attempts.min(5)).min(1000);
+                    drop(guard);
+                    std::thread::sleep(Duration::from_millis(delay_ms));
                     out.push(SSH_AGENT_FAILURE);
                 }
                 true
@@ -271,8 +312,18 @@ impl NativeAgentCore {
         let blob = decode_bytes(rest);
         let data = decode_bytes(rest);
         // "That hasn't always been there, so we don't complain if we don't
-        // find it" — pageant.c: absent flags default to 0.
-        let flags = u32::decode(rest).unwrap_or(0);
+        // find it" — pageant.c: absent flags default to 0, but reject trailing garbage.
+        let flags = if rest.is_empty() {
+            0
+        } else {
+            let Ok(f) = u32::decode(rest) else {
+                return false;
+            };
+            if !rest.is_empty() {
+                return false;
+            }
+            f
+        };
 
         let key = {
             self.prune_expired();
@@ -307,18 +358,26 @@ impl NativeAgentCore {
         };
         let mut expires_at = None;
         if constrained {
-            // Lifetime seconds schedule a lazy expiry; confirm constraints are
-            // accepted but auto-confirmed (same policy as russh's agent server).
-            while let Ok(tag) = u8::decode(rest) {
+            // draft-miller-ssh-agent: reject any constraint the agent cannot
+            // strictly enforce (including CONSTRAIN_CONFIRM until an interactive
+            // approval UI exists).
+            while !rest.is_empty() {
+                let Ok(tag) = u8::decode(rest) else {
+                    return false;
+                };
                 match tag {
                     CONSTRAIN_LIFETIME => {
                         let Ok(seconds) = u32::decode(rest) else {
                             return false;
                         };
-                        expires_at =
-                            SystemTime::now().checked_add(Duration::from_secs(seconds as u64));
+                        let Some(deadline) =
+                            Instant::now().checked_add(Duration::from_secs(seconds as u64))
+                        else {
+                            return false;
+                        };
+                        expires_at = Some(deadline);
                     }
-                    CONSTRAIN_CONFIRM => {}
+                    CONSTRAIN_CONFIRM => return false,
                     _ => return false,
                 }
             }
@@ -337,7 +396,12 @@ impl NativeAgentCore {
             source_path: String::new(),
             expires_at,
         };
+        self.prune_expired();
         let mut keys = self.keys.write().unwrap_or_else(|e| e.into_inner());
+        let replacing = keys.iter().any(|k| k.blob == loaded.blob);
+        if !replacing && keys.len() >= MAX_LOADED_KEYS {
+            return false;
+        }
         keys.retain(|k| k.blob != loaded.blob);
         keys.push(loaded);
         out.push(SSH_AGENT_SUCCESS);
@@ -414,17 +478,6 @@ fn sign_agent_request(
 
 fn decode_bytes(r: &mut &[u8]) -> Vec<u8> {
     <Vec<u8> as Decode>::decode(r).unwrap_or_default()
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 #[cfg(test)]
@@ -619,5 +672,17 @@ mod tests {
             "C:\\keys\\session.ppk"
         ));
         assert_eq!(core.key_count(), 1);
+    }
+
+    #[test]
+    fn constrain_confirm_is_rejected_until_interactive_ui_exists() {
+        let core = NativeAgentCore::new();
+        let key = generate_new_ssh_key("ed25519", "confirm").unwrap();
+        let mut body = vec![SSH2_AGENTC_ADD_ID_CONSTRAINED];
+        Encode::encode(key.key_data(), &mut body).unwrap();
+        Encode::encode("confirm".as_bytes(), &mut body).unwrap();
+        body.push(CONSTRAIN_CONFIRM);
+        assert_eq!(core.process(&body), vec![SSH_AGENT_FAILURE]);
+        assert_eq!(core.key_count(), 0);
     }
 }

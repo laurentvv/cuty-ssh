@@ -303,11 +303,15 @@ impl client::Handler for SshClientHandler {
                 pk.fingerprint(HashAlg::Sha256).to_string(),
                 pk.public_key_base64(),
             ),
-            PublicKeyOrCertificate::Certificate(cert) => (
-                cert.algorithm().to_string(),
-                format!("CERT:{}", cert.algorithm()),
-                String::new(),
-            ),
+            PublicKeyOrCertificate::Certificate(cert) => {
+                let _ = self.evt_tx.send(BackendEvent::ErrorMessage(format!(
+                    "🚨 Certificat hôte SSH refusé pour {}:{} ({}) : la vérification d'autorité de certification (@cert-authority) n'est pas configurée.",
+                    self.host,
+                    self.port,
+                    cert.algorithm()
+                )));
+                return Ok(false);
+            }
         };
 
         let check_res = verify_or_record_known_host(&self.host, self.port, &alg, &fp_raw, &b64);
@@ -344,6 +348,12 @@ impl client::Handler for SshClientHandler {
                 let _ = self.evt_tx.send(BackendEvent::ErrorMessage(format!(
                     "🚨 ALERTE SÉCURITÉ MITM — La clé SSH de {}:{} ({}) a changé ! Attendu : {} | Reçu : {}. Révoquez l'ancienne clé dans '🛡 Known Hosts' si le serveur a été réinstallé.",
                     self.host, self.port, algorithm, expected_fingerprint, actual_fingerprint
+                )));
+                Ok(false)
+            }
+            HostKeyCheckResult::StoreError(err) => {
+                let _ = self.evt_tx.send(BackendEvent::ErrorMessage(format!(
+                    "🚨 Erreur de lecture de known_hosts.json (connexion bloquée par sécurité) : {err}"
                 )));
                 Ok(false)
             }
@@ -616,14 +626,25 @@ pub(crate) fn parse_inline_proxy_jump(spec: &str) -> Option<SessionProfile> {
         trimmed,
         &std::env::var("USERNAME").unwrap_or_else(|_| "root".to_string()),
     );
-    let (host, port) = if let Some((h, p_str)) = host_port_part.rsplit_once(':')
+    let (host, port) = if let Some(rest) = host_port_part.strip_prefix('[') {
+        if let Some((ipv6, tail)) = rest.split_once(']') {
+            let p = tail
+                .strip_prefix(':')
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(22);
+            (ipv6.to_string(), p)
+        } else {
+            return None;
+        }
+    } else if host_port_part.matches(':').count() == 1
+        && let Some((h, p_str)) = host_port_part.rsplit_once(':')
         && let Ok(p) = p_str.parse::<u16>()
     {
         (h.to_string(), p)
     } else {
         (host_port_part, 22)
     };
-    if host.is_empty() {
+    if host.is_empty() || port == 0 || host.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return None;
     }
     Some(SessionProfile {
@@ -642,7 +663,7 @@ pub(crate) fn parse_inline_proxy_jump(spec: &str) -> Option<SessionProfile> {
 }
 
 /// Whether a keyboard-interactive prompt asks for the account password (EN/FR/DE/ES).
-fn is_password_prompt(prompt: &str) -> bool {
+pub(crate) fn is_password_prompt(prompt: &str) -> bool {
     let p = prompt.to_lowercase();
     ["password", "mot de passe", "passwort", "contraseña"]
         .iter()
@@ -1014,10 +1035,28 @@ async fn run_ssh_session(
         authenticate_ssh_handle(&mut session, &profile, &mut cmd_rx, &evt_tx).await?;
     let fp = server_fp.lock().ok().and_then(|g| g.clone());
 
-    // Start port forwarding rules (-L / -R)
+    // Start port forwarding rules (-L / -R / -D) with automatic abort-on-drop
+    // so local listeners and Arc<Handle> are never leaked after disconnect.
+    struct TunnelGuard(Vec<tokio::task::JoinHandle<()>>);
+    impl Drop for TunnelGuard {
+        fn drop(&mut self) {
+            for task in self.0.drain(..) {
+                task.abort();
+            }
+        }
+    }
+    struct QuickSocksGuard(Option<(u16, tokio::task::JoinHandle<()>)>);
+    impl Drop for QuickSocksGuard {
+        fn drop(&mut self) {
+            if let Some((_, task)) = self.0.take() {
+                task.abort();
+            }
+        }
+    }
+
     let session = Arc::new(session);
-    let mut socks_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-    let mut quick_socks: Option<(u16, tokio::task::JoinHandle<()>)> = None;
+    let mut tunnel_tasks = TunnelGuard(Vec::new());
+    let mut quick_socks = QuickSocksGuard(None);
     for rule in &profile.port_forwards {
         if !rule.enabled {
             continue;
@@ -1029,7 +1068,7 @@ async fn run_ssh_session(
                 let target_port = rule.target_port as u32;
                 let sess_clone = Arc::clone(&session);
                 let evt_clone = evt_tx.clone();
-                tokio::spawn(async move {
+                tunnel_tasks.0.push(tokio::spawn(async move {
                     match TcpListener::bind(&bind_addr).await {
                         Ok(listener) => {
                             let _ = evt_clone.send(BackendEvent::StatusMessage(format!(
@@ -1066,13 +1105,13 @@ async fn run_ssh_session(
                             )));
                         }
                     }
-                });
+                }));
             }
             PortForwardType::Dynamic => {
                 let bind = format!("{}:{}", rule.bind_address, rule.bind_port);
                 match start_socks_proxy(Arc::clone(&session), &bind).await {
                     Ok(task) => {
-                        socks_tasks.push(task);
+                        tunnel_tasks.0.push(task);
                         let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
                             "SOCKS5 actif : {bind}"
                         )));
@@ -1205,8 +1244,7 @@ async fn run_ssh_session(
                         if expect_rules.iter().any(|r| r.enabled) {
                             recent_text_window.push_str(&String::from_utf8_lossy(&bytes));
                             if recent_text_window.len() > 2048 {
-                                let drain = recent_text_window.len() - 1024;
-                                recent_text_window.drain(..drain);
+                                drain_prefix_utf8_safe(&mut recent_text_window, 1024);
                             }
                             for rule in &mut expect_rules {
                                 if rule.enabled && !rule.trigger_prompt.is_empty() && recent_text_window.contains(&rule.trigger_prompt) {
@@ -1249,7 +1287,7 @@ async fn run_ssh_session(
                         let _ = channel.window_change(cols as u32, rows as u32, 0, 0).await;
                     }
                     Some(BackendCommand::ToggleSocks(port)) => {
-                        if let Some((p, task)) = quick_socks.take() {
+                        if let Some((p, task)) = quick_socks.0.take() {
                             task.abort();
                             let _ = evt_tx.send(BackendEvent::SocksState(None));
                             let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
@@ -1259,7 +1297,7 @@ async fn run_ssh_session(
                             let bind = format!("127.0.0.1:{port}");
                             match start_socks_proxy(Arc::clone(&session), &bind).await {
                                 Ok(task) => {
-                                    quick_socks = Some((port, task));
+                                    quick_socks.0 = Some((port, task));
                                     let _ = evt_tx.send(BackendEvent::SocksState(Some(port)));
                                     let _ = evt_tx.send(BackendEvent::StatusMessage(format!(
                                         "SOCKS5 actif : {bind}"
@@ -1315,11 +1353,19 @@ async fn run_ssh_session(
                                     && exec_ch.exec(true, script.as_str()).await.is_ok()
                                 {
                                     let mut out = Vec::new();
+                                    const MAX_DEPLOY_OUT: usize = 64 * 1024;
                                     let _ = tokio::time::timeout(Duration::from_secs(6), async {
                                         while let Some(msg) = exec_ch.wait().await {
                                             match msg {
                                                 ChannelMsg::Data { data } => {
-                                                    out.extend_from_slice(&data);
+                                                    let remaining =
+                                                        MAX_DEPLOY_OUT.saturating_sub(out.len());
+                                                    if remaining == 0 {
+                                                        break;
+                                                    }
+                                                    out.extend_from_slice(
+                                                        &data[..data.len().min(remaining)],
+                                                    );
                                                 }
                                                 ChannelMsg::Eof | ChannelMsg::Close => break,
                                                 _ => {}
@@ -1342,13 +1388,11 @@ async fn run_ssh_session(
                                     }
                                 }
                                 if !exec_done {
-                                    let line = format!("{script}\n");
-                                    channel.data(line.as_bytes()).await?;
-                                    let _ = evt_tx.send(BackendEvent::PublicKeyDeployed {
-                                        private_key_path,
-                                        key_comment,
-                                        already_present: false,
-                                    });
+                                    // Never inject raw shell commands into the interactive PTY
+                                    // (could corrupt a foreground program like vim/sudo).
+                                    let _ = evt_tx.send(BackendEvent::ErrorMessage(
+                                        "Échec ssh-copy-id : le canal SSH exec n'a pas confirmé l'installation de la clé publique.".to_string(),
+                                    ));
                                 }
                             }
                             Err(e) => {
@@ -1635,6 +1679,19 @@ async fn run_ssh_session(
     Ok(())
 }
 
+/// Drains the oldest bytes of `s` so at most `keep_bytes` remain, aligning to a
+/// valid UTF-8 character boundary so multi-byte network output can never panic.
+fn drain_prefix_utf8_safe(s: &mut String, keep_bytes: usize) {
+    if s.len() <= keep_bytes {
+        return;
+    }
+    let mut drain = s.len() - keep_bytes;
+    while drain < s.len() && !s.is_char_boundary(drain) {
+        drain += 1;
+    }
+    s.drain(..drain);
+}
+
 /// Minimal SOCKS5 server side (RFC 1928): no authentication, CONNECT only.
 /// Returns the requested destination `(host, port)` after answering the greeting.
 async fn socks5_negotiate<S>(s: &mut S) -> Result<(String, u16)>
@@ -1654,7 +1711,7 @@ where
 
     let mut req = [0u8; 4];
     s.read_exact(&mut req).await?;
-    anyhow::ensure!(req[0] == 5, "bad SOCKS5 request");
+    anyhow::ensure!(req[0] == 5 && req[2] == 0, "bad SOCKS5 request");
     if req[1] != 1 {
         s.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
         anyhow::bail!("unsupported SOCKS5 command {}", req[1]);
@@ -1668,9 +1725,15 @@ where
         3 => {
             let mut len = [0u8; 1];
             s.read_exact(&mut len).await?;
+            anyhow::ensure!(len[0] > 0, "empty SOCKS5 domain");
             let mut name = vec![0u8; len[0] as usize];
             s.read_exact(&mut name).await?;
-            String::from_utf8(name).context("invalid SOCKS5 host name")?
+            let domain = String::from_utf8(name).context("invalid SOCKS5 host name")?;
+            anyhow::ensure!(
+                !domain.chars().any(|c| c.is_control() || c.is_whitespace()),
+                "invalid characters in SOCKS5 domain"
+            );
+            domain
         }
         4 => {
             let mut a = [0u8; 16];
@@ -1684,23 +1747,49 @@ where
     };
     let mut port = [0u8; 2];
     s.read_exact(&mut port).await?;
-    Ok((host, u16::from_be_bytes(port)))
+    let port_num = u16::from_be_bytes(port);
+    anyhow::ensure!(port_num > 0, "invalid SOCKS5 port 0");
+    Ok((host, port_num))
 }
 
-/// Parses an HTTP `CONNECT host:port` request head. Only CONNECT is supported.
+/// Parses an HTTP `CONNECT host:port HTTP/1.x` request head. Only CONNECT is supported;
+/// rejects body-carrying headers (`Content-Length`/`Transfer-Encoding`) to prevent smuggling.
 fn parse_http_connect(head: &str) -> Option<(String, u16)> {
-    let line = head.lines().next()?;
+    let mut lines = head.lines();
+    let line = lines.next()?;
     let mut parts = line.split_whitespace();
     if !parts.next()?.eq_ignore_ascii_case("CONNECT") {
         return None;
     }
     let authority = parts.next()?;
-    let (host, port) = authority.rsplit_once(':')?;
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    if host.is_empty() {
+    let version = parts.next()?;
+    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") || parts.next().is_some() {
         return None;
     }
-    Some((host.to_string(), port.parse().ok()?))
+    for header in lines {
+        if let Some((name, _)) = header.split_once(':') {
+            let n = name.trim();
+            if n.eq_ignore_ascii_case("content-length")
+                || n.eq_ignore_ascii_case("transfer-encoding")
+            {
+                return None;
+            }
+        }
+    }
+    let (host, port_str) = if let Some(rest) = authority.strip_prefix('[') {
+        let (ipv6, tail) = rest.split_once(']')?;
+        (ipv6, tail.strip_prefix(':')?)
+    } else {
+        authority.rsplit_once(':')?
+    };
+    if host.is_empty() || host.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return None;
+    }
+    let port: u16 = port_str.parse().ok()?;
+    if port == 0 {
+        return None;
+    }
+    Some((host.to_string(), port))
 }
 
 /// Reads an HTTP proxy request head (up to the blank line, 8 KiB max) and returns the
@@ -1727,27 +1816,44 @@ where
 }
 
 /// Binds `bind` and serves SOCKS5 and HTTP CONNECT clients (detected from the first byte)
-/// through SSH `direct-tcpip` channels.
+/// through SSH `direct-tcpip` channels, bounded by concurrency and handshake timeouts.
 async fn start_socks_proxy(
     session: Arc<client::Handle<SshClientHandler>>,
     bind: &str,
 ) -> Result<tokio::task::JoinHandle<()>> {
+    const MAX_PROXY_CONNS: usize = 256;
+    const PROXY_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
     let listener = TcpListener::bind(bind).await?;
+    let permits = Arc::new(tokio::sync::Semaphore::new(MAX_PROXY_CONNS));
     Ok(tokio::spawn(async move {
         while let Ok((mut local, peer)) = listener.accept().await {
+            let Ok(permit) = permits.clone().try_acquire_owned() else {
+                drop(local);
+                continue;
+            };
             let session = Arc::clone(&session);
             tokio::spawn(async move {
+                let _permit = permit;
                 let mut first = [0u8; 1];
-                if local.peek(&mut first).await.unwrap_or(0) == 0 {
+                let peek_ok = tokio::time::timeout(PROXY_HANDSHAKE_TIMEOUT, local.peek(&mut first))
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .unwrap_or(0);
+                if peek_ok == 0 {
                     return;
                 }
                 let http = first[0] != 5;
-                let negotiated = if http {
-                    http_connect_negotiate(&mut local).await
-                } else {
-                    socks5_negotiate(&mut local).await
-                };
-                let Ok((host, port)) = negotiated else {
+                let negotiated = tokio::time::timeout(PROXY_HANDSHAKE_TIMEOUT, async {
+                    if http {
+                        http_connect_negotiate(&mut local).await
+                    } else {
+                        socks5_negotiate(&mut local).await
+                    }
+                })
+                .await;
+                let Ok(Ok((host, port))) = negotiated else {
                     return;
                 };
                 match session
@@ -2062,12 +2168,151 @@ async fn upload_sftp_file(
     Ok(transferred)
 }
 
+/// Returns true if `c` is a Unicode bidirectional override/isolate control
+/// character that can disguise file extensions (e.g., RLO `\u{202E}`).
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Validates a single untrusted remote SFTP entry name so joining it onto a
+/// local directory can never escape the target root on Windows or Unix.
+///
+/// Rejects empty strings, `.`, `..`, path separators (`/` and `\`), colons
+/// (Windows drive letters and NTFS Alternate Data Streams), NUL / control /
+/// BiDi characters, trailing dots or spaces, and Windows reserved device names.
+pub(crate) fn validate_sftp_entry_name(name: &str) -> Result<&str> {
+    if name.is_empty() || name == "." || name == ".." {
+        anyhow::bail!("invalid remote SFTP entry name: {name:?}");
+    }
+    if name.ends_with('.') || name.ends_with(' ') {
+        anyhow::bail!("unsafe trailing dot/space in remote SFTP entry name: {name:?}");
+    }
+    if name
+        .chars()
+        .any(|c| matches!(c, '/' | '\\' | ':' | '\0') || c.is_control() || is_bidi_control(c))
+    {
+        anyhow::bail!("unsafe character in remote SFTP entry name: {name:?}");
+    }
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        anyhow::bail!("Windows reserved device name in remote SFTP entry: {name:?}");
+    }
+    let mut comps = Path::new(name).components();
+    match (comps.next(), comps.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(name),
+        _ => anyhow::bail!("non-normal path component in remote SFTP entry: {name:?}"),
+    }
+}
+
+/// Safely joins a single validated remote SFTP entry name beneath `base`,
+/// refusing symlinks and ensuring canonical containment when `base` exists.
+pub(crate) fn safe_join_under(base: &Path, name: &str) -> Result<PathBuf> {
+    let clean = validate_sftp_entry_name(name)?;
+    let joined = base.join(clean);
+    if let Ok(meta) = std::fs::symlink_metadata(&joined)
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!(
+            "refusing to write through local symlink: {}",
+            joined.display()
+        );
+    }
+    if let (Ok(canon_base), Ok(canon_parent)) = (
+        std::fs::canonicalize(base),
+        joined
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("missing parent"))
+            .and_then(|p| std::fs::canonicalize(p).map_err(Into::into)),
+    ) && !canon_parent.starts_with(&canon_base)
+    {
+        anyhow::bail!(
+            "resolved local target escapes base directory: {}",
+            joined.display()
+        );
+    }
+    Ok(joined)
+}
+
+/// Safely joins a `/`-separated relative path (used by SFTP mirror) beneath `base`,
+/// validating every segment and refusing symlink escapes.
+pub(crate) fn safe_join_rel_under(base: &Path, rel: &str) -> Result<PathBuf> {
+    if rel.is_empty() {
+        anyhow::bail!("empty relative SFTP path");
+    }
+    let mut cur = base.to_path_buf();
+    for seg in rel.split('/') {
+        let clean = validate_sftp_entry_name(seg)?;
+        cur = cur.join(clean);
+        if let Ok(meta) = std::fs::symlink_metadata(&cur)
+            && meta.file_type().is_symlink()
+        {
+            anyhow::bail!("refusing to traverse local symlink: {}", cur.display());
+        }
+    }
+    Ok(cur)
+}
+
+/// Attaches a Windows Mark-of-the-Web (`Zone.Identifier` ADS, ZoneId=3) to an
+/// SFTP-downloaded file so Windows SmartScreen and Office Protected View treat
+/// it as coming from an untrusted remote source.
+pub(crate) fn write_mark_of_the_web(path: &Path) {
+    #[cfg(windows)]
+    {
+        let mut ads = path.as_os_str().to_os_string();
+        ads.push(":Zone.Identifier");
+        let _ = std::fs::write(ads, b"[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+    }
+}
+
 async fn download_sftp_file(
     sftp: &SftpSession,
     remote_path: &str,
     local_path: &Path,
     evt_tx: &UnboundedSender<BackendEvent>,
 ) -> Result<u64> {
+    if let Ok(meta) = tokio::fs::symlink_metadata(local_path).await
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!(
+            "refusing to overwrite local symlink: {}",
+            local_path.display()
+        );
+    }
     let filename = local_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -2084,6 +2329,14 @@ async fn download_sftp_file(
     let mut part_name = local_path.as_os_str().to_owned();
     part_name.push(PART_SUFFIX);
     let part_path = PathBuf::from(part_name);
+    if let Ok(meta) = tokio::fs::symlink_metadata(&part_path).await
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!(
+            "refusing to write through partial symlink: {}",
+            part_path.display()
+        );
+    }
     let existing = tokio::fs::metadata(&part_path)
         .await
         .map(|m| m.len())
@@ -2132,6 +2385,7 @@ async fn download_sftp_file(
         let _ = tokio::fs::remove_file(local_path).await;
     }
     tokio::fs::rename(&part_path, local_path).await?;
+    write_mark_of_the_web(local_path);
     let _ = evt_tx.send(BackendEvent::SftpProgress {
         filename,
         transferred,
@@ -2170,7 +2424,16 @@ pub(crate) async fn download_sftp_tree(
             if entry.name == "." || entry.name == ".." || entry.is_symlink {
                 continue;
             }
-            let local_child = local_dir.join(&entry.name);
+            let local_child = match safe_join_under(&local_dir, &entry.name) {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = evt_tx.send(BackendEvent::SftpStatus(format!(
+                        "Entrée SFTP distante ignorée (nom dangereux) {} : {e}",
+                        entry.full_path
+                    )));
+                    continue;
+                }
+            };
             if entry.is_dir {
                 tokio::fs::create_dir_all(&local_child).await?;
                 stack.push((entry.full_path.clone(), local_child));
@@ -2274,6 +2537,8 @@ async fn run_tcp_or_telnet_session(
     let mut cur_rows = initial_rows;
     let mut auto_user_sent = false;
     let mut auto_pass_sent = false;
+    let mut user_interacted = false;
+    let connected_at = std::time::Instant::now();
     let mut recent_text = String::new();
 
     loop {
@@ -2295,27 +2560,39 @@ async fn run_tcp_or_telnet_session(
                         if !display_bytes.is_empty() {
                             let _ = evt_tx.send(BackendEvent::Output(display_bytes.clone()));
 
-                            // Telnet connection automation (auto-login & auto-password)
-                            recent_text.push_str(&String::from_utf8_lossy(&display_bytes));
-                            if recent_text.len() > 1024 {
-                                let drain = recent_text.len() - 512;
-                                recent_text.drain(..drain);
-                            }
-                            let lower = recent_text.to_lowercase();
-                            if profile.auto_login && !auto_user_sent && !profile.username.is_empty()
-                                && (lower.contains("login:") || lower.contains("username:"))
+                            // Telnet-only logon automation: restricted to initial 30 s window,
+                            // disarmed once the user interacts manually, and matched at prompt end.
+                            if is_telnet
+                                && !user_interacted
+                                && connected_at.elapsed() < Duration::from_secs(30)
+                                && ((profile.auto_login && !auto_user_sent && !profile.username.is_empty())
+                                    || (profile.auto_password && !auto_pass_sent && !profile.password.is_empty()))
                             {
-                                auto_user_sent = true;
-                                let u = format!("{}\r\n", profile.username);
-                                let _ = stream.write_all(u.as_bytes()).await;
-                                recent_text.clear();
-                            } else if profile.auto_password && !auto_pass_sent && !profile.password.is_empty()
-                                && lower.contains("password:")
-                            {
-                                auto_pass_sent = true;
-                                let p = format!("{}\r\n", profile.password);
-                                let _ = stream.write_all(p.as_bytes()).await;
-                                recent_text.clear();
+                                recent_text.push_str(&String::from_utf8_lossy(&display_bytes));
+                                if recent_text.len() > 1024 {
+                                    drain_prefix_utf8_safe(&mut recent_text, 512);
+                                }
+                                let tail = recent_text.trim_end().to_lowercase();
+                                if profile.auto_login
+                                    && !auto_user_sent
+                                    && !profile.username.is_empty()
+                                    && (tail.ends_with("login:") || tail.ends_with("username:"))
+                                {
+                                    auto_user_sent = true;
+                                    let u = format!("{}\r\n", profile.username);
+                                    let _ = stream.write_all(u.as_bytes()).await;
+                                    recent_text.clear();
+                                } else if profile.auto_password
+                                    && !auto_pass_sent
+                                    && !profile.password.is_empty()
+                                    && (auto_user_sent || profile.username.is_empty())
+                                    && tail.ends_with("password:")
+                                {
+                                    auto_pass_sent = true;
+                                    let p = format!("{}\r\n", profile.password);
+                                    let _ = stream.write_all(p.as_bytes()).await;
+                                    recent_text.clear();
+                                }
                             }
                         }
                     }
@@ -2328,6 +2605,7 @@ async fn run_tcp_or_telnet_session(
             cmd_opt = cmd_rx.recv() => {
                 match cmd_opt {
                     Some(BackendCommand::SendInput(bytes)) => {
+                        user_interacted = true;
                         stream.write_all(&bytes).await?;
                     }
                     Some(BackendCommand::Resize { cols, rows }) => {
@@ -2469,11 +2747,12 @@ fn run_local_pty_session(
         pixel_height: 0,
     })?;
 
-    let shell_cmd = if profile.local_shell_cmd.trim().is_empty() {
+    let raw_shell = if profile.local_shell_cmd.trim().is_empty() {
         "powershell.exe".to_string()
     } else {
         profile.local_shell_cmd.trim().to_string()
     };
+    let shell_cmd = resolve_system_shell_executable(&raw_shell);
 
     let cmd = CommandBuilder::new(&shell_cmd);
     let mut child = pair
@@ -2556,6 +2835,39 @@ fn run_local_pty_session(
     Ok(())
 }
 
+/// Resolves standard bare Windows shell names to their `%SystemRoot%\System32`
+/// absolute paths so portable launches cannot be hijacked by a planted binary in CWD.
+fn resolve_system_shell_executable(shell: &str) -> String {
+    #[cfg(windows)]
+    {
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let sys32 = PathBuf::from(sysroot).join("System32");
+        if shell.eq_ignore_ascii_case("powershell.exe") {
+            let p = sys32
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe");
+            if p.exists() {
+                return p.to_string_lossy().into_owned();
+            }
+        } else if shell.eq_ignore_ascii_case("cmd.exe") {
+            let p = sys32.join("cmd.exe");
+            if p.exists() {
+                return p.to_string_lossy().into_owned();
+            }
+        } else if shell.eq_ignore_ascii_case("wsl.exe") {
+            let p = sys32.join("wsl.exe");
+            if p.exists() {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    shell.to_string()
+}
+
+/// Maximum bytes buffered from short-lived background SSH `exec` probes (prevents client OOM DoS).
+const MAX_PROBE_BYTES: usize = 64 * 1024;
+
 /// Collects non-intrusive system metrics (hostname, kernel, uptime, loadavg, RAM, root disk)
 /// over a short-lived SSH exec channel without disturbing the interactive terminal.
 async fn fetch_remote_telemetry(
@@ -2576,7 +2888,13 @@ async fn fetch_remote_telemetry(
     let collect_res = tokio::time::timeout(Duration::from_secs(4), async {
         while let Some(msg) = ch.wait().await {
             match msg {
-                ChannelMsg::Data { data } => out.extend_from_slice(&data),
+                ChannelMsg::Data { data } => {
+                    let remaining = MAX_PROBE_BYTES.saturating_sub(out.len());
+                    if remaining == 0 {
+                        break;
+                    }
+                    out.extend_from_slice(&data[..data.len().min(remaining)]);
+                }
                 ChannelMsg::Eof | ChannelMsg::Close => break,
                 _ => {}
             }
@@ -2693,7 +3011,13 @@ async fn probe_shell_cwd<H: client::Handler>(session: &client::Handle<H>) -> Opt
             .ok()?;
         while let Some(msg) = ch.wait().await {
             match msg {
-                ChannelMsg::Data { data } => out.extend_from_slice(&data),
+                ChannelMsg::Data { data } => {
+                    let remaining = MAX_PROBE_BYTES.saturating_sub(out.len());
+                    if remaining == 0 {
+                        break;
+                    }
+                    out.extend_from_slice(&data[..data.len().min(remaining)]);
+                }
                 ChannelMsg::Failure => return None,
                 ChannelMsg::Eof | ChannelMsg::Close => break,
                 _ => {}
@@ -4061,7 +4385,10 @@ mod tests {
 
 #[cfg(test)]
 mod kbdint_tests {
-    use super::is_password_prompt;
+    use super::{
+        is_password_prompt, safe_join_rel_under, safe_join_under, validate_sftp_entry_name,
+    };
+    use std::path::Path;
 
     #[test]
     fn password_prompts_are_detected_in_several_languages() {
@@ -4071,5 +4398,81 @@ mod kbdint_tests {
         for p in ["Verification code: ", "One-time token:", "Code OTP"] {
             assert!(!is_password_prompt(p), "{p}");
         }
+    }
+
+    #[test]
+    fn sftp_entry_validation_blocks_traversal_drive_unc_ads_and_reserved_names() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../evil.txt",
+            r"..\..\Startup\run.bat",
+            r"C:\Windows\win.ini",
+            r"\Windows\win.ini",
+            r"\\attacker\share\file.txt",
+            "notes.txt:hidden_stream",
+            "CON",
+            "nul.txt",
+            "COM1",
+            "LPT9.log",
+            "trailing_dot.",
+            "trailing_space ",
+            "bad\0name.txt",
+            "esc\x1bname.txt",
+            "invoice\u{202E}gpj.exe",
+        ] {
+            assert!(
+                validate_sftp_entry_name(bad).is_err(),
+                "expected rejection for {bad:?}"
+            );
+        }
+        for good in ["readme.txt", ".bashrc", "archive.tar.gz", "notes (1).md"] {
+            assert_eq!(validate_sftp_entry_name(good).unwrap(), good);
+        }
+        let base = std::env::temp_dir().join("cuty_sftp_safe_join_test");
+        assert!(safe_join_under(&base, "ok.txt").is_ok());
+        assert!(safe_join_under(&base, r"..\escape.txt").is_err());
+        assert!(safe_join_rel_under(&base, "sub/dir/file.txt").is_ok());
+        assert!(safe_join_rel_under(&base, "sub/../escape.txt").is_err());
+        assert!(safe_join_rel_under(Path::new("."), "").is_err());
+    }
+
+    #[test]
+    fn drain_prefix_utf8_safe_never_panics_on_multibyte_boundaries() {
+        let mut s = "é".repeat(600); // 1200 bytes (2-byte UTF-8 chars)
+        super::drain_prefix_utf8_safe(&mut s, 513); // odd keep_bytes would split 'é'
+        assert!(s.len() <= 513);
+        let mut s3 = "€".repeat(500); // 1500 bytes (3-byte UTF-8 chars)
+        super::drain_prefix_utf8_safe(&mut s3, 512);
+        assert!(s3.len() <= 512);
+    }
+
+    #[test]
+    fn parse_http_connect_rejects_smuggling_and_zero_port() {
+        assert_eq!(
+            super::parse_http_connect(
+                "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"
+            ),
+            Some(("example.com".to_string(), 443))
+        );
+        assert_eq!(
+            super::parse_http_connect("CONNECT [::1]:8443 HTTP/1.1\r\n\r\n"),
+            Some(("::1".to_string(), 8443))
+        );
+        assert!(super::parse_http_connect("CONNECT example.com:0 HTTP/1.1\r\n\r\n").is_none());
+        assert!(
+            super::parse_http_connect(
+                "CONNECT example.com:443 HTTP/1.1\r\nContent-Length: 5\r\n\r\n"
+            )
+            .is_none()
+        );
+        assert!(
+            super::parse_http_connect(
+                "CONNECT example.com:443 HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+            )
+            .is_none()
+        );
+        assert!(super::parse_http_connect("CONNECT example.com:443 BOGUS\r\n\r\n").is_none());
     }
 }

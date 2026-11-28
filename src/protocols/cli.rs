@@ -1,6 +1,6 @@
 use crate::config::{
-    AppConfig, HostKeyCheckResult, SessionProfile, SshAuthMethod, load_known_hosts,
-    split_user_and_host, verify_or_record_known_host,
+    AppConfig, HostKeyCheckResult, SessionProfile, SshAuthMethod, split_user_and_host,
+    verify_or_record_known_host,
 };
 use crate::protocols::{parse_inline_proxy_jump, rsa_hash_candidates};
 use crate::ssh::ppk::{inspect_key_file, load_private_key_any};
@@ -440,7 +440,10 @@ pub fn parse_cli_invocation(args: &[String], config: &AppConfig) -> Result<Optio
         bail!("No action specified");
     };
 
-    let jump_profile = parse_inline_proxy_jump(&profile.proxy_jump);
+    let jump_profile = profile
+        .jump_host_id
+        .and_then(|jid| config.sessions.iter().find(|s| s.id == jid).cloned())
+        .or_else(|| parse_inline_proxy_jump(&profile.proxy_jump));
 
     Ok(Some(CliInvocation {
         action,
@@ -472,22 +475,31 @@ impl client::Handler for CliSshHandler {
                 pk.fingerprint(HashAlg::Sha256).to_string(),
                 pk.public_key_base64(),
             ),
-            PublicKeyOrCertificate::Certificate(cert) => (
-                cert.algorithm().to_string(),
-                format!("CERT:{}", cert.algorithm()),
-                String::new(),
-            ),
+            PublicKeyOrCertificate::Certificate(cert) => {
+                eprintln!(
+                    "cuty-ssh: Host certificate verification rejected for {}:{} ({}): CA validation (@cert-authority) is not configured.",
+                    self.host,
+                    self.port,
+                    cert.algorithm()
+                );
+                return Ok(false);
+            }
         };
 
         if self.batch_mode {
-            let entries = load_known_hosts();
-            let host_port = if self.port == 22 {
-                self.host.trim().to_lowercase()
-            } else {
-                format!("[{}]:{}", self.host.trim().to_lowercase(), self.port)
+            let entries = match crate::config::load_known_hosts_checked() {
+                Ok(e) => e,
+                Err(err) => {
+                    eprintln!("cuty-ssh: Host key store error (fail-closed): {err}");
+                    return Ok(false);
+                }
             };
+            let host_port = crate::config::canonicalize_known_host_port(&self.host, self.port);
             if let Some(existing) = entries.iter().find(|e| e.host_port == host_port) {
-                if existing.fingerprint_sha256 == fp_raw {
+                let b64_ok = existing.public_key_base64.is_empty()
+                    || b64.is_empty()
+                    || existing.public_key_base64 == b64;
+                if existing.fingerprint_sha256 == fp_raw && b64_ok {
                     if let Ok(mut guard) = self.server_fingerprint.lock() {
                         *guard = Some(fp_raw);
                     }
@@ -542,6 +554,10 @@ impl client::Handler for CliSshHandler {
                         "cuty-ssh: Host key mismatch for {}:{} ({})! Expected {}, received {}.",
                         self.host, self.port, algorithm, expected_fingerprint, actual_fingerprint
                     );
+                    Ok(false)
+                }
+                HostKeyCheckResult::StoreError(err) => {
+                    eprintln!("cuty-ssh: Host key store error (fail-closed): {err}");
                     Ok(false)
                 }
             }
@@ -797,9 +813,24 @@ pub async fn authenticate_cli_session(
                     }
                     client::KeyboardInteractiveAuthResponse::Failure { .. } => break,
                     client::KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
-                        if !replied {
+                        if !replied && prompts.len() <= 16 {
                             replied = true;
-                            let answers = vec![profile.password.clone(); prompts.len()];
+                            // Only send the stored password to prompts that actually ask for a password.
+                            let mut used_pwd = false;
+                            let mut answers = Vec::with_capacity(prompts.len());
+                            let mut unexpected = false;
+                            for p in &prompts {
+                                if !used_pwd && crate::protocols::is_password_prompt(&p.prompt) {
+                                    used_pwd = true;
+                                    answers.push(profile.password.clone());
+                                } else {
+                                    unexpected = true;
+                                    break;
+                                }
+                            }
+                            if unexpected {
+                                break;
+                            }
                             cur = session
                                 .authenticate_keyboard_interactive_respond(answers)
                                 .await?;
@@ -1147,6 +1178,15 @@ async fn sftp_get_file(
         .and_then(|m| m.size)
         .unwrap_or(0);
 
+    if let Ok(meta) = tokio::fs::symlink_metadata(local_path).await
+        && meta.file_type().is_symlink()
+    {
+        bail!(
+            "Refusing to overwrite local symlink '{}'",
+            local_path.display()
+        );
+    }
+
     let mut remote_file = sftp
         .open(remote_path)
         .await
@@ -1156,10 +1196,11 @@ async fn sftp_get_file(
         .await
         .with_context(|| format!("Failed to create local file '{}'", local_path.display()))?;
 
-    let filename = local_path
+    let raw_filename = local_path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| remote_path.to_string());
+    let filename: String = raw_filename.chars().filter(|c| !c.is_control()).collect();
 
     let mut buf = vec![0u8; 64 * 1024];
     let mut transferred: u64 = 0;
@@ -1187,6 +1228,8 @@ async fn sftp_get_file(
     }
 
     local_file.flush().await?;
+    drop(local_file);
+    crate::protocols::write_mark_of_the_web(local_path);
 
     if show_progress {
         let elapsed = start_time.elapsed().as_secs_f32().max(0.01);
@@ -1302,11 +1345,12 @@ pub async fn run_cli_sftp_get(
             let entries = sftp.read_dir(&cur_remote).await?;
             for entry in entries {
                 let fname = entry.file_name();
-                if fname == "." || fname == ".." {
+                if fname == "." || fname == ".." || entry.file_type().is_symlink() {
                     continue;
                 }
+                let sub_local = crate::protocols::safe_join_under(&cur_local, &fname)
+                    .with_context(|| format!("Unsafe remote SFTP entry name {:?}", fname))?;
                 let sub_remote = format!("{}/{}", cur_remote, fname);
-                let sub_local = cur_local.join(fname);
 
                 if entry.metadata().is_dir() {
                     tokio::fs::create_dir_all(&sub_local).await?;
@@ -1323,8 +1367,12 @@ pub async fn run_cli_sftp_get(
             || local_path.to_string_lossy().ends_with('/')
             || local_path.to_string_lossy().ends_with('\\')
         {
-            let fname = remote_path.rsplit('/').next().unwrap_or("downloaded_file");
-            final_local = local_path.join(fname);
+            let fname = remote_path
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or("downloaded_file");
+            final_local = crate::protocols::safe_join_under(local_path, fname)
+                .with_context(|| format!("Unsafe remote filename {:?}", fname))?;
         }
         if let Some(parent) = final_local.parent() {
             tokio::fs::create_dir_all(parent).await?;

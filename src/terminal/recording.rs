@@ -58,7 +58,7 @@ pub struct SessionRecorder {
 impl SessionRecorder {
     /// Start recording a new session to `cuty-ssh-portable/recordings/<sanitized_name>_<timestamp>.cast`.
     pub fn start(session_name: &str, cols: usize, rows: usize) -> Result<Self> {
-        let base_dir = PathBuf::from("cuty-ssh-portable").join("recordings");
+        let base_dir = crate::config::AppConfig::portable_dir().join("recordings");
         let _ = std::fs::create_dir_all(&base_dir);
 
         let now_unix = SystemTime::now()
@@ -169,8 +169,20 @@ pub struct SessionPlayer {
 }
 
 impl SessionPlayer {
-    /// Load and parse a `.cast` file into memory.
+    /// Load and parse a `.cast` file into memory with bounded file size,
+    /// event count, and terminal grid dimensions.
     pub fn load_file(path: &Path) -> Result<Self> {
+        const MAX_CAST_FILE_BYTES: u64 = 50 * 1024 * 1024;
+        const MAX_CAST_EVENTS: usize = 500_000;
+
+        let meta = std::fs::metadata(path)?;
+        if meta.len() > MAX_CAST_FILE_BYTES {
+            anyhow::bail!(
+                "Recording file exceeds maximum supported size ({} MiB)",
+                MAX_CAST_FILE_BYTES / (1024 * 1024)
+            );
+        }
+
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
@@ -178,13 +190,21 @@ impl SessionPlayer {
         let first_line = lines
             .next()
             .ok_or_else(|| anyhow::anyhow!("Empty recording file"))??;
-        let header: AsciinemaHeader = serde_json::from_str(&first_line)
+        let mut header: AsciinemaHeader = serde_json::from_str(&first_line)
             .context("Invalid asciinema v2 header in first line")?;
+        header.width = header.width.clamp(10, 1000);
+        header.height = header.height.clamp(4, 500);
 
         let mut events = Vec::new();
         let mut max_time = 0.0f64;
 
         for line_res in lines {
+            if events.len() >= MAX_CAST_EVENTS {
+                tracing::warn!(
+                    "Session recording truncated: reached MAX_CAST_EVENTS ({MAX_CAST_EVENTS})"
+                );
+                break;
+            }
             let line = line_res?;
             if line.trim().is_empty() {
                 continue;

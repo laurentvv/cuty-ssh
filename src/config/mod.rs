@@ -2,9 +2,44 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 use uuid::Uuid;
+
+static KNOWN_HOSTS_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// Writes `content` to a unique sibling temporary file and atomically replaces `path`.
+pub(crate) fn atomic_write_file(path: &Path, content: &[u8]) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let tmp = path.with_file_name(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
+    let write_res = (|| -> anyhow::Result<()> {
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp)?;
+        f.write_all(content)?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = write_res {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    Ok(())
+}
 
 /// Supported connection protocols in Cuty-SSH.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,7 +80,7 @@ impl ProtocolType {
 }
 
 /// SSH authentication method configured for a session profile.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SshAuthMethod {
     /// Interactive or automatic password authentication.
     #[default]
@@ -65,13 +100,65 @@ pub enum SshAuthMethod {
     KeyboardInteractive,
 }
 
+impl fmt::Debug for SshAuthMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Password => f.write_str("Password"),
+            Self::PrivateKeyFile {
+                key_path,
+                passphrase,
+                cert_path,
+            } => f
+                .debug_struct("PrivateKeyFile")
+                .field("key_path", key_path)
+                .field(
+                    "passphrase",
+                    &if passphrase.is_empty() {
+                        ""
+                    } else {
+                        "[REDACTED]"
+                    },
+                )
+                .field("cert_path", cert_path)
+                .finish(),
+            Self::Agent {
+                use_pageant,
+                use_openssh_agent,
+            } => f
+                .debug_struct("Agent")
+                .field("use_pageant", use_pageant)
+                .field("use_openssh_agent", use_openssh_agent)
+                .finish(),
+            Self::KeyboardInteractive => f.write_str("KeyboardInteractive"),
+        }
+    }
+}
+
 /// Expect/send automation rule executed during session logon.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ExpectRule {
     pub enabled: bool,
     pub trigger_prompt: String,
     pub send_response: String,
     pub delay_ms: u64,
+}
+
+impl fmt::Debug for ExpectRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExpectRule")
+            .field("enabled", &self.enabled)
+            .field("trigger_prompt", &self.trigger_prompt)
+            .field(
+                "send_response",
+                &if self.send_response.is_empty() {
+                    ""
+                } else {
+                    "[REDACTED]"
+                },
+            )
+            .field("delay_ms", &self.delay_ms)
+            .finish()
+    }
 }
 
 /// Direction of an SSH port-forwarding rule.
@@ -95,7 +182,7 @@ pub struct PortForwardRule {
 }
 
 /// Complete configuration for a saved connection profile.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SessionProfile {
     pub id: Uuid,
     pub name: String,
@@ -156,6 +243,32 @@ pub struct SessionProfile {
     pub auto_reconnect: bool,
 }
 
+impl fmt::Debug for SessionProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionProfile")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("folder", &self.folder)
+            .field("protocol", &self.protocol)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field(
+                "password",
+                &if self.password.is_empty() {
+                    ""
+                } else {
+                    "[REDACTED]"
+                },
+            )
+            .field("ssh_auth", &self.ssh_auth)
+            .field("agent_forwarding", &self.agent_forwarding)
+            .field("jump_host_id", &self.jump_host_id)
+            .field("proxy_jump", &self.proxy_jump)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Supported Edge or Zero-Trust Gateway architecture presets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum EdgeGatewayPreset {
@@ -207,6 +320,8 @@ pub enum HostKeyCheckResult {
         actual_fingerprint: String,
         algorithm: String,
     },
+    /// The local `known_hosts.json` store exists but could not be read or parsed (fail-closed).
+    StoreError(String),
 }
 
 impl Default for SessionProfile {
@@ -232,7 +347,7 @@ impl Default for SessionProfile {
             logon_expect_rules: Vec::new(),
             keepalive_secs: 30,
             anti_idle_string: String::new(),
-            compression: true,
+            compression: false,
             port_forwards: Vec::new(),
             theme_name: "Cuty Dark".to_string(),
             font_size: 14.5,
@@ -492,27 +607,20 @@ fn default_predefined_commands() -> Vec<PredefinedCommand> {
 }
 
 impl AppConfig {
-    /// Resolves the portable configuration file path next to the executable or working directory.
-    pub fn portable_config_path() -> PathBuf {
-        let local_path = PathBuf::from("cuty-ssh-portable").join("config.json");
-        if local_path.exists() {
-            return local_path;
-        }
+    /// Resolves the portable data directory anchored strictly to the executable's
+    /// location (never trusting an arbitrary relative CWD).
+    pub fn portable_dir() -> PathBuf {
         if let Ok(exe) = std::env::current_exe()
             && let Some(dir) = exe.parent()
         {
-            let candidate = dir.join("cuty-ssh-portable").join("config.json");
-            if candidate.exists() {
-                return candidate;
-            }
-            if let Some(parent) = dir.parent().and_then(|p| p.parent()) {
-                let candidate2 = parent.join("cuty-ssh-portable").join("config.json");
-                if candidate2.exists() {
-                    return candidate2;
-                }
-            }
+            return dir.join("cuty-ssh-portable");
         }
-        local_path
+        PathBuf::from("cuty-ssh-portable")
+    }
+
+    /// Resolves the portable configuration file path next to the executable.
+    pub fn portable_config_path() -> PathBuf {
+        Self::portable_dir().join("config.json")
     }
 
     /// Finds a saved session from a CLI key: UUID, exact name, then a unique
@@ -562,14 +670,25 @@ impl AppConfig {
         } else {
             Self::default()
         };
-        cfg.sanitize_and_sync();
-        let _ = cfg.save();
+        let had_decrypt_failure = cfg.sanitize_and_sync_checked();
+        // Never overwrite config.json on startup if existing DPAPI blobs failed
+        // to decrypt (e.g. portable folder opened under another Windows account).
+        if !had_decrypt_failure {
+            let _ = cfg.save();
+        }
         cfg
     }
 
     /// Normalizes `user@host` fields, decrypts DPAPI-protected credentials into memory,
     /// cleans up legacy folder names, and syncs Saved Sessions from the Windows Registry.
     pub fn sanitize_and_sync(&mut self) {
+        let _ = self.sanitize_and_sync_checked();
+    }
+
+    /// Same as [`Self::sanitize_and_sync`], returning `true` if any DPAPI-protected
+    /// credential could not be decrypted.
+    fn sanitize_and_sync_checked(&mut self) -> bool {
+        let mut had_decrypt_failure = false;
         for s in &mut self.sessions {
             if s.host.contains('@') {
                 let (user, clean_host) = split_user_and_host(&s.host, &s.username);
@@ -577,12 +696,35 @@ impl AppConfig {
                 s.host = clean_host;
             }
             if !s.password.is_empty() {
-                s.password = dpapi_decrypt(&s.password);
+                match dpapi_decrypt_checked(&s.password) {
+                    Ok(plain) => s.password = plain,
+                    Err(_) => {
+                        had_decrypt_failure = true;
+                        s.password.clear();
+                    }
+                }
             }
             if let SshAuthMethod::PrivateKeyFile { passphrase, .. } = &mut s.ssh_auth
                 && !passphrase.is_empty()
             {
-                *passphrase = dpapi_decrypt(passphrase);
+                match dpapi_decrypt_checked(passphrase) {
+                    Ok(plain) => *passphrase = plain,
+                    Err(_) => {
+                        had_decrypt_failure = true;
+                        passphrase.clear();
+                    }
+                }
+            }
+            for rule in &mut s.logon_expect_rules {
+                if !rule.send_response.is_empty() {
+                    match dpapi_decrypt_checked(&rule.send_response) {
+                        Ok(plain) => rule.send_response = plain,
+                        Err(_) => {
+                            had_decrypt_failure = true;
+                            rule.send_response.clear();
+                        }
+                    }
+                }
             }
             if s.folder == "Import PuTTY/Import PuTTY"
                 || s.folder == "Import PuTTY"
@@ -598,6 +740,7 @@ impl AppConfig {
         {
             let _ = self.import_from_windows_registry();
         }
+        had_decrypt_failure
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
@@ -606,21 +749,26 @@ impl AppConfig {
             fs::create_dir_all(parent)?;
         }
 
-        // Encrypt saved passwords and private key passphrases with Windows DPAPI before writing to disk.
+        // Encrypt saved passwords, key passphrases, and expect responses with Windows DPAPI (fail-closed).
         let mut disk_copy = self.clone();
         for s in &mut disk_copy.sessions {
             if !s.password.is_empty() {
-                s.password = dpapi_encrypt(&s.password);
+                s.password = dpapi_encrypt_strict(&s.password)?;
             }
             if let SshAuthMethod::PrivateKeyFile { passphrase, .. } = &mut s.ssh_auth
                 && !passphrase.is_empty()
             {
-                *passphrase = dpapi_encrypt(passphrase);
+                *passphrase = dpapi_encrypt_strict(passphrase)?;
+            }
+            for rule in &mut s.logon_expect_rules {
+                if !rule.send_response.is_empty() {
+                    rule.send_response = dpapi_encrypt_strict(&rule.send_response)?;
+                }
             }
         }
 
         let json = serde_json::to_string_pretty(&disk_copy)?;
-        fs::write(&path, json)?;
+        atomic_write_file(&path, json.as_bytes())?;
 
         // Also export individual INI session files in `Sessions/` when portable mode is enabled.
         if self.portable_mode
@@ -631,7 +779,7 @@ impl AppConfig {
             for s in &self.sessions {
                 let safe_name = url_encode_session_name(&s.name);
                 let session_file = sessions_dir.join(safe_name);
-                let _ = fs::write(session_file, export_session_to_ini(s));
+                let _ = atomic_write_file(&session_file, export_session_to_ini(s).as_bytes());
             }
         }
         Ok(())
@@ -1167,23 +1315,34 @@ impl AppConfig {
     }
 
     /// Exports selected sessions (or all if filter_ids is None) to a formatted JSON string.
+    ///
+    /// Never writes plaintext secrets to disk: passwords, private key passphrases,
+    /// and logon expect responses are stripped from the exported copies.
     pub fn export_sessions_json(
         &self,
         filter_ids: Option<&[Uuid]>,
     ) -> Result<String, serde_json::Error> {
-        let export_list: Vec<&SessionProfile> = match filter_ids {
-            Some(ids) => self
-                .sessions
-                .iter()
-                .filter(|s| ids.contains(&s.id))
-                .collect(),
-            None => self.sessions.iter().collect(),
-        };
+        let export_list: Vec<SessionProfile> = self
+            .sessions
+            .iter()
+            .filter(|s| filter_ids.is_none_or(|ids| ids.contains(&s.id)))
+            .map(|s| {
+                let mut scrubbed = s.clone();
+                scrubbed.password.clear();
+                if let SshAuthMethod::PrivateKeyFile { passphrase, .. } = &mut scrubbed.ssh_auth {
+                    passphrase.clear();
+                }
+                for rule in &mut scrubbed.logon_expect_rules {
+                    rule.send_response.clear();
+                }
+                scrubbed
+            })
+            .collect();
         serde_json::to_string_pretty(&export_list)
     }
 
     /// Imports sessions from a JSON string (either `Vec<SessionProfile>` or full `AppConfig`).
-    /// Generates new UUIDs for collisions and adds new sessions.
+    /// Generates new UUIDs for collisions and sanitizes untrusted execution/secret fields.
     pub fn import_sessions_json(&mut self, json_str: &str) -> Result<usize, String> {
         let imported_sessions: Vec<SessionProfile> =
             if let Ok(list) = serde_json::from_str::<Vec<SessionProfile>>(json_str) {
@@ -1208,6 +1367,22 @@ impl AppConfig {
         for mut s in imported_sessions {
             if s.name.trim().is_empty() {
                 continue;
+            }
+            // Strip untrusted secrets & dangerous automatic execution/forwarding fields.
+            s.password.clear();
+            if let SshAuthMethod::PrivateKeyFile { passphrase, .. } = &mut s.ssh_auth {
+                passphrase.clear();
+            }
+            s.local_script_path.clear();
+            s.agent_forwarding = false;
+            if s.protocol == ProtocolType::LocalShell {
+                let cmd_lower = s.local_shell_cmd.trim().to_ascii_lowercase();
+                if !matches!(
+                    cmd_lower.as_str(),
+                    "" | "powershell.exe" | "cmd.exe" | "wsl.exe" | "pwsh.exe"
+                ) {
+                    s.local_shell_cmd = "powershell.exe".to_string();
+                }
             }
             if existing_ids.contains(&s.id) {
                 s.id = Uuid::new_v4();
@@ -1632,27 +1807,52 @@ fn parse_ssh_config_forward(val: &str, forward_type: PortForwardType) -> Option<
     })
 }
 
-/// Loads all stored SSH host keys from `known_hosts.json`.
-pub fn load_known_hosts() -> Vec<KnownHostEntry> {
-    let path = AppConfig::known_hosts_path();
-    if path.exists()
-        && let Ok(data) = fs::read_to_string(&path)
-        && let Ok(entries) = serde_json::from_str::<Vec<KnownHostEntry>>(&data)
-    {
-        return entries;
+/// Canonicalizes `(host, port)` for consistent `known_hosts.json` lookup
+/// across IPv6 brackets, non-canonical IPv6 spellings, case, and trailing DNS dots.
+pub fn canonicalize_known_host_port(host: &str, port: u16) -> String {
+    let trimmed = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.');
+    let canon = if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+        ip.to_string()
+    } else {
+        trimmed.to_ascii_lowercase()
+    };
+    if port == 22 && !canon.contains(':') {
+        canon
+    } else {
+        format!("[{canon}]:{port}")
     }
-    Vec::new()
 }
 
-/// Persists the SSH `known_hosts` list to `known_hosts.json`.
+/// Loads `known_hosts.json`, distinguishing a missing file (`Ok(Vec::new())`)
+/// from an I/O or JSON parse error (`Err(...)`) so host verification fails closed.
+pub fn load_known_hosts_checked() -> anyhow::Result<Vec<KnownHostEntry>> {
+    let path = AppConfig::known_hosts_path();
+    let data = match fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            anyhow::bail!("failed to read {}: {e}", path.display());
+        }
+    };
+    let entries = serde_json::from_str::<Vec<KnownHostEntry>>(&data)
+        .map_err(|e| anyhow::anyhow!("corrupted {}: {e}", path.display()))?;
+    Ok(entries)
+}
+
+/// Loads all stored SSH host keys from `known_hosts.json`.
+pub fn load_known_hosts() -> Vec<KnownHostEntry> {
+    load_known_hosts_checked().unwrap_or_default()
+}
+
+/// Persists the SSH `known_hosts` list atomically to `known_hosts.json`.
 pub fn save_known_hosts(entries: &[KnownHostEntry]) -> anyhow::Result<()> {
     let path = AppConfig::known_hosts_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
     let json = serde_json::to_string_pretty(entries)?;
-    fs::write(path, json)?;
-    Ok(())
+    atomic_write_file(&path, json.as_bytes())
 }
 
 /// Verifies a server's SSH host key against a slice of `KnownHostEntry` items (in-memory TOFU logic).
@@ -1664,15 +1864,17 @@ pub fn verify_or_record_known_host_in_list(
     fingerprint_sha256: &str,
     public_key_base64: &str,
 ) -> HostKeyCheckResult {
-    let host_port = if port == 22 {
-        host.trim().to_lowercase()
-    } else {
-        format!("[{}]:{}", host.trim().to_lowercase(), port)
-    };
+    if fingerprint_sha256.trim().is_empty() {
+        return HostKeyCheckResult::StoreError("empty server host key fingerprint".to_string());
+    }
+    let host_port = canonicalize_known_host_port(host, port);
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     if let Some(existing) = entries.iter_mut().find(|e| e.host_port == host_port) {
-        if existing.fingerprint_sha256 == fingerprint_sha256 {
+        let b64_matches = existing.public_key_base64.is_empty()
+            || public_key_base64.is_empty()
+            || existing.public_key_base64 == public_key_base64;
+        if existing.fingerprint_sha256 == fingerprint_sha256 && b64_matches {
             existing.last_seen = now;
             HostKeyCheckResult::TrustedMatch {
                 fingerprint: fingerprint_sha256.to_string(),
@@ -1702,6 +1904,7 @@ pub fn verify_or_record_known_host_in_list(
 }
 
 /// Verifies a server's SSH host key against `known_hosts.json` on disk (TOFU).
+/// Serialized with an in-process lock and fails closed if the store is unreadable/corrupt.
 pub fn verify_or_record_known_host(
     host: &str,
     port: u16,
@@ -1709,7 +1912,11 @@ pub fn verify_or_record_known_host(
     fingerprint_sha256: &str,
     public_key_base64: &str,
 ) -> HostKeyCheckResult {
-    let mut entries = load_known_hosts();
+    let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut entries = match load_known_hosts_checked() {
+        Ok(e) => e,
+        Err(err) => return HostKeyCheckResult::StoreError(err.to_string()),
+    };
     let result = verify_or_record_known_host_in_list(
         &mut entries,
         host,
@@ -1718,7 +1925,10 @@ pub fn verify_or_record_known_host(
         fingerprint_sha256,
         public_key_base64,
     );
-    if !matches!(result, HostKeyCheckResult::Mismatch { .. }) {
+    if !matches!(
+        result,
+        HostKeyCheckResult::Mismatch { .. } | HostKeyCheckResult::StoreError(_)
+    ) {
         let _ = save_known_hosts(&entries);
     }
     result
@@ -1726,7 +1936,10 @@ pub fn verify_or_record_known_host(
 
 /// Removes a host entry from `known_hosts.json` (e.g., to accept a newly reinstalled server's key).
 pub fn remove_known_host(host_port: &str) -> bool {
-    let mut entries = load_known_hosts();
+    let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(mut entries) = load_known_hosts_checked() else {
+        return false;
+    };
     let before = entries.len();
     entries.retain(|e| e.host_port != host_port);
     let removed = entries.len() < before;
@@ -1806,33 +2019,51 @@ pub fn clear_audit_log() -> bool {
     }
 }
 
-/// Formats audit entries as a standard CSV string.
+/// Escapes a CSV cell and neutralizes spreadsheet formula injection (`=`, `+`, `-`, `@`, `\t`, `\r`).
+fn csv_escape_field(raw: &str) -> String {
+    let flat = raw.replace(['\r', '\n'], " ");
+    let trimmed = flat.trim_start();
+    let needs_prefix = flat
+        .chars()
+        .next()
+        .is_some_and(|c| matches!(c, '=' | '+' | '-' | '@' | '\t' | '\r'))
+        || trimmed
+            .chars()
+            .next()
+            .is_some_and(|c| matches!(c, '=' | '+' | '-' | '@'));
+    let guarded = if needs_prefix {
+        format!("'{flat}")
+    } else {
+        flat
+    };
+    format!("\"{}\"", guarded.replace('"', "\"\""))
+}
+
+/// Formats audit entries as a standard CSV string with formula-injection protection.
 pub fn export_audit_csv(entries: &[AuditLogEntry]) -> String {
     let mut csv = String::from("ID,Timestamp,Session,Protocol,Target,Event,DurationSecs,Details\n");
     for e in entries {
         let dur = e.duration_secs.map(|d| d.to_string()).unwrap_or_default();
-        let safe_name = e.session_name.replace('"', "\"\"");
-        let safe_target = e.target.replace('"', "\"\"");
-        let safe_details = e.details.replace('"', "\"\"");
         csv.push_str(&format!(
-            "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"\n",
-            e.id,
-            e.timestamp_rfc3339,
-            safe_name,
-            e.protocol.label(),
-            safe_target,
-            e.event_type,
-            dur,
-            safe_details
+            "{},{},{},{},{},{},{},{}\n",
+            csv_escape_field(&e.id.to_string()),
+            csv_escape_field(&e.timestamp_rfc3339),
+            csv_escape_field(&e.session_name),
+            csv_escape_field(e.protocol.label()),
+            csv_escape_field(&e.target),
+            csv_escape_field(&e.event_type),
+            csv_escape_field(&dur),
+            csv_escape_field(&e.details),
         ));
     }
     csv
 }
 
-/// Encrypts a sensitive credential string using Windows DPAPI (`CryptProtectData`), returning `"dpapi:<base64>"`.
-pub fn dpapi_encrypt(plaintext: &str) -> String {
-    if plaintext.is_empty() || plaintext.starts_with("dpapi:") {
-        return plaintext.to_string();
+/// Encrypts a sensitive credential string using Windows DPAPI (`CryptProtectData`),
+/// returning `"dpapi:<base64>"`. Fails closed (`Err`) rather than ever returning plaintext.
+pub fn dpapi_encrypt_strict(plaintext: &str) -> anyhow::Result<String> {
+    if plaintext.is_empty() {
+        return Ok(String::new());
     }
     #[cfg(windows)]
     {
@@ -1844,8 +2075,10 @@ pub fn dpapi_encrypt(plaintext: &str) -> String {
         };
 
         let bytes = plaintext.as_bytes();
+        let cb_data = u32::try_from(bytes.len())
+            .map_err(|_| anyhow::anyhow!("secret too large for DPAPI"))?;
         let in_blob = CRYPT_INTEGER_BLOB {
-            cbData: bytes.len() as u32,
+            cbData: cb_data,
             pbData: bytes.as_ptr() as *mut u8,
         };
         let mut out_blob = CRYPT_INTEGER_BLOB {
@@ -1869,18 +2102,33 @@ pub fn dpapi_encrypt(plaintext: &str) -> String {
                 let slice = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize);
                 let encoded = base64::engine::general_purpose::STANDARD.encode(slice);
                 LocalFree(out_blob.pbData as *mut _);
-                return format!("dpapi:{encoded}");
+                return Ok(format!("dpapi:{encoded}"));
             }
         }
+        anyhow::bail!(
+            "Windows DPAPI CryptProtectData failed: {}",
+            std::io::Error::last_os_error()
+        )
     }
-    plaintext.to_string()
+    #[cfg(not(windows))]
+    {
+        anyhow::bail!("DPAPI encryption is unavailable on non-Windows platforms")
+    }
 }
 
-/// Decrypts a `"dpapi:<base64>"` credential string using Windows DPAPI (`CryptUnprotectData`).
-/// Plaintext strings without the `"dpapi:"` prefix are returned unchanged for backward compatibility.
-pub fn dpapi_decrypt(stored: &str) -> String {
+/// Encrypts a sensitive credential string using Windows DPAPI (`CryptProtectData`), returning `"dpapi:<base64>"`.
+pub fn dpapi_encrypt(plaintext: &str) -> String {
+    if plaintext.is_empty() || plaintext.starts_with("dpapi:") {
+        return plaintext.to_string();
+    }
+    dpapi_encrypt_strict(plaintext).unwrap_or_default()
+}
+
+/// Decrypts a `"dpapi:<base64>"` credential string, returning `Err` if a DPAPI blob
+/// cannot be decrypted (so callers can avoid destructively overwriting stored blobs).
+pub fn dpapi_decrypt_checked(stored: &str) -> anyhow::Result<String> {
     let Some(b64) = stored.strip_prefix("dpapi:") else {
-        return stored.to_string();
+        return Ok(stored.to_string());
     };
     #[cfg(windows)]
     {
@@ -1893,8 +2141,12 @@ pub fn dpapi_decrypt(stored: &str) -> String {
         use zeroize::Zeroize;
 
         if let Ok(mut cipher_bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
+            let Ok(cb_data) = u32::try_from(cipher_bytes.len()) else {
+                cipher_bytes.zeroize();
+                anyhow::bail!("DPAPI ciphertext too large");
+            };
             let in_blob = CRYPT_INTEGER_BLOB {
-                cbData: cipher_bytes.len() as u32,
+                cbData: cb_data,
                 pbData: cipher_bytes.as_mut_ptr(),
             };
             let mut out_blob = CRYPT_INTEGER_BLOB {
@@ -1902,7 +2154,7 @@ pub fn dpapi_decrypt(stored: &str) -> String {
                 pbData: ptr::null_mut(),
             };
 
-            // SAFETY: `in_blob` points to valid decoded bytes, and `out_blob.pbData` is freed via `LocalFree`.
+            // SAFETY: `in_blob` points to valid decoded bytes; `out_blob.pbData` is zeroized before `LocalFree`.
             unsafe {
                 let ok = CryptUnprotectData(
                     &in_blob,
@@ -1916,15 +2168,22 @@ pub fn dpapi_decrypt(stored: &str) -> String {
                 cipher_bytes.zeroize();
                 if ok != 0 && !out_blob.pbData.is_null() {
                     let slice =
-                        std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize);
+                        std::slice::from_raw_parts_mut(out_blob.pbData, out_blob.cbData as usize);
                     let plain = String::from_utf8_lossy(slice).to_string();
+                    slice.zeroize();
                     LocalFree(out_blob.pbData as *mut _);
-                    return plain;
+                    return Ok(plain);
                 }
             }
         }
     }
-    String::new()
+    anyhow::bail!("DPAPI decryption failed")
+}
+
+/// Decrypts a `"dpapi:<base64>"` credential string using Windows DPAPI (`CryptUnprotectData`).
+/// Plaintext strings without the `"dpapi:"` prefix are returned unchanged for backward compatibility.
+pub fn dpapi_decrypt(stored: &str) -> String {
+    dpapi_decrypt_checked(stored).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -2031,6 +2290,75 @@ Host app-internal db-internal
         assert!(csv.contains("CONNECT"));
         assert!(csv.contains("3600"));
         assert!(csv.contains("bastion.example.com:22"));
+    }
+
+    #[test]
+    fn test_export_sessions_json_strips_all_secrets() {
+        let mut cfg = AppConfig::default();
+        cfg.sessions.clear();
+        cfg.sessions.push(SessionProfile {
+            name: "Secret Server".to_string(),
+            password: "SuperSecretPassword!".to_string(),
+            ssh_auth: SshAuthMethod::PrivateKeyFile {
+                key_path: "id_ed25519".to_string(),
+                passphrase: "TopSecretPassphrase!".to_string(),
+                cert_path: String::new(),
+            },
+            logon_expect_rules: vec![ExpectRule {
+                enabled: true,
+                trigger_prompt: "sudo:".to_string(),
+                send_response: "SudoSecret!".to_string(),
+                delay_ms: 50,
+            }],
+            ..Default::default()
+        });
+        let exported = cfg.export_sessions_json(None).expect("export");
+        assert!(!exported.contains("SuperSecretPassword!"));
+        assert!(!exported.contains("TopSecretPassphrase!"));
+        assert!(!exported.contains("SudoSecret!"));
+        let debug_str = format!("{:?}", cfg.sessions[0]);
+        assert!(!debug_str.contains("SuperSecretPassword!"));
+        assert!(!debug_str.contains("TopSecretPassphrase!"));
+        assert!(debug_str.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn test_audit_csv_neutralizes_formula_injection() {
+        let entries = vec![AuditLogEntry {
+            id: Uuid::new_v4(),
+            timestamp_rfc3339: "2026-10-18T14:30:00Z".to_string(),
+            session_id: None,
+            session_name: "=CMD|' /C calc'!A0".to_string(),
+            protocol: ProtocolType::Ssh,
+            target: "+evil.host".to_string(),
+            event_type: "ERROR".to_string(),
+            duration_secs: None,
+            details: "@SUM(1+1)\nnewline".to_string(),
+        }];
+        let csv = export_audit_csv(&entries);
+        assert!(csv.contains("\"'=CMD"));
+        assert!(csv.contains("\"'+evil.host\""));
+        assert!(csv.contains("\"'@SUM(1+1) newline\""));
+    }
+
+    #[test]
+    fn test_known_host_canonicalization_ipv6_and_trailing_dot() {
+        assert_eq!(
+            canonicalize_known_host_port("Example.COM.", 22),
+            "example.com"
+        );
+        assert_eq!(
+            canonicalize_known_host_port("[2001:0db8::1]", 22),
+            "[2001:db8::1]:22"
+        );
+        assert_eq!(
+            canonicalize_known_host_port("2001:db8::1", 22),
+            "[2001:db8::1]:22"
+        );
+        assert_eq!(
+            canonicalize_known_host_port("2001:db8::1", 2222),
+            "[2001:db8::1]:2222"
+        );
     }
 
     #[test]
